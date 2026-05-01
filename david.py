@@ -340,10 +340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR CHECK TASK: Look for "C [Task Name]"
-    check_task_pattern = r"(?i)C (.+)"
-    check_task_match = re.search(check_task_pattern, user_text)
-
-    if check_task_match:
+    if re.fullmatch(r"(?i)C (.+)", user_text):
         task_name = check_task_match.group(1).strip()
 
         await update.message.reply_text(f"⏳ Checking task '{task_name}' in Notion...")
