@@ -20,7 +20,7 @@ MONTH_ID = os.environ.get("MONTH_ID")
 LETTI_ID = os.environ.get("LETTI_ID")
 LITERATURE_ID = os.environ.get("LITERATURE_ID")
 TASK_ID = os.environ.get("TASK_ID")
-CHAT_ID = os.environ.get("ChatID")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 
 # --- NOTION API ---
