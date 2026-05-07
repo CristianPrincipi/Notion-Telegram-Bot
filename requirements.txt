@@ -1,8 +1,6 @@
 python-telegram-bot[job-queue]
 requests
 pytz
-youtube-transcript-api
-PyPDF2
 beautifulsoup4
 newspaper4k
 # lxml
