@@ -432,6 +432,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
         return
 
+    # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
+    if re.match(r"(?i)learn\s+\w+", user_text):
+        await handle_learn(update, user_text)
+        return
+
     # --- CATEGORY SHORTCUT MAP ---
     CATEGORY_MAP = {"s": "Shopping", "f": "Food", "g": "Gift", "o": "Other"}
 
@@ -461,11 +466,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
     else:
         await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
-               
-    # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
-    if re.match(r"(?i)learn\s+\w+", user_text):
-        await handle_learn(update, user_text)
-        return
 
 
 # --- HANDLER FUNCTION FOR PDF ---
