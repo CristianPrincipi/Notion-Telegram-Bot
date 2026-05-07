@@ -30,34 +30,27 @@ TYPE_EMOJI = {
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
 
 def extract_youtube(url: str) -> tuple[str | None, str | None]:
-    """Return (transcript_text, error). Uses youtube-transcript-api v0.7+ with Webshare proxy
-    to bypass YouTube's cloud IP ban (Railway, AWS, etc. are blocked without a proxy)."""
+    """Return (transcript_text, error). Uses Supadata API — no IP ban issues."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        from youtube_transcript_api.proxies import WebshareProxyConfig
+        supadata_key = os.environ.get("SUPADATA_KEY")
+        if not supadata_key:
+            return None, "SUPADATA_KEY not set in environment."
 
-        vid_match = re.search(r"(?:v=|youtu\.be/)([^&\n?#]+)", url)
-        if not vid_match:
-            return None, "Could not parse video ID from URL."
+        resp = requests.get(
+            "https://api.supadata.ai/v1/youtube/transcript",
+            headers={"x-api-key": supadata_key},
+            params={"url": url, "text": "true"},  # text=true returns plain string directly
+            timeout=30,
+        )
 
-        vid_id = vid_match.group(1)
+        if resp.status_code != 200:
+            return None, f"Supadata error {resp.status_code}: {resp.text[:200]}"
 
-        webshare_user = os.environ.get("WEBSHARE_USER")
-        webshare_pass = os.environ.get("WEBSHARE_PASS")
+        data = resp.json()
+        text = data.get("content", "")
+        if not text:
+            return None, "Transcript is empty or unavailable for this video."
 
-        if webshare_user and webshare_pass:
-            api = YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=webshare_user,
-                    proxy_password=webshare_pass,
-                )
-            )
-        else:
-            # No proxy configured — will likely fail on cloud hosts
-            api = YouTubeTranscriptApi()
-
-        transcript = api.fetch(vid_id, languages=["en", "it", "en-US", "it-IT"])
-        text = " ".join(snippet.text for snippet in transcript)
         return text, None
     except Exception as e:
         return None, str(e)
