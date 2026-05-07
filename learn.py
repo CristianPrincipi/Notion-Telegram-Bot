@@ -5,10 +5,10 @@ import requests
 from bs4 import BeautifulSoup
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-NOTION_KEY      = os.environ.get("NOTION_KEY")
-ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY")
-LEARN_DB_ID     = os.environ.get("LEARN_DB_ID")       # videos, articles, podcasts
-LETTI_ID        = os.environ.get("LETTI_ID")           # books  (already exists in David)
+NOTION_KEY = os.environ.get("NOTION_KEY")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
+LEARN_ID = os.environ.get("LEARN_ID")                  # videos, articles, podcasts
+LETTI_ID = os.environ.get("LETTI_ID")                  # books  (already exists in David)
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_KEY}",
@@ -230,10 +230,10 @@ def build_notion_blocks(summary: dict, source: str) -> list[dict]:
 
 def _get_db_id(content_type: str) -> str | None:
     return {
-        "video":   LEARN_DB_ID,
-        "article": LEARN_DB_ID,
-        "podcast": LEARN_DB_ID,
-        "pdf":     LEARN_DB_ID,
+        "video":   LEARN_ID,
+        "article": LEARN_ID,
+        "podcast": LEARN_ID,
+        "pdf":     LEARN_ID,
         "book":    LETTI_ID,
     }.get(content_type)
 
