@@ -30,18 +30,35 @@ TYPE_EMOJI = {
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
 
 def extract_youtube(url: str) -> tuple[str | None, str | None]:
-    """Return (transcript_text, error). Uses youtube-transcript-api."""
+    """Return (transcript_text, error). Uses youtube-transcript-api v0.7+ with Webshare proxy
+    to bypass YouTube's cloud IP ban (Railway, AWS, etc. are blocked without a proxy)."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api.proxies import WebshareProxyConfig
 
         vid_match = re.search(r"(?:v=|youtu\.be/)([^&\n?#]+)", url)
         if not vid_match:
             return None, "Could not parse video ID from URL."
 
         vid_id = vid_match.group(1)
-        api = YouTubeTranscriptApi()
+
+        webshare_user = os.environ.get("WEBSHARE_USER")
+        webshare_pass = os.environ.get("WEBSHARE_PASS")
+
+        if webshare_user and webshare_pass:
+            api = YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=webshare_user,
+                    proxy_password=webshare_pass,
+                )
+            )
+        else:
+            # No proxy configured — will likely fail on cloud hosts
+            api = YouTubeTranscriptApi()
+
         transcript = api.fetch(vid_id, languages=["en", "it", "en-US", "it-IT"])
         text = " ".join(snippet.text for snippet in transcript)
+        return text, None
     except Exception as e:
         return None, str(e)
 
