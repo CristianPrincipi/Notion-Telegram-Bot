@@ -39,9 +39,9 @@ def extract_youtube(url: str) -> tuple[str | None, str | None]:
             return None, "Could not parse video ID from URL."
 
         vid_id = vid_match.group(1)
-        entries = YouTubeTranscriptApi.get_transcript(vid_id, languages=["en", "it", "en-US", "it-IT"])
-        text = " ".join(e["text"] for e in entries)
-        return text, None
+        api = YouTubeTranscriptApi()
+        transcript = api.fetch(vid_id, languages=["en", "it", "en-US", "it-IT"])
+        text = " ".join(snippet.text for snippet in transcript)
     except Exception as e:
         return None, str(e)
 
