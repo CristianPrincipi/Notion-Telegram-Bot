@@ -9,6 +9,7 @@ from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from telegram.ext import filters as tg_filters
+from learn import handle_learn
 
 
 # --- CONFIGURATION ---
@@ -21,6 +22,7 @@ LETTI_ID = os.environ.get("LETTI_ID")
 LITERATURE_ID = os.environ.get("LITERATURE_ID")
 TASK_ID = os.environ.get("TASK_ID")
 CHAT_ID = os.environ.get("CHAT_ID")
+LEARN_ID = os.environ.get("LEARN_ID")
 
 
 # --- NOTION API ---
@@ -307,7 +309,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
-      await update.message.reply_text(f" 📖 BOOK \nAdd b [Book's Name] - [Author] - [Genre] \n\n 🖋️ QUOTE \n add q [Book's Name] - [Title] - [Quote] \n\n 📝 TASK \n Add t [Name] - [Priority] - [Date] \n\n 📋 Tasks list \n  T \n\n 💵 EXPENSE \n Add e [Name] [Amount] [Category] \n\n 💰 Budget \n  B")
+      await update.message.reply_text(f" 📖 BOOK \nAdd b [Book's Name] - [Author] - [Genre] \n\n 🖋️ QUOTE \n add q [Book's Name] - [Title] - [Quote] \n\n 📝 TASK \n Add t [Name] - [Priority] - [Date] \n\n 📋 Tasks list \n  T \n\n 💵 EXPENSE \n Add e [Name] [Amount] [Category] \n\n 💰 Budget \n  B \n\n 🧠 Learn .. \n Learn video https://youtu.be/... \n Learn article https://...\n Learn pdf  [attach PDF]")
       return
 
     # --- REGEX FOR BUDGET: Look for "B"
@@ -459,6 +461,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
     else:
         await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
+               
+    # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
+    if re.match(r"(?i)learn\s+\w+", user_text):
+        await handle_learn(update, user_text)
+        return
+
+
+# --- HANDLER FUNCTION FOR PDF ---
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles file uploads. If caption starts with 'Learn pdf', runs the Learn pipeline."""
+    doc     = update.message.document
+    caption = (update.message.caption or "").strip()
+
+    if not re.match(r"(?i)learn\s+pdf", caption):
+        await update.message.reply_text(
+            "📎 File received. To summarise it, send it again with caption: `Learn pdf`",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text("⏳ Downloading your PDF…")
+
+    tg_file    = await context.bot.get_file(doc.file_id)
+    file_bytes = await tg_file.download_as_bytearray()
+
+    await handle_learn(update, caption, file_bytes=bytes(file_bytes))
+
 
 # --- START THE BOT ---
 if __name__ == '__main__':
@@ -480,6 +509,9 @@ if __name__ == '__main__':
     # LISTEN FOR ANY TEXT MESSAGE... (except commands)
     text_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     application.add_handler(text_handler)
+           
+    doc_handler = MessageHandler(filters.Document.ALL, handle_document)
+    application.add_handler(doc_handler)
 
     print("🤖 David online!")
     application.run_polling()
