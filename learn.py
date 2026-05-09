@@ -133,7 +133,7 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
         f"Content type: {content_type}\n"
         f"Title (if known): {title}\n"
         f"Source: {source}\n\n"
-        f"Content (truncated to 14 000 chars):\n{text[:14000]}"
+        f"Content:\n{text[:100000]}"  # 100k chars ≈ covers a 2-hour video in one API call
     )
 
     try:
@@ -146,7 +146,7 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
             },
             json={
                 "model":      "claude-sonnet-4-5",
-                "max_tokens": 4096,  # 2048 was too low — long transcripts produce large JSON
+                "max_tokens": 4096,
                 "system":     _SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
@@ -155,11 +155,9 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"].strip()
 
-        # Robustly extract the JSON object — handles markdown fences and stray text
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not json_match:
-            return None, f"No JSON object found in Claude response: {raw[:300]}"
-        raw = json_match.group(0)
+        # Strip accidental ```json fences
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
 
         return json.loads(raw), None
 
