@@ -114,7 +114,7 @@ def task_List():
         props = page.get("properties", {})
         name = props.get("Name", {}).get("title", [{}])[0].get("plain_text", "Unnamed Task")
         priority = props.get("Priority", {}).get("select", {}).get("name", "No Priority")
-        msg += f"• [{priority}] {name}\n"
+        msg += f"•  {name} [{priority}]\n"
 
     return msg
 
@@ -331,7 +331,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR NEW TASK: Look for "Add t [Name] - [Priority] - [Date]"
-    PRIORITY_MAP = {"l": "Low", "m": "Medium", "h": "High"}
+    PRIORITY_MAP = {"l": "Low", "m": "Mid", "h": "High"}
 
     task_pattern = r"(?i)add t (.+?) - (.+?) - (.+)"
     task_match = re.search(task_pattern, user_text)
