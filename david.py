@@ -284,6 +284,82 @@ def add_Expenses(name, amount, category):
     return response.status_code == 200
 
 
+# --- UPDATE EXPENSES FUNCTION ---
+def update_Expense(name, amount, category):
+    # 1. Find the expense page ID by name
+    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
+    query_data = {
+        "filter": {
+            "property": "Name",
+            "title": {"contains": name.strip()}
+        }
+    }
+    response = requests.post(url, headers=headers, json=query_data)
+
+    if response.status_code != 200:
+        print(f"Error querying Notion for expense: {response.status_code}")
+        return False, None
+
+    results = response.json().get("results", [])
+    if not results:
+        print(f"No expense found with name: {name}")
+        return False, None
+
+    page_id = results[0]["id"]
+
+    # 2. Patch the page with the new amount and category
+    update_url = f"https://api.notion.com/v1/pages/{page_id}"
+    update_data = {
+        "properties": {
+            "Amount": {"number": amount},
+            "Category": {"multi_select": [{"name": category}]}
+        }
+    }
+    update_response = requests.patch(update_url, headers=headers, json=update_data)
+
+    if update_response.status_code != 200:
+        print(f"Error updating expense: {update_response.status_code}")
+        print(update_response.json())
+        return False, page_id
+
+    return True, page_id
+
+
+# --- DELETE EXPENSES FUNCTION ---
+def delete_Expense(name):
+    # 1. Find the expense page ID by name
+    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
+    query_data = {
+        "filter": {
+            "property": "Name",
+            "title": {"contains": name.strip()}
+        }
+    }
+    response = requests.post(url, headers=headers, json=query_data)
+
+    if response.status_code != 200:
+        print(f"Error querying Notion for expense: {response.status_code}")
+        return False, None
+
+    results = response.json().get("results", [])
+    if not results:
+        print(f"No expense found with name: {name}")
+        return False, None
+
+    page_id = results[0]["id"]
+
+    # 2. Archive the page (Notion API does not support hard delete)
+    update_url = f"https://api.notion.com/v1/pages/{page_id}"
+    update_response = requests.patch(update_url, headers=headers, json={"archived": True})
+
+    if update_response.status_code != 200:
+        print(f"Error archiving expense: {update_response.status_code}")
+        print(update_response.json())
+        return False, page_id
+
+    return True, page_id
+
+
 # --- SCHEDULED JOB: SEND DAILY TASKS --- #
 async def send_daily_tasks(context: ContextTypes.DEFAULT_TYPE):
     result_text = task_List()
@@ -309,7 +385,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
-      await update.message.reply_text(f" 📖 BOOK \nAdd b [Book's Name] - [Author] - [Genre] \n\n 🖋️ QUOTE \n add q [Book's Name] - [Title] - [Quote] \n\n 📝 TASK \n Add t [Name] - [Priority] - [Date] \n\n 📋 Tasks list \n  T \n\n 💵 EXPENSE \n Add e [Name] [Amount] [Category] \n\n 💰 Budget \n  B \n\n 🧠 Learn .. \n Learn video https://youtu.be/... \n Learn article https://...\n Learn pdf  [attach PDF]")
+      await update.message.reply_text(f" 📖 BOOK \nAdd b [Book's Name] - [Author] - [Genre] \n\n 🖋️ QUOTE \n add q [Book's Name] - [Title] - [Quote] \n\n 📝 TASK \n Add t [Name] - [Priority] - [Date] \n\n 📋 Tasks list \n  T \n\n 💵 EXPENSE \n Add e [Name] [Amount] [Category] \n U e [Name] [Amount] [Category] \n D e [Name] \n\n 💰 Budget \n  B \n\n 🧠 Learn .. \n Learn video https://youtu.be/... \n Learn article https://...\n Learn pdf  [attach PDF]")
       return
 
     # --- REGEX FOR BUDGET: Look for "B"
@@ -439,6 +515,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- CATEGORY SHORTCUT MAP ---
     CATEGORY_MAP = {"s": "Shopping", "f": "Food", "g": "Gift", "o": "Other"}
+
+    # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
+    update_expense_match = re.fullmatch(r"(?i)U e (.+?) (\d+\.?\d*)(?:\s+(\w+))?", user_text)
+    if update_expense_match:
+        name = update_expense_match.group(1).strip()
+        amount = float(update_expense_match.group(2))
+        category_input = update_expense_match.group(3)
+        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", "Food")
+
+        await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
+
+        success, page_id = update_Expense(name, amount, category)
+
+        if success:
+            await update.message.reply_text(f"✅ Expense '{name}' updated successfully!")
+        else:
+            if page_id is None:
+                await update.message.reply_text(f"❌ Error: Expense '{name}' not found.")
+            else:
+                await update.message.reply_text(f"❌ Error: Could not update '{name}'. Check your API keys.")
+        return
+
+    # --- REGEX FOR DELETE EXPENSE: Look for "D e [Name]"
+    delete_expense_match = re.fullmatch(r"(?i)D e (.+)", user_text)
+    if delete_expense_match:
+        name = delete_expense_match.group(1).strip()
+
+        await update.message.reply_text(f"⏳ Deleting expense '{name}'...")
+
+        success, page_id = delete_Expense(name)
+
+        if success:
+            await update.message.reply_text(f"🗑️ Expense '{name}' deleted successfully!")
+        else:
+            if page_id is None:
+                await update.message.reply_text(f"❌ Error: Expense '{name}' not found.")
+            else:
+                await update.message.reply_text(f"❌ Error: Could not delete '{name}'. Check your API keys.")
+        return
 
     # REGEX FOR EXPENSES: Look for "Add e [Name] [Amount] [Category]"
     pattern = r"(?i)add e (.+?) (\d+\.?\d*)(?:\s+(\w+))?"
