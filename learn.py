@@ -150,7 +150,7 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
                 "system":     _SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
-            timeout=90,
+            timeout=(10, 300),   # (connect timeout, read timeout) — 5 min for long transcripts
         )
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"].strip()
