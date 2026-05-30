@@ -24,6 +24,9 @@ LITERATURE_ID = os.environ.get("LITERATURE_ID")
 TASK_ID = os.environ.get("TASK_ID")
 CHAT_ID = os.environ.get("CHAT_ID")
 LEARN_ID = os.environ.get("LEARN_ID")
+DIET_ID = os.environ.get("DIET_ID")
+BRAIN_ID = os.environ.get("BRAIN_ID")
+FINANCE_ID = os.environ.get("FINANCE_ID")
 
 
 # --- NOTION API ---
