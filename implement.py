@@ -4,12 +4,12 @@ import json
 import requests
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-NOTION_KEY    = os.environ.get("NOTION_KEY")
+NOTION_KEY = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
-LEARN_ID      = os.environ.get("LEARN_ID")
-DIET_ID       = os.environ.get("DIET_ID")
-BRAIN_ID      = os.environ.get("BRAIN_ID")
-FINANCE_ID    = os.environ.get("FINANCE_ID")
+LEARN_ID = os.environ.get("LEARN_ID")
+DIET_ID = os.environ.get("DIET_ID")
+BRAIN_ID = os.environ.get("BRAIN_ID")
+FINANCE_ID = os.environ.get("FINANCE_ID")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_KEY}",
