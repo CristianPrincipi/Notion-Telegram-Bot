@@ -7,9 +7,9 @@ import requests
 NOTION_KEY = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID = os.environ.get("LEARN_ID")
-AREA_DIET_ID = os.environ.get("DIET_ID")
-AREA_BRAIN_ID = os.environ.get("BRAIN_ID")
-AREA_FINANCE_ID = os.environ.get("FINANCE_ID")
+DIET_ID = os.environ.get("DIET_ID")
+BRAIN_ID = os.environ.get("BRAIN_ID")
+FINANCE_ID = os.environ.get("FINANCE_ID")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_KEY}",
@@ -21,8 +21,8 @@ NOTION_HEADERS = {
 # ─── 1. AREA ROUTING ───────────────────────────────────────────────────────────
 
 def get_area_db_id(area_name: str) -> str | None:
-    """Maps 'Brain' → AREA_BRAIN_ID, 'Finance' → AREA_FINANCE_ID, etc."""
-    key = f"AREA_{area_name.upper().replace(' ', '_')}_ID"
+    """Maps 'Brain' → BRAIN_ID, 'Finance' → FINANCE_ID — matching David's existing env var convention."""
+    key = f"{area_name.upper().replace(' ', '_')}_ID"
     return os.environ.get(key)
 
 
@@ -400,7 +400,7 @@ async def handle_implement(update, user_text: str):
     # ── Validate area DB ───────────────────────────────────────────────────────
     area_db_id = get_area_db_id(area_name)
     if not area_db_id:
-        env_key = f"AREA_{area_name.upper().replace(' ', '_')}_ID"
+        env_key = f"{area_name.upper().replace(' ', '_')}_ID"
         await update.message.reply_text(
             f"❌ Area *{area_name}* is not configured.\n"
             f"Add `{env_key}` to your Railway environment variables,\n"
