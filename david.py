@@ -10,6 +10,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from telegram.ext import filters as tg_filters
 from learn import handle_learn
+from implement import handle_implement
 
 
 # --- CONFIGURATION ---
@@ -511,6 +512,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
     if re.match(r"(?i)learn\s+\w+", user_text):
         await handle_learn(update, user_text)
+        return
+
+    # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
+    if re.match(r"(?i)implement\s+.+\s*-\s*.+", user_text):
+        await handle_implement(update, user_text)
         return
 
     # --- CATEGORY SHORTCUT MAP ---
