@@ -231,7 +231,7 @@ def merge_with_claude(
             },
             json={
                 "model":      "claude-sonnet-4-5",
-                "max_tokens": 4096,
+                "max_tokens": 8192,
                 "system":     _IMPLEMENT_SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
