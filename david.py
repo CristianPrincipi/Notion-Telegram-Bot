@@ -1,4 +1,5 @@
 import os
+import io
 import requests
 import json
 import logging
@@ -189,50 +190,133 @@ def check_Task(task_name):
 
 
 # --- NEW READED BOOK --- #
-def add_New_Book(name, author, genre):
-
-    data = {
-        "parent": {"database_id": LETTI_ID},
-        "properties": {
-            "Name": {"title": [{"text": {"content": name}}]},
-            "Author": {"rich_text": [{"text": {"content": author}}]},
-            "Genre": {"multi_select": [{"name": genre}]},
-            "Area": {"relation": [{"id": LITERATURE_ID}]}
-        }
+def add_New_Book(name, author, genre, file_id=None):
+    """Create a new book entry. Returns page_id on success, None on failure."""
+    properties = {
+        "Name":   {"title": [{"text": {"content": name}}]},
+        "Author": {"rich_text": [{"text": {"content": author}}]},
+        "Genre":  {"multi_select": [{"name": genre}]},
+        "Area":   {"relation": [{"id": LITERATURE_ID}]},
     }
+    if file_id:
+        properties["PDF_ID"] = {"rich_text": [{"text": {"content": file_id}}]}
 
+    data = {"parent": {"database_id": LETTI_ID}, "properties": properties}
     response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
 
-    # --- DEBUGGING ---
     if response.status_code != 200:
         print(f"Errore: {response.status_code}")
         print(response.json())
+        return None
 
-    return response.status_code == 200
+    return response.json()["id"]
 
 
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
-    # --- FIND THE ID PAGE THROUGH BOOK'S NAME
+    """Search LETTI database for a book by name.
+    Returns (page_id, pdf_file_id) — pdf_file_id is None if no PDF is attached."""
     url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
-
     query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": book_name.strip()} #Remove blank spaces
-        }
+        "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
     }
     response = requests.post(url, headers=headers, json=query_data)
 
     if response.status_code != 200:
         print(f"Errore query Notion: {response.status_code}")
-        return None
+        return None, None
 
     results = response.json().get("results")
+    if not results:
+        return None, None
 
-    if results:
-        return results[0]["id"] # Retrieve the most equal results
-    return None
+    page = results[0]
+    page_id = page["id"]
+    pdf_props = page.get("properties", {}).get("PDF_ID", {}).get("rich_text", [])
+    pdf_file_id = pdf_props[0]["plain_text"] if pdf_props else None
+    return page_id, pdf_file_id
+
+
+def update_book_pdf(page_id, file_id):
+    """Store a Telegram file_id in the book's PDF_ID property.
+    Auto-creates the property in the LETTI database schema if it doesn't exist yet."""
+    prop_data = {"PDF_ID": {"rich_text": [{"text": {"content": file_id}}]}}
+
+    resp = requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=headers,
+        json={"properties": prop_data},
+    )
+
+    if resp.status_code == 400:
+        # Property likely missing from schema — create it, then retry
+        db_resp = requests.patch(
+            f"https://api.notion.com/v1/databases/{LETTI_ID}",
+            headers=headers,
+            json={"properties": {"PDF_ID": {"rich_text": {}}}},
+        )
+        if db_resp.status_code == 200:
+            resp = requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=headers,
+                json={"properties": prop_data},
+            )
+
+    return resp.status_code == 200
+
+
+def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
+    """Extract the text between begin_text and end_text from a PDF.
+
+    Handles multi-page documents and normalises whitespace for robust matching.
+    Returns (extracted_quote: str, error: str | None).
+    """
+    import PyPDF2
+
+    def _norm(text):
+        """Collapse all whitespace to single spaces for fuzzy matching."""
+        return re.sub(r"\s+", " ", text).strip()
+
+    try:
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        if not reader.pages:
+            return None, "PDF appears to be empty."
+
+        # Build one normalised string covering the entire book
+        raw_pages = [page.extract_text() or "" for page in reader.pages]
+        full_text = _norm("\n".join(raw_pages))
+
+        norm_begin = _norm(begin_text)
+        norm_end   = _norm(end_text)
+
+        if not norm_begin or not norm_end:
+            return None, "Begin or End text is empty."
+
+        # Locate begin marker
+        begin_pos = full_text.lower().find(norm_begin.lower())
+        if begin_pos == -1:
+            return None, (
+                f"Begin text not found in PDF.\n"
+                f"Searched for: '{begin_text[:80]}...'"
+            )
+
+        # Locate end marker (must come after begin)
+        search_from = begin_pos + len(norm_begin)
+        end_pos = full_text.lower().find(norm_end.lower(), search_from)
+        if end_pos == -1:
+            return None, (
+                f"End text not found after the begin marker.\n"
+                f"Searched for: '{end_text[:80]}...'"
+            )
+
+        # Extract inclusive of both markers
+        quote = full_text[begin_pos : end_pos + len(norm_end)]
+        return quote.strip(), None
+
+    except PyPDF2.errors.PdfReadError as e:
+        return None, f"Could not read PDF: {e}"
+    except Exception as e:
+        return None, f"PDF extraction error: {e}" 
 
 def add_Quote(page_id, quote_title, quote_text):
     # --- ADD A QUOTE BLOCK IN THE BOOK'S PAGE --- #
@@ -389,8 +473,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
-      await update.message.reply_text(f" 📖 BOOK \nAdd b [Book's Name] - [Author] - [Genre] \n\n 🖋️ QUOTE \n add q [Book's Name] - [Title] - [Quote] \n\n 📝 TASK \n Add t [Name] - [Priority] - [Date] \n\n 📋 Tasks list \n  T \n\n 💵 EXPENSE \n Add e [Name] [Amount] [Category] \n U e [Name] [Amount] [Category] \n D e [Name] \n\n 💰 Budget \n  B \n\n 🧠 Learn .. \n Learn video https://youtu.be/... \n Learn article https://...\n Learn pdf  [attach PDF]")
-      return
+        await update.message.reply_text(
+            "📖 *ADD BOOK*\n"
+            "`Add b [Name] - [Author] - [Genre]`\n"
+            "_Genres: s · h · m · p · a · ph_\n"
+            "_Attach a PDF to store the book file_\n\n"
+            "📎 *ATTACH PDF TO EXISTING BOOK*\n"
+            "`Add pdf [Book Name]`  _(send as caption on the PDF)_\n\n"
+            "🖋️ *ADD QUOTE*\n"
+            "`Add q [Book] - [Title] - [Full quote]`\n"
+            "`Add q [Book] - [Title] - [Begin text] / [End text]`\n"
+            "_The second form extracts the quote directly from the stored PDF_\n\n"
+            "📝 *ADD TASK*\n"
+            "`Add t [Name] - [Priority] - [Date]`\n"
+            "_Priority: l · m · h — Date: DD.MM or t for today_\n\n"
+            "📋 *TASK LIST* — `T`\n"
+            "✅ *CHECK TASK* — `C [Task Name]`\n\n"
+            "💵 *ADD EXPENSE* — `Add e [Name] [Amount] [Category]`\n"
+            "✏️ *UPDATE EXPENSE* — `U e [Name] [Amount] [Category]`\n"
+            "🗑️ *DELETE EXPENSE* — `D e [Name]`\n"
+            "_Categories: s · f · g · o_\n\n"
+            "💰 *BUDGET* — `B`\n\n"
+            "🧠 *LEARN*\n"
+            "`Learn video https://youtu.be/...`\n"
+            "`Learn article https://...`\n"
+            "`Learn book [Title]`\n"
+            "`Learn recipe https://...`\n"
+            "`Learn pdf`  _(attach PDF as caption)_\n\n"
+            "🔧 *IMPLEMENT*\n"
+            "`Implement [Page Name] - [Area]`\n"
+            "_Merges a Learn page into an Area Manual_",
+            parse_mode="Markdown",
+        )
+        return
 
     # --- REGEX FOR BUDGET: Look for "B"
     if re.fullmatch(r"(?i)B", user_text):
@@ -482,34 +597,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ Adding '{book_name}' '{author}' '{genre_input}' to Notion...")
 
         # CALL THE NOTION FUNCTION
-        success = add_New_Book(book_name, author, genre)
+        page_id = add_New_Book(book_name, author, genre)
 
-        if success:
+        if page_id:
             await update.message.reply_text(f"✅ Success! Book added to your database.")
         else:
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
         return
 
-    # --- REGEX FOR QUOTES: Look for "add q [Book's Name] - [Title] - [Quote]"
+    # --- REGEX FOR QUOTES ---
+    # Supports two formats:
+    #   Manual:  Add q [Book] - [Title] - [Full quote]
+    #   PDF:     Add q [Book] - [Title] - [Begin text] / [End text]
     quote_pattern = r"(?i)add q (.+?) - (.+?) - ([\s\S]+)"
     quote_match = re.search(quote_pattern, user_text)
 
     if quote_match:
-        book_name = quote_match.group(1).strip()
-        quote_title = quote_match.group(2).strip()
+        book_name     = quote_match.group(1).strip()
+        quote_title   = quote_match.group(2).strip()
         quote_content = quote_match.group(3).strip()
 
         await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
+        page_id, pdf_file_id = find_Book_Page(book_name)
 
-        page_id = find_Book_Page(book_name)
-
-        if page_id:
-            if add_Quote(page_id, quote_title, quote_content):
-                await update.message.reply_text(f"✍️ Quote added to '{book_name}'!")
-            else:
-                await update.message.reply_text("❌ Error during quote transcription.")
-        else:
+        if not page_id:
             await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
+            return
+
+        # --- PDF EXTRACTION MODE: Begin / End markers ---
+        if " / " in quote_content:
+            parts      = quote_content.split(" / ", 1)
+            begin_text = parts[0].strip()
+            end_text   = parts[1].strip()
+
+            if not pdf_file_id:
+                await update.message.reply_text(
+                    f"❌ No PDF is attached to '{book_name}'.\n"
+                    "Send the PDF with caption `Add pdf {book_name}` first.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await update.message.reply_text("📄 Downloading PDF and extracting quote…")
+            try:
+                tg_file  = await context.bot.get_file(pdf_file_id)
+                pdf_bytes = bytes(await tg_file.download_as_bytearray())
+            except Exception as e:
+                await update.message.reply_text(f"❌ Could not download PDF: {e}")
+                return
+
+            quote_content, err = extract_quote_from_pdf(pdf_bytes, begin_text, end_text)
+            if err:
+                await update.message.reply_text(f"❌ {err}")
+                return
+
+            await update.message.reply_text(
+                f"📖 Extracted quote ({len(quote_content)} chars):\n\n_{quote_content[:300]}{'...' if len(quote_content) > 300 else ''}_",
+                parse_mode="Markdown",
+            )
+
+        # --- MANUAL MODE: full quote provided directly ---
+        if add_Quote(page_id, quote_title, quote_content):
+            await update.message.reply_text(f"✍️ Quote added to '{book_name}'!")
+        else:
+            await update.message.reply_text("❌ Error during quote transcription.")
         return
 
     # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
@@ -594,23 +745,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- HANDLER FUNCTION FOR PDF ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles file uploads. If caption starts with 'Learn pdf', runs the Learn pipeline."""
+    """Handle all file uploads. Dispatches based on the message caption.
+
+    Supported captions:
+      Learn pdf                          → summarise PDF and save to Learn DB
+      Add b [Name] - [Author] - [Genre]  → create book entry AND attach the PDF
+      Add pdf [Book Name]                → attach PDF to an existing book
+    """
     doc     = update.message.document
     caption = (update.message.caption or "").strip()
 
-    if not re.match(r"(?i)learn\s+pdf", caption):
+    # ── Learn pdf ──────────────────────────────────────────────────────────────
+    if re.match(r"(?i)learn\s+pdf", caption):
+        await update.message.reply_text("⏳ Downloading your PDF…")
+        tg_file    = await context.bot.get_file(doc.file_id)
+        file_bytes = await tg_file.download_as_bytearray()
+        await handle_learn(update, caption, file_bytes=bytes(file_bytes))
+        return
+
+    # ── Add b [Name] - [Author] - [Genre]  (create book + attach PDF) ─────────
+    add_book_match = re.match(r"(?i)add b (.+?) - (.+?) - (.+)", caption)
+    if add_book_match:
+        if doc.mime_type != "application/pdf":
+            await update.message.reply_text("❌ Only PDF files are supported. Please attach a .pdf file.")
+            return
+
+        book_name    = add_book_match.group(1).strip()
+        author       = add_book_match.group(2).strip()
+        genre_input  = add_book_match.group(3).strip()
+        GENRE_MAP    = {"s": "Satira", "h": "History", "m": "Manga", "p": "Poetry", "a": "Adventure", "ph": "Philosophy"}
+        genre        = GENRE_MAP.get(genre_input.lower())
+
+        if genre is None:
+            await update.message.reply_text("❌ Invalid genre. Use: s · h · m · p · a · ph")
+            return
+
+        await update.message.reply_text(f"⏳ Creating book '{book_name}' and storing PDF…")
+
+        page_id = add_New_Book(book_name, author, genre, file_id=doc.file_id)
+        if not page_id:
+            await update.message.reply_text("❌ Could not create book in Notion.")
+            return
+
         await update.message.reply_text(
-            "📎 File received. To summarise it, send it again with caption: `Learn pdf`",
+            f"✅ *{book_name}* added with PDF attached!\n",
             parse_mode="Markdown",
         )
         return
 
-    await update.message.reply_text("⏳ Downloading your PDF…")
+    # ── Add pdf [Book Name]  (attach PDF to existing book) ────────────────────
+    add_pdf_match = re.match(r"(?i)add pdf (.+)", caption)
+    if add_pdf_match:
+        if doc.mime_type != "application/pdf":
+            await update.message.reply_text("❌ Only PDF files are supported.")
+            return
 
-    tg_file    = await context.bot.get_file(doc.file_id)
-    file_bytes = await tg_file.download_as_bytearray()
+        book_name = add_pdf_match.group(1).strip()
+        await update.message.reply_text(f"🔍 Searching '{book_name}' in library…")
 
-    await handle_learn(update, caption, file_bytes=bytes(file_bytes))
+        page_id, _ = find_Book_Page(book_name)
+        if not page_id:
+            await update.message.reply_text(f"❌ Book '{book_name}' not found. Add it first with `Add b`.", parse_mode="Markdown")
+            return
+
+        if update_book_pdf(page_id, doc.file_id):
+            await update.message.reply_text(f"✅ PDF attached to *{book_name}*!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Could not update Notion. Check your API keys.")
+        return
+
+    # ── Unknown caption ────────────────────────────────────────────────────────
+    await update.message.reply_text(
+        "📎 File received. Use one of these captions:\n"
+        "`Learn pdf` — summarise and save to Learn DB\n"
+        "`Add b [Name] - [Author] - [Genre]` — create book with PDF\n"
+        "`Add pdf [Book Name]` — attach PDF to existing book",
+        parse_mode="Markdown",
+    )
 
 
 # --- START THE BOT ---
