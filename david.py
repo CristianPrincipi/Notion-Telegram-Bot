@@ -190,18 +190,18 @@ def check_Task(task_name):
 
 
 # --- NEW READED BOOK --- #
-def add_New_Book(name, author, genre, file_id=None):
-    """Create a new book entry. Returns page_id on success, None on failure."""
-    properties = {
-        "Name":   {"title": [{"text": {"content": name}}]},
-        "Author": {"rich_text": [{"text": {"content": author}}]},
-        "Genre":  {"multi_select": [{"name": genre}]},
-        "Area":   {"relation": [{"id": LITERATURE_ID}]},
+def add_New_Book(name, author, genre):
+    """Create a new book entry. Returns page_id on success, None on failure.
+    PDFs are managed directly in the Notion 'FIle' column — no Telegram upload needed."""
+    data = {
+        "parent": {"database_id": LETTI_ID},
+        "properties": {
+            "Name":   {"title": [{"text": {"content": name}}]},
+            "Author": {"rich_text": [{"text": {"content": author}}]},
+            "Genre":  {"multi_select": [{"name": genre}]},
+            "Area":   {"relation": [{"id": LITERATURE_ID}]},
+        }
     }
-    if file_id:
-        properties["PDF_ID"] = {"rich_text": [{"text": {"content": file_id}}]}
-
-    data = {"parent": {"database_id": LETTI_ID}, "properties": properties}
     response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
 
     if response.status_code != 200:
@@ -215,7 +215,11 @@ def add_New_Book(name, author, genre, file_id=None):
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
     """Search LETTI database for a book by name.
-    Returns (page_id, pdf_file_id) — pdf_file_id is None if no PDF is attached."""
+
+    Returns (page_id, pdf_url) where pdf_url is read fresh from the Notion
+    'FIle' (Files & Media) property — supports both Notion-hosted and external files.
+    Re-querying each time ensures Notion's signed S3 URLs are always fresh.
+    """
     url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
     query_data = {
         "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
@@ -230,39 +234,21 @@ def find_Book_Page(book_name):
     if not results:
         return None, None
 
-    page = results[0]
+    page    = results[0]
     page_id = page["id"]
-    pdf_props = page.get("properties", {}).get("PDF_ID", {}).get("rich_text", [])
-    pdf_file_id = pdf_props[0]["plain_text"] if pdf_props else None
-    return page_id, pdf_file_id
 
+    # Read PDF URL from the 'FIle' Files & Media property
+    # Handles both Notion-hosted files (type='file') and external links (type='external')
+    pdf_url = None
+    file_entries = page.get("properties", {}).get("File", {}).get("files", [])
+    if file_entries:
+        entry = file_entries[0]
+        if entry.get("type") == "file":
+            pdf_url = entry.get("file", {}).get("url")       # Notion-hosted (signed S3)
+        elif entry.get("type") == "external":
+            pdf_url = entry.get("external", {}).get("url")   # External URL
 
-def update_book_pdf(page_id, file_id):
-    """Store a Telegram file_id in the book's PDF_ID property.
-    Auto-creates the property in the LETTI database schema if it doesn't exist yet."""
-    prop_data = {"PDF_ID": {"rich_text": [{"text": {"content": file_id}}]}}
-
-    resp = requests.patch(
-        f"https://api.notion.com/v1/pages/{page_id}",
-        headers=headers,
-        json={"properties": prop_data},
-    )
-
-    if resp.status_code == 400:
-        # Property likely missing from schema — create it, then retry
-        db_resp = requests.patch(
-            f"https://api.notion.com/v1/databases/{LETTI_ID}",
-            headers=headers,
-            json={"properties": {"PDF_ID": {"rich_text": {}}}},
-        )
-        if db_resp.status_code == 200:
-            resp = requests.patch(
-                f"https://api.notion.com/v1/pages/{page_id}",
-                headers=headers,
-                json={"properties": prop_data},
-            )
-
-    return resp.status_code == 200
+    return page_id, pdf_url
 
 
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
@@ -478,8 +464,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`Add b [Name] - [Author] - [Genre]`\n"
             "_Genres: s · h · m · p · a · ph_\n"
             "_Attach a PDF to store the book file_\n\n"
-            "📎 *ATTACH PDF TO EXISTING BOOK*\n"
-            "`Add pdf [Book Name]`  _(send as caption on the PDF)_\n\n"
+            "📎 *BOOK PDF*\n"
+            "_Upload the PDF directly in Notion → Letti → FIle column_\n\n"
             "🖋️ *ADD QUOTE*\n"
             "`Add q [Book] - [Title] - [Full quote]`\n"
             "`Add q [Book] - [Title] - [Begin text] / [End text]`\n"
@@ -618,7 +604,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quote_content = quote_match.group(3).strip()
 
         await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
-        page_id, pdf_file_id = find_Book_Page(book_name)
+        page_id, pdf_url = find_Book_Page(book_name)
 
         if not page_id:
             await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
@@ -630,20 +616,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             begin_text = parts[0].strip()
             end_text   = parts[1].strip()
 
-            if not pdf_file_id:
+            if not pdf_url:
                 await update.message.reply_text(
-                    f"❌ No PDF is attached to '{book_name}'.\n"
-                    "Send the PDF with caption `Add pdf {book_name}` first.",
+                    f"❌ No PDF found for *{book_name}*\n\n"
+                    "Open Notion → Letti → find the book → upload the PDF in the *FIle* column.",
                     parse_mode="Markdown",
                 )
                 return
 
-            await update.message.reply_text("📄 Downloading PDF and extracting quote…")
+            await update.message.reply_text("📄 Downloading PDF from Notion and extracting quote…")
             try:
-                tg_file  = await context.bot.get_file(pdf_file_id)
-                pdf_bytes = bytes(await tg_file.download_as_bytearray())
+                # Download directly from the Notion Files & Media URL
+                # Re-querying above already gave us a fresh signed URL
+                resp = requests.get(pdf_url, timeout=60)
+                resp.raise_for_status()
+                pdf_bytes = resp.content
             except Exception as e:
-                await update.message.reply_text(f"❌ Could not download PDF: {e}")
+                await update.message.reply_text(f"❌ Could not download PDF from Notion: {e}")
                 return
 
             quote_content, err = extract_quote_from_pdf(pdf_bytes, begin_text, end_text)
@@ -745,17 +734,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- HANDLER FUNCTION FOR PDF ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all file uploads. Dispatches based on the message caption.
+    """Handle file uploads.
 
-    Supported captions:
-      Learn pdf                          → summarise PDF and save to Learn DB
-      Add b [Name] - [Author] - [Genre]  → create book entry AND attach the PDF
-      Add pdf [Book Name]                → attach PDF to an existing book
+    Supported caption:
+      Learn pdf  → summarise PDF and save to Learn DB
+
+    Book PDFs are managed directly in Notion (FIle column) — no Telegram upload needed.
     """
     doc     = update.message.document
     caption = (update.message.caption or "").strip()
 
-    # ── Learn pdf ──────────────────────────────────────────────────────────────
     if re.match(r"(?i)learn\s+pdf", caption):
         await update.message.reply_text("⏳ Downloading your PDF…")
         tg_file    = await context.bot.get_file(doc.file_id)
@@ -763,63 +751,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_learn(update, caption, file_bytes=bytes(file_bytes))
         return
 
-    # ── Add b [Name] - [Author] - [Genre]  (create book + attach PDF) ─────────
-    add_book_match = re.match(r"(?i)add b (.+?) - (.+?) - (.+)", caption)
-    if add_book_match:
-        if doc.mime_type != "application/pdf":
-            await update.message.reply_text("❌ Only PDF files are supported. Please attach a .pdf file.")
-            return
-
-        book_name    = add_book_match.group(1).strip()
-        author       = add_book_match.group(2).strip()
-        genre_input  = add_book_match.group(3).strip()
-        GENRE_MAP    = {"s": "Satira", "h": "History", "m": "Manga", "p": "Poetry", "a": "Adventure", "ph": "Philosophy"}
-        genre        = GENRE_MAP.get(genre_input.lower())
-
-        if genre is None:
-            await update.message.reply_text("❌ Invalid genre. Use: s · h · m · p · a · ph")
-            return
-
-        await update.message.reply_text(f"⏳ Creating book '{book_name}' and storing PDF…")
-
-        page_id = add_New_Book(book_name, author, genre, file_id=doc.file_id)
-        if not page_id:
-            await update.message.reply_text("❌ Could not create book in Notion.")
-            return
-
-        await update.message.reply_text(
-            f"✅ *{book_name}* added with PDF attached!\n",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ── Add pdf [Book Name]  (attach PDF to existing book) ────────────────────
-    add_pdf_match = re.match(r"(?i)add pdf (.+)", caption)
-    if add_pdf_match:
-        if doc.mime_type != "application/pdf":
-            await update.message.reply_text("❌ Only PDF files are supported.")
-            return
-
-        book_name = add_pdf_match.group(1).strip()
-        await update.message.reply_text(f"🔍 Searching '{book_name}' in library…")
-
-        page_id, _ = find_Book_Page(book_name)
-        if not page_id:
-            await update.message.reply_text(f"❌ Book '{book_name}' not found. Add it first with `Add b`.", parse_mode="Markdown")
-            return
-
-        if update_book_pdf(page_id, doc.file_id):
-            await update.message.reply_text(f"✅ PDF attached to *{book_name}*!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Could not update Notion. Check your API keys.")
-        return
-
-    # ── Unknown caption ────────────────────────────────────────────────────────
     await update.message.reply_text(
-        "📎 File received. Use one of these captions:\n"
-        "`Learn pdf` — summarise and save to Learn DB\n"
-        "`Add b [Name] - [Author] - [Genre]` — create book with PDF\n"
-        "`Add pdf [Book Name]` — attach PDF to existing book",
+        "📎 File received.\n\n"
+        "To summarise this document, send it again with caption: `Learn pdf`\n\n"
+        "To attach a PDF to a book, open Notion → Letti → find the book → upload in the *FIle* column.",
         parse_mode="Markdown",
     )
 
