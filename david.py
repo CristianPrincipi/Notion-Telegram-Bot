@@ -12,6 +12,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
+import PyPDF2
 
 
 # --- CONFIGURATION ---
@@ -233,7 +234,6 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
     Returns (extracted_quote: str, error: str | None).
     Always run via asyncio.to_thread() — never call directly from the event loop.
     """
-    import PyPDF2
 
     def _norm(t):
         return re.sub(r"\s+", " ", t or "").strip()
