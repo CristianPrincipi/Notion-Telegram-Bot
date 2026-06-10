@@ -331,12 +331,12 @@ def add_Quote(page_id, quote_title, quote_text):
                  json={"children": batch}
         )
 
-     if response.status_code != 200:
-         print("\n===== NOTION ERROR =====")
-         print(f"Status: {response.status_code}")
-         print(response.text)
-         print("========================\n")
-         return False
+        if response.status_code != 200:
+            print("\n===== NOTION ERROR =====")
+            print(f"Status: {response.status_code}")
+            print(response.text)
+            print("========================\n")
+            return False
 
      return True
 
