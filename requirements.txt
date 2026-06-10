@@ -1,7 +1,7 @@
 python-telegram-bot[job-queue]
 requests
+PyPDF2
 pytz
 beautifulsoup4
 newspaper4k
 # lxml
-PyPDF2
