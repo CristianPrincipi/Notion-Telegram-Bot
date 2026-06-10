@@ -278,30 +278,76 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         return None, f"PDF extraction error: {e}"
 
 
+def chunk_text(text, size=1800):
+    """Split long text into chunks compatible with Notion limits."""
+    return [text[i:i + size] for i in range(0, len(text), size)]
+
+
 def add_Quote(page_id, quote_title, quote_text):
-    # --- ADD A QUOTE BLOCK IN THE BOOK'S PAGE --- #
-    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    data = {
-        "children": [
-            {
-                "object": "block",
-                "type": "heading_1",
-                "heading_1":{
-                    "rich_text": [{"type": "text", "text": {"content": quote_title}}],
-                    "color": "green"
-                }
-            },
-            {
-                "object": "block",
-                "type": "quote",
-                "quote": {
-                    "rich_text": [{"type": "text", "text": {"content": quote_text}}]
-                }
+    """Add a quote section to a book page, automatically splitting long quotes."""
+
+    children = [
+        {
+            "object": "block",
+            "type": "heading_1",
+            "heading_1": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": quote_title[:2000]
+                        }
+                    }
+                ],
+                "color": "green"
             }
-        ]
-    }
-    response = requests.patch(url, headers=headers, json=data)
-    return response.status_code == 200
+        }
+    ]
+
+    for chunk in chunk_text(quote_text):
+        children.append({
+            "object": "block",
+            "type": "quote",
+            "quote": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": chunk
+                        }
+                    }
+                ]
+            }
+        })
+
+    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+
+    for i in range(0, len(children), 100):
+    batch = children[i:i + 100]
+
+    response = requests.patch(
+        url,
+        headers=headers,
+        json={"children": batch}
+    )
+
+    if response.status_code != 200:
+        print("\n===== NOTION ERROR =====")
+        print(f"Status: {response.status_code}")
+        print(response.text)
+        print("========================\n")
+        return False
+
+return True
+
+    if response.status_code != 200:
+        print("\n===== NOTION ERROR =====")
+        print(f"Status: {response.status_code}")
+        print(response.text)
+        print("========================\n")
+        return False
+
+    return True
 
 
 # --- NEW EXPENSES FUNCTION ---
