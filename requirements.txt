@@ -4,3 +4,4 @@ pytz
 beautifulsoup4
 newspaper4k
 # lxml
+PyPDF2
