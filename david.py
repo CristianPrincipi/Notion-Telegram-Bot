@@ -323,31 +323,22 @@ def add_Quote(page_id, quote_title, quote_text):
     url = f"https://api.notion.com/v1/blocks/{page_id}/children"
 
     for i in range(0, len(children), 100):
-    batch = children[i:i + 100]
+        batch = children[i:i + 100]
 
-    response = requests.patch(
-        url,
-        headers=headers,
-        json={"children": batch}
-    )
+        response = requests.patch(
+                 url,
+                 headers=headers,
+                 json={"children": batch}
+        )
 
-    if response.status_code != 200:
-        print("\n===== NOTION ERROR =====")
-        print(f"Status: {response.status_code}")
-        print(response.text)
-        print("========================\n")
-        return False
+        if response.status_code != 200:
+            print("\n===== NOTION ERROR =====")
+            print(f"Status: {response.status_code}")
+            print(response.text)
+            print("========================\n")
+            return False
 
-return True
-
-    if response.status_code != 200:
-        print("\n===== NOTION ERROR =====")
-        print(f"Status: {response.status_code}")
-        print(response.text)
-        print("========================\n")
-        return False
-
-    return True
+     return True
 
 
 # --- NEW EXPENSES FUNCTION ---
