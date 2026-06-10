@@ -190,133 +190,93 @@ def check_Task(task_name):
 
 
 # --- NEW READED BOOK --- #
-def add_New_Book(name, author, genre, file_id=None):
-    """Create a new book entry. Returns page_id on success, None on failure."""
-    properties = {
-        "Name":   {"title": [{"text": {"content": name}}]},
-        "Author": {"rich_text": [{"text": {"content": author}}]},
-        "Genre":  {"multi_select": [{"name": genre}]},
-        "Area":   {"relation": [{"id": LITERATURE_ID}]},
+def add_New_Book(name, author, genre):
+    """Create a new book entry in Notion. Returns page_id on success, None on failure."""
+    data = {
+        "parent": {"database_id": LETTI_ID},
+        "properties": {
+            "Name":   {"title": [{"text": {"content": name}}]},
+            "Author": {"rich_text": [{"text": {"content": author}}]},
+            "Genre":  {"multi_select": [{"name": genre}]},
+            "Area":   {"relation": [{"id": LITERATURE_ID}]},
+        }
     }
-    if file_id:
-        properties["PDF_ID"] = {"rich_text": [{"text": {"content": file_id}}]}
-
-    data = {"parent": {"database_id": LETTI_ID}, "properties": properties}
     response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
-
     if response.status_code != 200:
-        print(f"Errore: {response.status_code}")
-        print(response.json())
+        print(f"Errore: {response.status_code}, {response.json()}")
         return None
-
     return response.json()["id"]
 
 
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
-    """Search LETTI database for a book by name.
-    Returns (page_id, pdf_file_id) — pdf_file_id is None if no PDF is attached."""
+    """Search LETTI database for a book by name. Returns page_id or None."""
     url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
-    query_data = {
+    response = requests.post(url, headers=headers, json={
         "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
-    }
-    response = requests.post(url, headers=headers, json=query_data)
-
+    })
     if response.status_code != 200:
         print(f"Errore query Notion: {response.status_code}")
-        return None, None
-
+        return None
     results = response.json().get("results")
-    if not results:
-        return None, None
-
-    page = results[0]
-    page_id = page["id"]
-    pdf_props = page.get("properties", {}).get("PDF_ID", {}).get("rich_text", [])
-    pdf_file_id = pdf_props[0]["plain_text"] if pdf_props else None
-    return page_id, pdf_file_id
+    return results[0]["id"] if results else None
 
 
-def update_book_pdf(page_id, file_id):
-    """Store a Telegram file_id in the book's PDF_ID property.
-    Auto-creates the property in the LETTI database schema if it doesn't exist yet."""
-    prop_data = {"PDF_ID": {"rich_text": [{"text": {"content": file_id}}]}}
 
-    resp = requests.patch(
-        f"https://api.notion.com/v1/pages/{page_id}",
-        headers=headers,
-        json={"properties": prop_data},
-    )
-
-    if resp.status_code == 400:
-        # Property likely missing from schema — create it, then retry
-        db_resp = requests.patch(
-            f"https://api.notion.com/v1/databases/{LETTI_ID}",
-            headers=headers,
-            json={"properties": {"PDF_ID": {"rich_text": {}}}},
-        )
-        if db_resp.status_code == 200:
-            resp = requests.patch(
-                f"https://api.notion.com/v1/pages/{page_id}",
-                headers=headers,
-                json={"properties": prop_data},
-            )
-
-    return resp.status_code == 200
 
 
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
-    """Extract the text between begin_text and end_text from a PDF.
+    """Extract text between begin_text and end_text from a PDF.
 
-    Handles multi-page documents and normalises whitespace for robust matching.
+    Processes pages incrementally — stops as soon as both markers are found,
+    so large books don't require reading every page.
     Returns (extracted_quote: str, error: str | None).
+    Always run via asyncio.to_thread() — never call directly from the event loop.
     """
     import PyPDF2
 
-    def _norm(text):
-        """Collapse all whitespace to single spaces for fuzzy matching."""
-        return re.sub(r"\s+", " ", text).strip()
+    def _norm(t):
+        return re.sub(r"\s+", " ", t or "").strip()
+
+    norm_begin = _norm(begin_text).lower()
+    norm_end   = _norm(end_text).lower()
+
+    if not norm_begin or not norm_end:
+        return None, "Begin or End text cannot be empty."
 
     try:
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
             return None, "PDF appears to be empty."
 
-        # Build one normalised string covering the entire book
-        raw_pages = [page.extract_text() or "" for page in reader.pages]
-        full_text = _norm("\n".join(raw_pages))
+        accumulated     = ""
+        begin_pos_found = -1
 
-        norm_begin = _norm(begin_text)
-        norm_end   = _norm(end_text)
+        for page in reader.pages:
+            accumulated += " " + _norm(page.extract_text())
+            acc_lower    = accumulated.lower()
 
-        if not norm_begin or not norm_end:
-            return None, "Begin or End text is empty."
+            if begin_pos_found == -1:
+                bp = acc_lower.find(norm_begin)
+                if bp != -1:
+                    begin_pos_found = bp
 
-        # Locate begin marker
-        begin_pos = full_text.lower().find(norm_begin.lower())
-        if begin_pos == -1:
-            return None, (
-                f"Begin text not found in PDF.\n"
-                f"Searched for: '{begin_text[:80]}...'"
-            )
+            if begin_pos_found != -1:
+                search_from = begin_pos_found + len(norm_begin)
+                ep = acc_lower.find(norm_end, search_from)
+                if ep != -1:
+                    raw = accumulated[begin_pos_found : ep + len(norm_end)]
+                    return _norm(raw), None
 
-        # Locate end marker (must come after begin)
-        search_from = begin_pos + len(norm_begin)
-        end_pos = full_text.lower().find(norm_end.lower(), search_from)
-        if end_pos == -1:
-            return None, (
-                f"End text not found after the begin marker.\n"
-                f"Searched for: '{end_text[:80]}...'"
-            )
-
-        # Extract inclusive of both markers
-        quote = full_text[begin_pos : end_pos + len(norm_end)]
-        return quote.strip(), None
+        if begin_pos_found == -1:
+            return None, f"Begin text not found in PDF.\nSearched for: \'{begin_text[:100]}\'"
+        return None, f"End text not found after begin marker.\nSearched for: \'{end_text[:100]}\'"
 
     except PyPDF2.errors.PdfReadError as e:
         return None, f"Could not read PDF: {e}"
     except Exception as e:
-        return None, f"PDF extraction error: {e}" 
+        return None, f"PDF extraction error: {e}"
+
 
 def add_Quote(page_id, quote_title, quote_text):
     # --- ADD A QUOTE BLOCK IN THE BOOK'S PAGE --- #
@@ -616,7 +576,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quote_content = quote_match.group(3).strip()
 
         await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
-        page_id, pdf_file_id = find_Book_Page(book_name)
+        page_id = find_Book_Page(book_name)
 
         if not page_id:
             await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
@@ -751,12 +711,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Find book in Notion
         await update.message.reply_text(f"🔍 Searching \'{book_name}\' in library…")
-        page_id, _ = find_Book_Page(book_name)
+        page_id = find_Book_Page(book_name)
         if not page_id:
             await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
             return
 
-        # Download PDF directly from the Telegram message
+        # Download PDF from Telegram
         await update.message.reply_text("📄 Reading PDF and extracting quote…")
         try:
             tg_file   = await context.bot.get_file(doc.file_id)
@@ -765,8 +725,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Could not download PDF: {e}")
             return
 
-        # Extract quote
-        quote_content, err = extract_quote_from_pdf(pdf_bytes, begin_text, end_text)
+        # Run extraction in a background thread (PyPDF2 is synchronous and CPU-bound;
+        # calling it directly blocks the event loop and freezes all bot responses)
+        try:
+            quote_content, err = await asyncio.wait_for(
+                asyncio.to_thread(extract_quote_from_pdf, pdf_bytes, begin_text, end_text),
+                timeout=120,  # 2-minute hard cap
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                "❌ Extraction timed out (2 min).\n"
+                "Try shorter Begin/End markers or a smaller PDF."
+            )
+            return
+
         if err:
             await update.message.reply_text(f"❌ {err}")
             return
