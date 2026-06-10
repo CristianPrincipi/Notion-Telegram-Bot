@@ -338,7 +338,7 @@ def add_Quote(page_id, quote_title, quote_text):
             print("========================\n")
             return False
 
-     return True
+    return True
 
 
 # --- NEW EXPENSES FUNCTION ---
