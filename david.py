@@ -716,27 +716,35 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
             return
 
-        # Download PDF from Telegram
+        # Download PDF from Telegram + extract quote — both run in a background
+        # thread under a single timeout.
+        #
+        # WHY: tg_file.download_as_bytearray() has no built-in timeout and can hang
+        # forever on Railway. requests.get() with timeout=30 fails fast if the
+        # download stalls. asyncio.wait_for covers the entire operation so the
+        # 2-minute cap is always enforced.
         await update.message.reply_text("📄 Reading PDF and extracting quote…")
         try:
-            tg_file   = await context.bot.get_file(doc.file_id)
-            pdf_bytes = bytes(await tg_file.download_as_bytearray())
-        except Exception as e:
-            await update.message.reply_text(f"❌ Could not download PDF: {e}")
-            return
+            tg_file = await context.bot.get_file(doc.file_id)
+            # tg_file.file_path is the full Telegram CDN URL in PTB v20+
 
-        # Run extraction in a background thread (PyPDF2 is synchronous and CPU-bound;
-        # calling it directly blocks the event loop and freezes all bot responses)
-        try:
+            def _download_and_extract():
+                resp = requests.get(tg_file.file_path, timeout=30)
+                resp.raise_for_status()
+                return extract_quote_from_pdf(resp.content, begin_text, end_text)
+
             quote_content, err = await asyncio.wait_for(
-                asyncio.to_thread(extract_quote_from_pdf, pdf_bytes, begin_text, end_text),
-                timeout=120,  # 2-minute hard cap
+                asyncio.to_thread(_download_and_extract),
+                timeout=120,
             )
         except asyncio.TimeoutError:
             await update.message.reply_text(
-                "❌ Extraction timed out (2 min).\n"
+                "❌ Timed out after 2 minutes.\n"
                 "Try shorter Begin/End markers or a smaller PDF."
             )
+            return
+        except Exception as e:
+            await update.message.reply_text(f"❌ Download error: {e}")
             return
 
         if err:
