@@ -7,9 +7,7 @@ import requests
 NOTION_KEY = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID = os.environ.get("LEARN_ID")
-DIET_ID = os.environ.get("DIET_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
-FINANCE_ID = os.environ.get("FINANCE_ID")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_KEY}",
@@ -396,6 +394,12 @@ async def handle_implement(update, user_text: str):
 
     page_name = match.group(1).strip()
     area_name = match.group(2).strip()
+
+    # ── Diet uses a dedicated structured handler (nested toggles + surgical updates) ──
+    if area_name.lower() == "diet":
+        from implement_diet import handle_implement_diet
+        await handle_implement_diet(update, page_name)
+        return
 
     # ── Validate area DB ───────────────────────────────────────────────────────
     area_db_id = get_area_db_id(area_name)
