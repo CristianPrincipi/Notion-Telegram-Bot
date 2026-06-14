@@ -3,17 +3,17 @@ import re
 import json
 import requests
 
+from notion_client import (
+    search_page_in_db, get_children, blocks_to_text, append_children,
+    delete_block, create_page, get_page_title,
+    paragraph as _paragraph, heading2 as _heading2, heading3 as _heading3,
+    callout as _callout, bullet as _bullet, numbered as _numbered, divider as _divider,
+)
+
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-NOTION_KEY = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID = os.environ.get("LEARN_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
-
-NOTION_HEADERS = {
-    "Authorization": f"Bearer {NOTION_KEY}",
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28",
-}
 
 
 # ─── 1. AREA ROUTING ───────────────────────────────────────────────────────────
@@ -24,137 +24,40 @@ def get_area_db_id(area_name: str) -> str | None:
     return os.environ.get(key)
 
 
-# ─── 2. NOTION HELPERS ─────────────────────────────────────────────────────────
+# ─── 2. NOTION HELPERS (thin wrappers over the shared client) ──────────────────
+# Most helpers now live in notion_client. These wrappers preserve the existing
+# call sites in this file (get_all_blocks, clear_page_blocks, etc.).
 
-def _extract_rich_text(rich_text_list: list) -> str:
-    return "".join(rt.get("plain_text", "") for rt in rich_text_list)
-
-
-def _get_page_title_from_result(page: dict) -> str:
-    for prop in page.get("properties", {}).values():
-        if prop.get("type") == "title":
-            return _extract_rich_text(prop.get("title", []))
-    return "Untitled"
-
-
-def search_page_in_db(db_id: str, query: str, exact: bool = False) -> tuple[dict | None, str | None]:
-    """Search a Notion database for a page by title. Returns (page_object, error)."""
-    try:
-        filter_type = "equals" if exact else "contains"
-        resp = requests.post(
-            f"https://api.notion.com/v1/databases/{db_id}/query",
-            headers=NOTION_HEADERS,
-            json={"filter": {"property": "Name", "title": {filter_type: query}}},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return None, f"Notion {resp.status_code}: {resp.text[:200]}"
-        results = resp.json().get("results", [])
-        if not results:
-            return None, f"No page found matching '{query}'"
-        return results[0], None
-    except Exception as e:
-        return None, str(e)
+_get_page_title_from_result = get_page_title  # alias for the old name used below
 
 
 def get_all_blocks(page_id: str) -> tuple[list[dict], str | None]:
-    """Retrieve all top-level blocks of a Notion page (handles pagination)."""
-    blocks, cursor = [], None
-    try:
-        while True:
-            params = {"page_size": 100}
-            if cursor:
-                params["start_cursor"] = cursor
-            resp = requests.get(
-                f"https://api.notion.com/v1/blocks/{page_id}/children",
-                headers=NOTION_HEADERS,
-                params=params,
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return [], f"Notion {resp.status_code}: {resp.text[:200]}"
-            data = resp.json()
-            blocks.extend(data.get("results", []))
-            if not data.get("has_more"):
-                break
-            cursor = data.get("next_cursor")
-        return blocks, None
-    except Exception as e:
-        return [], str(e)
-
-
-def blocks_to_text(blocks: list[dict]) -> str:
-    """Convert Notion blocks to readable text so Claude can process them."""
-    lines = []
-    for block in blocks:
-        btype = block.get("type", "")
-        content = block.get(btype, {})
-        text = _extract_rich_text(content.get("rich_text", []))
-
-        if btype == "paragraph"            and text: lines.append(text)
-        elif btype == "heading_1"          and text: lines.append(f"# {text}")
-        elif btype == "heading_2"          and text: lines.append(f"## {text}")
-        elif btype == "heading_3"          and text: lines.append(f"### {text}")
-        elif btype == "callout"            and text: lines.append(f"> 💡 {text}")
-        elif btype == "quote"              and text: lines.append(f'> "{text}"')
-        elif btype == "bulleted_list_item" and text: lines.append(f"• {text}")
-        elif btype == "numbered_list_item" and text: lines.append(f"- {text}")
-        elif btype == "divider":                     lines.append("---")
-    return "\n".join(lines)
+    """Retrieve all top-level blocks of a Notion page. Delegates to shared get_children."""
+    return get_children(page_id)
 
 
 def clear_page_blocks(blocks: list[dict]) -> None:
-    """Archive all blocks by deleting them one by one."""
+    """Archive all blocks by deleting them one by one (via shared delete_block)."""
     for block in blocks:
         block_id = block.get("id")
         if block_id:
-            requests.delete(
-                f"https://api.notion.com/v1/blocks/{block_id}",
-                headers=NOTION_HEADERS,
-                timeout=10,
-            )
+            delete_block(block_id)
 
 
 def append_blocks_to_page(page_id: str, blocks: list[dict]) -> str | None:
-    """Append blocks to a page in batches of 100. Returns error or None."""
-    try:
-        remaining = blocks
-        while remaining:
-            batch, remaining = remaining[:100], remaining[100:]
-            resp = requests.patch(
-                f"https://api.notion.com/v1/blocks/{page_id}/children",
-                headers=NOTION_HEADERS,
-                json={"children": batch},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return f"Notion {resp.status_code}: {resp.text[:200]}"
-        return None
-    except Exception as e:
-        return str(e)
+    """Append blocks to a page in batches. Returns error string or None."""
+    _, err = append_children(page_id, blocks)
+    return err
 
 
 def create_manual_page(db_id: str, blocks: list[dict]) -> tuple[str | None, str | None]:
     """Create a new Manual page in a database. Returns (page_id, error)."""
-    try:
-        resp = requests.post(
-            "https://api.notion.com/v1/pages",
-            headers=NOTION_HEADERS,
-            json={
-                "parent": {"database_id": db_id},
-                "icon": {"emoji": "📋"},
-                "properties": {"Name": {"title": [{"text": {"content": "Manual"}}]}},
-                "children": blocks[:100],
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return None, f"Notion {resp.status_code}: {resp.text[:300]}"
-        page_id = resp.json()["id"]
-        err = append_blocks_to_page(page_id, blocks[100:])
-        return page_id, err
-    except Exception as e:
-        return None, str(e)
+    return create_page(
+        db_id,
+        {"Name": {"title": [{"text": {"content": "Manual"}}]}},
+        children=blocks,
+        icon="📋",
+    )
 
 
 # ─── 3. CLAUDE MERGE ───────────────────────────────────────────────────────────
@@ -252,10 +155,8 @@ def merge_with_claude(
 
 
 # ─── 4. NOTION BLOCK BUILDER ───────────────────────────────────────────────────
-
-def _paragraph(text: str) -> dict:
-    return {"object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+# Basic builders are imported from notion_client. Only the two with custom bold
+# formatting are defined locally.
 
 def _labeled_paragraph(label: str, text: str) -> dict:
     """Paragraph with a bold label prefix: 'Label: content'."""
@@ -265,36 +166,12 @@ def _labeled_paragraph(label: str, text: str) -> dict:
                 {"type": "text", "text": {"content": text}},
             ]}}
 
-def _heading2(text: str) -> dict:
-    return {"object": "block", "type": "heading_2",
-            "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _heading3(text: str) -> dict:
-    return {"object": "block", "type": "heading_3",
-            "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _callout(text: str, emoji: str = "📋", color: str = "gray_background") -> dict:
-    return {"object": "block", "type": "callout",
-            "callout": {"rich_text": [{"type": "text", "text": {"content": text}}],
-                        "icon": {"emoji": emoji}, "color": color}}
-
-def _bullet(text: str) -> dict:
-    return {"object": "block", "type": "bulleted_list_item",
-            "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
 def _bullet_bold_prefix(bold_part: str, rest: str) -> dict:
     return {"object": "block", "type": "bulleted_list_item",
             "bulleted_list_item": {"rich_text": [
                 {"type": "text", "text": {"content": bold_part}, "annotations": {"bold": True}},
                 {"type": "text", "text": {"content": f" — {rest}"}},
             ]}}
-
-def _numbered(text: str) -> dict:
-    return {"object": "block", "type": "numbered_list_item",
-            "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _divider() -> dict:
-    return {"object": "block", "type": "divider", "divider": {}}
 
 
 def build_manual_blocks(merged: dict, source_title: str) -> list[dict]:
@@ -303,7 +180,7 @@ def build_manual_blocks(merged: dict, source_title: str) -> list[dict]:
 
     # ── Overview callout ───────────────────────────────────────────────────────
     if merged.get("overview"):
-        blocks.append(_callout(merged["overview"], "📋"))
+        blocks.append(_callout(merged["overview"], "📋", "gray_background"))
     blocks.append(_divider())
 
     # ── Perfect Process ────────────────────────────────────────────────────────
