@@ -89,7 +89,7 @@ def budget():
         msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
     msg += "━━━━━━━━━━━━━━━\n"
     msg += f"**Spent: €{grand_Total:.2f}**\n"
-    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
+    msg += f"**Remaining: €{remaining:.2f}**"
 
     return msg
 
