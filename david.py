@@ -12,6 +12,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
+from reminder import handle_remind, build_today_message, build_tomorrow_message
 import PyPDF2
 
 from config import (
@@ -29,7 +30,6 @@ EXPENSES_ID = os.environ.get("EXPENSES_ID")
 MONTH_ID = os.environ.get("MONTH_ID")
 LETTI_ID = os.environ.get("LETTI_ID")
 LITERATURE_ID = os.environ.get("LITERATURE_ID")
-TASK_ID = os.environ.get("TASK_ID")
 CHAT_ID = os.environ.get("CHAT_ID")
 LEARN_ID = os.environ.get("LEARN_ID")
 DIET_ID = os.environ.get("DIET_ID")
@@ -89,100 +89,9 @@ def budget():
         msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
     msg += "━━━━━━━━━━━━━━━\n"
     msg += f"**Spent: €{grand_Total:.2f}**\n"
-    msg += f"**Remaining: €{remaining:.2f}**"
+    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
 
     return msg
-
-
-# --- TASK LIST --- #
-def task_List():
-    url = f"https://api.notion.com/v1/databases/{TASK_ID}/query"
-    query_data = {"filter": {"and": [{"property": "Date", "date": {"equals": datetime.now().strftime("%Y-%m-%d")}},{"property": " ", "checkbox": {"equals": False}}]}}
-    response = notion_request("POST", url, json=query_data)
-
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-        return None
-
-    results = response.json().get("results", [])
-    msg = "📝 **Daily Tasks**\n━━━━━━━━━━━━━━━\n"
-
-    if not results:
-        msg += "No tasks for today!"
-        return msg
-
-    for page in results:
-        props = page.get("properties", {})
-        name = props.get("Name", {}).get("title", [{}])[0].get("plain_text", "Unnamed Task")
-        priority = props.get("Priority", {}).get("select", {}).get("name", "No Priority")
-        msg += f"•  {name} [{priority}]\n"
-
-    return msg
-
-
-# --- NEW TASK --- #
-def add_Task(name, priority, date):
-
-    # --- GENERATE DATE ---
-    # Parse the input date string (DD.MM)
-    parsed_date = datetime.strptime(date, "%d.%m")
-    # Get the current year
-    current_year = datetime.now().year
-    # Replace the year in the parsed date with the current year and format it as YYYY-MM-DD
-    format_date = parsed_date.replace(year=current_year).strftime("%Y-%m-%d")
-
-    data = {
-        "parent": {"database_id": TASK_ID},
-        "properties": {
-            "Name": {"title": [{"text": {"content": name}}]},
-            "Date": {"date": {"start": format_date}},
-            "Priority": {"select": {"name": priority}}
-        }
-    }
-    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
-
-    # --- DEBUGGING ---
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-        print(response.json())
-    return response.status_code == 200
-
-
-def check_Task(task_name):
-    # 1. Find the task page ID
-    url = f"https://api.notion.com/v1/databases/{TASK_ID}/query"
-    query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": task_name.strip()}
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
-
-    if response.status_code != 200:
-        print(f"Error querying Notion for task: {response.status_code}")
-        return False, None
-
-    results = response.json().get("results")
-
-    if not results:
-        print(f"No task found with name: {task_name}")
-        return False, None
-
-    page_id = results[0]["id"] # Retrieve the first matching result
-
-    # 2. Update the checkbox property for the found page
-    update_url = f"https://api.notion.com/v1/pages/{page_id}"
-    update_data = {"properties": { " ": { "checkbox": True }}}
-
-    update_response = notion_request("PATCH", update_url, json=update_data)
-
-    if update_response.status_code != 200:
-        print(f"Error updating task checkbox: {update_response.status_code}")
-        print(update_response.json())
-        return False, page_id
-
-    return True, page_id
 
 
 # --- NEW READED BOOK --- #
@@ -453,16 +362,21 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         print(f"[notify_error] failed to report error in {where}: {err}")
 
 
-# --- SCHEDULED JOB: SEND DAILY TASKS --- #
-async def send_daily_tasks(context: ContextTypes.DEFAULT_TYPE):
+# --- SCHEDULED JOB: DAILY REMINDER POLL --- #
+# Polls Google Calendar each morning (Europe/Rome) and pings Telegram for today's
+# and tomorrow's events. Calendar is the source of truth, so reminders survive
+# Railway restarts — nothing is held in memory.
+async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
     try:
-        result_text = task_List()
-        if result_text:
-            await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
-        else:
-            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch tasks from Notion.")
+        today_msg    = build_today_message()
+        tomorrow_msg = build_tomorrow_message()
+
+        if today_msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=today_msg, parse_mode='Markdown')
+        if tomorrow_msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=tomorrow_msg, parse_mode='Markdown')
     except Exception as e:
-        await notify_error(context, "send_daily_tasks", e)
+        await notify_error(context, "send_daily_reminders", e)
 
 
 # --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
@@ -493,11 +407,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📄 *ADD QUOTE — from PDF*\n"
             "_Attach the PDF and use this caption:_\n"
             "`Add q [Book] - [Title] - [Begin text] / [End text]`\n\n"
-            "📝 *ADD TASK*\n"
-            "`Add t [Name] - [Priority] - [Date]`\n"
-            "_Priority: l · m · h — Date: DD.MM or t for today_\n\n"
-            "📋 *TASK LIST* — `T`\n"
-            "✅ *CHECK TASK* — `C [Task Name]`\n\n"
+            "📅 *REMINDER*\n"
+            "`Remind [Name] [Date] - [Time]`\n"
+            "_e.g. Remind Dentist 12.06 - 14.30 (date DD.MM, time HH.MM 24h)_\n\n"
             "💵 *ADD EXPENSE* — `Add e [Name] [Amount] [Category]`\n"
             "✏️ *UPDATE EXPENSE* — `U e [Name] [Amount] [Category]`\n"
             "🗑️ *DELETE EXPENSE* — `D e [Name]`\n"
@@ -525,62 +437,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Error: Could not calculate budget.")
         return
 
-    # --- REGEX FOR DAILY TASKS: Look for "T"
-    if re.fullmatch(r"(?i)T", user_text):
-        result_text = task_List()
-        if result_text:
-            await update.message.reply_text(result_text, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("❌ Error: Could not see your tasks.")
-        return
-
-    # --- REGEX FOR NEW TASK: Look for "Add t [Name] - [Priority] - [Date]"
-    task_pattern = r"(?i)add t (.+?) - (.+?) - (.+)"
-    task_match = re.search(task_pattern, user_text)
-
-    if task_match:
-        name = task_match.group(1).strip()
-        priority_input = task_match.group(2).strip()
-        date_Input = task_match.group(3).strip()
-
-        if date_Input == "t":
-            date = datetime.now().strftime("%d.%m")
-        else:
-            date = date_Input
-
-        priority = PRIORITY_MAP.get(priority_input.lower())
-
-        if priority is None:
-            await update.message.reply_text(f"❌ Error: Invalid priority. Please use: {priority_help()} (Low / Mid / High).")
-            return
-
-        await update.message.reply_text(f"⏳ Adding '{name}' '{priority}' '{date}' to Notion Calendar...")
-
-        # CALL THE NOTION FUNCTION
-        success = add_Task(name, priority, date)
-
-        if success:
-            await update.message.reply_text(f"✅ Success! Task added to your database.")
-        else:
-            await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
-        return
-
-    # --- REGEX FOR CHECK TASK: Look for "C [Task Name]"
-    check_task_match = re.fullmatch(r"(?i)C (.+)", user_text)
-    if check_task_match:
-        task_name = check_task_match.group(1).strip()
-
-        await update.message.reply_text(f"⏳ Checking task '{task_name}' in Notion...")
-
-        success, page_id = check_Task(task_name)
-
-        if success:
-            await update.message.reply_text(f"✅ Success! Task '{task_name}' marked as complete.")
-        else:
-            if page_id is None:
-                await update.message.reply_text(f"❌ Error: Task '{task_name}' not found.")
-            else:
-                await update.message.reply_text(f"❌ Error: Could not update task '{task_name}'. Check your API keys or Notion permissions.")
+    # --- REGEX FOR REMINDER: "Remind [Name] [Date] - [Time]" ---
+    if re.match(r"(?i)remind\s+", user_text):
+        await handle_remind(update, user_text)
         return
 
     # --- REGEX FOR NEW BOOK: Look for "Add b [Book's Name] - [Author] - [Genre]"
@@ -826,9 +685,10 @@ if __name__ == '__main__':
     # --- SCHEDULED JOBS ---
     try:
         job_queue = application.job_queue
-        job_queue.run_daily(send_daily_tasks, time=time(hour=7, minute=0, tzinfo=milan_tz))               # 7:00 AM Milan
-        job_queue.run_daily(send_daily_tasks, time=time(hour=14, minute=20, tzinfo=milan_tz))             # 14:20 PM Milan
-        job_queue.run_daily(send_weekly_budget,time=time(hour=9, minute=30, tzinfo=milan_tz),days=(5, 6)) # 0=Monday ... 6=Sunday
+        # Daily reminder poll at 07:30 Milan — pings today's + tomorrow's calendar events.
+        # 07:30 catches early appointments (≥08:00 covered with >30 min lead time).
+        job_queue.run_daily(send_daily_reminders, time=time(hour=7, minute=30, tzinfo=milan_tz))
+        job_queue.run_daily(send_weekly_budget, time=time(hour=9, minute=30, tzinfo=milan_tz), days=(5, 6))  # 0=Mon ... 6=Sun
         print("✅ Scheduled jobs registered.")
     except Exception as e:
         print(f"⚠️ Scheduled jobs not available: {e}")
