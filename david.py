@@ -14,6 +14,12 @@ from learn import handle_learn
 from implement import handle_implement
 import PyPDF2
 
+from config import (
+    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
+    genre_help, category_help, priority_help,
+)
+from notion_client import notion_request
+
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -48,53 +54,42 @@ def budget():
     query_data = {
         "filter": {
             "property": "Account",
-            "relation": {
-                "contains": MONTH_ID
-            }
+            "relation": {"contains": MONTH_ID},
         }
     }
-    response = requests.post(url, headers=headers, json=query_data)
+    response = notion_request("POST", url, json=query_data)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code}")
         return None
 
     results = response.json().get("results", [])
-    categories = {}
-    category_Totals = []
+
+    # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
+    cat_Tot = {}
     grand_Total = 0.0
 
     for page in results:
         props = page.get("properties", {})
 
-        # Get Amount
-        amount = props.get("Amount", {}).get("number", 0) or 0
-        grand_Total += amount
+        line_amount = props.get("Amount", {}).get("number", 0) or 0
+        grand_Total += line_amount
 
-        # Get Category Name
         cat_multi = props.get("Category", {}).get("multi_select", [])
         category_name = cat_multi[0].get("name", "Other") if cat_multi else "Other"
 
-        # Aggregate by category
-        category_Totals.append((category_name, amount))
-        cat_Tot = {}
+        cat_Tot[category_name] = cat_Tot.get(category_name, 0) + line_amount
 
-        for cat, amount in category_Totals:
-            if cat in cat_Tot:
-                cat_Tot[cat] += amount
-            else:
-              cat_Tot[cat] = amount
+    remaining = BUDGET_CEILING - grand_Total
 
-    # Construct Message
+    # Construct message — show every category dynamically (not just the hardcoded 4)
     msg = "💰 **Monthly Budget**\n"
-    msg += f"━━━━━━━━━━━━━━━\n"
-    msg += f"**Food: €{cat_Tot.get('Food', 0):.2f} \n**"
-    msg += f"**Shopping: €{cat_Tot.get('Shopping', 0):.2f}\n**"
-    msg += f"**Gift: €{cat_Tot.get('Gift', 0):.2f}\n**"
-    msg += f"**Other: €{cat_Tot.get('Other', 0):.2f}\n**"
-    msg += f"━━━━━━━━━━━━━━━\n"
-    msg += f"**Total: €{grand_Total:.2f} \n**"
-    msg += f"**Total: €{300 - grand_Total:.2f}**"
+    msg += "━━━━━━━━━━━━━━━\n"
+    for cat in sorted(cat_Tot, key=lambda c: cat_Tot[c], reverse=True):
+        msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
+    msg += "━━━━━━━━━━━━━━━\n"
+    msg += f"**Spent: €{grand_Total:.2f}**\n"
+    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
 
     return msg
 
@@ -103,7 +98,7 @@ def budget():
 def task_List():
     url = f"https://api.notion.com/v1/databases/{TASK_ID}/query"
     query_data = {"filter": {"and": [{"property": "Date", "date": {"equals": datetime.now().strftime("%Y-%m-%d")}},{"property": " ", "checkbox": {"equals": False}}]}}
-    response = requests.post(url, headers=headers, json=query_data)
+    response = notion_request("POST", url, json=query_data)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code}")
@@ -144,7 +139,7 @@ def add_Task(name, priority, date):
             "Priority": {"select": {"name": priority}}
         }
     }
-    response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
 
     # --- DEBUGGING ---
     if response.status_code != 200:
@@ -162,7 +157,7 @@ def check_Task(task_name):
             "title": {"contains": task_name.strip()}
         }
     }
-    response = requests.post(url, headers=headers, json=query_data)
+    response = notion_request("POST", url, json=query_data)
 
     if response.status_code != 200:
         print(f"Error querying Notion for task: {response.status_code}")
@@ -180,7 +175,7 @@ def check_Task(task_name):
     update_url = f"https://api.notion.com/v1/pages/{page_id}"
     update_data = {"properties": { " ": { "checkbox": True }}}
 
-    update_response = requests.patch(update_url, headers=headers, json=update_data)
+    update_response = notion_request("PATCH", update_url, json=update_data)
 
     if update_response.status_code != 200:
         print(f"Error updating task checkbox: {update_response.status_code}")
@@ -202,7 +197,7 @@ def add_New_Book(name, author, genre):
             "Area":   {"relation": [{"id": LITERATURE_ID}]},
         }
     }
-    response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
     if response.status_code != 200:
         print(f"Errore: {response.status_code}, {response.json()}")
         return None
@@ -213,7 +208,7 @@ def add_New_Book(name, author, genre):
 def find_Book_Page(book_name):
     """Search LETTI database for a book by name. Returns page_id or None."""
     url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
-    response = requests.post(url, headers=headers, json={
+    response = notion_request("POST", url, json={
         "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
     })
     if response.status_code != 200:
@@ -325,9 +320,9 @@ def add_Quote(page_id, quote_title, quote_text):
     for i in range(0, len(children), 100):
         batch = children[i:i + 100]
 
-        response = requests.patch(
+        response = notion_request(
+                 "PATCH",
                  url,
-                 headers=headers,
                  json={"children": batch}
         )
 
@@ -359,7 +354,7 @@ def add_Expenses(name, amount, category):
         }
     }
 
-    response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
 
     # --- DEBUGGING --- #
     if response.status_code != 200:
@@ -379,7 +374,7 @@ def update_Expense(name, amount, category):
             "title": {"contains": name.strip()}
         }
     }
-    response = requests.post(url, headers=headers, json=query_data)
+    response = notion_request("POST", url, json=query_data)
 
     if response.status_code != 200:
         print(f"Error querying Notion for expense: {response.status_code}")
@@ -400,7 +395,7 @@ def update_Expense(name, amount, category):
             "Category": {"multi_select": [{"name": category}]}
         }
     }
-    update_response = requests.patch(update_url, headers=headers, json=update_data)
+    update_response = notion_request("PATCH", update_url, json=update_data)
 
     if update_response.status_code != 200:
         print(f"Error updating expense: {update_response.status_code}")
@@ -420,7 +415,7 @@ def delete_Expense(name):
             "title": {"contains": name.strip()}
         }
     }
-    response = requests.post(url, headers=headers, json=query_data)
+    response = notion_request("POST", url, json=query_data)
 
     if response.status_code != 200:
         print(f"Error querying Notion for expense: {response.status_code}")
@@ -435,7 +430,7 @@ def delete_Expense(name):
 
     # 2. Archive the page (Notion API does not support hard delete)
     update_url = f"https://api.notion.com/v1/pages/{page_id}"
-    update_response = requests.patch(update_url, headers=headers, json={"archived": True})
+    update_response = notion_request("PATCH", update_url, json={"archived": True})
 
     if update_response.status_code != 200:
         print(f"Error archiving expense: {update_response.status_code}")
@@ -445,22 +440,41 @@ def delete_Expense(name):
     return True, page_id
 
 
+# --- ERROR REPORTING HELPER --- #
+async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exception):
+    """Send a Telegram message to the owner when something fails silently in the background."""
+    try:
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"⚠️ David error in *{where}*:\n`{type(err).__name__}: {err}`",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        print(f"[notify_error] failed to report error in {where}: {err}")
+
+
 # --- SCHEDULED JOB: SEND DAILY TASKS --- #
 async def send_daily_tasks(context: ContextTypes.DEFAULT_TYPE):
-    result_text = task_List()
-    if result_text:
-        await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
-    else:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch tasks from Notion.")
+    try:
+        result_text = task_List()
+        if result_text:
+            await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch tasks from Notion.")
+    except Exception as e:
+        await notify_error(context, "send_daily_tasks", e)
 
 
 # --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
 async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
-    result_text = budget()
-    if result_text:
-        await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
-    else:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
+    try:
+        result_text = budget()
+        if result_text:
+            await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
+        else:
+            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
+    except Exception as e:
+        await notify_error(context, "send_weekly_budget", e)
 
 
 # --- TELEGRAM MESSAGE HANDLER ---
@@ -521,8 +535,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR NEW TASK: Look for "Add t [Name] - [Priority] - [Date]"
-    PRIORITY_MAP = {"l": "Low", "m": "Mid", "h": "High"}
-
     task_pattern = r"(?i)add t (.+?) - (.+?) - (.+)"
     task_match = re.search(task_pattern, user_text)
 
@@ -539,7 +551,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         priority = PRIORITY_MAP.get(priority_input.lower())
 
         if priority is None:
-            await update.message.reply_text("❌ Error: Invalid priority. Please use 'l' (Low), 'm' (Medium), or 'h' (High).")
+            await update.message.reply_text(f"❌ Error: Invalid priority. Please use: {priority_help()} (Low / Mid / High).")
             return
 
         await update.message.reply_text(f"⏳ Adding '{name}' '{priority}' '{date}' to Notion Calendar...")
@@ -571,9 +583,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Error: Could not update task '{task_name}'. Check your API keys or Notion permissions.")
         return
 
-    # --- GENRE SHORTCUT MAP ---
-    GENRE_MAP = {"s": "Satira", "h": "History", "m": "Manga", "p": "Poetry", "a": "Adventure", "ph": "Philosophy"}
-
     # --- REGEX FOR NEW BOOK: Look for "Add b [Book's Name] - [Author] - [Genre]"
     book_pattern = r"(?i)add b (.+?) - (.+?) - (.+)"
     book_match = re.search(book_pattern, user_text)
@@ -586,7 +595,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         genre = GENRE_MAP.get(genre_input.lower())
 
         if genre is None: # Added check for invalid genre
-            await update.message.reply_text("❌ Error: Invalid genre. Please use 's', 'h', 'm', 'p', 'a', or 'ph'.")
+            await update.message.reply_text(f"❌ Error: Invalid genre. Please use: {genre_help()}")
             return
 
         await update.message.reply_text(f"⏳ Adding '{book_name}' '{author}' '{genre_input}' to Notion...")
@@ -645,16 +654,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_implement(update, user_text)
         return
 
-    # --- CATEGORY SHORTCUT MAP ---
-    CATEGORY_MAP = {"s": "Shopping", "f": "Food", "g": "Gift", "o": "Other"}
-
     # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
     update_expense_match = re.fullmatch(r"(?i)U e (.+?) (\d+\.?\d*)(?:\s+(\w+))?", user_text)
     if update_expense_match:
         name = update_expense_match.group(1).strip()
         amount = float(update_expense_match.group(2))
         category_input = update_expense_match.group(3)
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", "Food")
+        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
@@ -700,7 +706,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if name == "c": name = "Carrefour"
 
         # --- IF CATEGORY = NULL -> FOOD
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", "Food")
+        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
 
         await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
 
@@ -834,6 +840,23 @@ if __name__ == '__main__':
            
     doc_handler = MessageHandler(filters.Document.ALL, handle_document)
     application.add_handler(doc_handler)
+
+    # --- GLOBAL ERROR HANDLER ---
+    # Any unhandled exception in a handler lands here and is reported to you,
+    # instead of dying silently in the Railway logs.
+    async def on_error(update, context):
+        err = context.error
+        print(f"[on_error] {type(err).__name__}: {err}")
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"⚠️ David hit an error:\n`{type(err).__name__}: {err}`",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            print(f"[on_error] failed to report: {e}")
+
+    application.add_error_handler(on_error)
 
     print("🤖 David online!")
     application.run_polling()
