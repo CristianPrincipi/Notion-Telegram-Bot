@@ -1,7 +1,13 @@
-python-telegram-bot[job-queue]
-requests
-PyPDF2
-pytz
-beautifulsoup4
-newspaper4k
-# lxml
+# Pinned to prevent a breaking upstream release from taking David down on the
+# next Railway deploy. The ~= operator allows patch/minor updates within the
+# same major version but blocks breaking major bumps.
+#
+# To upgrade deliberately, bump a version here and redeploy.
+
+python-telegram-bot[job-queue]~=22.8
+requests~=2.34
+pytz~=2026.2
+PyPDF2~=3.0
+beautifulsoup4~=4.15
+newspaper4k~=0.9
+# lxml  # uncomment if newspaper4k requests it at install time
