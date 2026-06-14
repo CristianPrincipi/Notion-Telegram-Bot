@@ -3,17 +3,16 @@ import re
 import json
 import requests
 
+from notion_client import (
+    NOTION_BASE, notion_request, search_page_in_db, get_children,
+    append_children, delete_block, create_page, extract_rich_text, rich,
+    bullet as _bullet, paragraph as _paragraph,
+)
+
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-NOTION_KEY    = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID      = os.environ.get("LEARN_ID")
 DIET_ID       = os.environ.get("DIET_ID")
-
-NOTION_HEADERS = {
-    "Authorization": f"Bearer {NOTION_KEY}",
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28",
-}
 
 # ─── DIET PAGE BLUEPRINT (translated from the handwritten diagram) ─────────────
 # H1 → list of H2 rows. Each H2 row carries the same set of H3 attributes.
@@ -42,99 +41,15 @@ DIET_STRUCTURE = {
 EVIDENCE_FIELDS = ["Question", "Result", "Limits", "Practical Conclusion"]
 
 
-# ─── 1. NOTION HELPERS ─────────────────────────────────────────────────────────
-
-def _rich(text: str) -> list:
-    return [{"type": "text", "text": {"content": text[:2000]}}]
-
-
-def _extract_rich_text(rich_text_list: list) -> str:
-    return "".join(rt.get("plain_text", "") for rt in rich_text_list)
-
-
-def search_page_in_db(db_id: str, query: str, exact: bool = False):
-    """Search a Notion database for a page by title. Returns (page_object, error)."""
-    try:
-        filter_type = "equals" if exact else "contains"
-        resp = requests.post(
-            f"https://api.notion.com/v1/databases/{db_id}/query",
-            headers=NOTION_HEADERS,
-            json={"filter": {"property": "Name", "title": {filter_type: query}}},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return None, f"Notion {resp.status_code}: {resp.text[:200]}"
-        results = resp.json().get("results", [])
-        if not results:
-            return None, f"No page found matching '{query}'"
-        return results[0], None
-    except Exception as e:
-        return None, str(e)
-
-
-def get_children(block_id: str):
-    """Get direct children of a block/page (handles pagination). Returns (blocks, error)."""
-    blocks, cursor = [], None
-    try:
-        while True:
-            params = {"page_size": 100}
-            if cursor:
-                params["start_cursor"] = cursor
-            resp = requests.get(
-                f"https://api.notion.com/v1/blocks/{block_id}/children",
-                headers=NOTION_HEADERS,
-                params=params,
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return [], f"Notion {resp.status_code}: {resp.text[:200]}"
-            data = resp.json()
-            blocks.extend(data.get("results", []))
-            if not data.get("has_more"):
-                break
-            cursor = data.get("next_cursor")
-        return blocks, None
-    except Exception as e:
-        return [], str(e)
-
-
-def append_children(block_id: str, blocks: list):
-    """Append children to a block in batches of 100. Returns (created_blocks, error)."""
-    created = []
-    try:
-        remaining = blocks
-        while remaining:
-            batch, remaining = remaining[:100], remaining[100:]
-            resp = requests.patch(
-                f"https://api.notion.com/v1/blocks/{block_id}/children",
-                headers=NOTION_HEADERS,
-                json={"children": batch},
-                timeout=20,
-            )
-            if resp.status_code != 200:
-                return created, f"Notion {resp.status_code}: {resp.text[:200]}"
-            created.extend(resp.json().get("results", []))
-        return created, None
-    except Exception as e:
-        return created, str(e)
-
-
-def delete_block(block_id: str):
-    """Archive (delete) a single block."""
-    requests.delete(
-        f"https://api.notion.com/v1/blocks/{block_id}",
-        headers=NOTION_HEADERS,
-        timeout=10,
-    )
-
-
-# ─── 2. TOGGLE BLOCK BUILDERS ──────────────────────────────────────────────────
+# ─── 1. TOGGLE BLOCK BUILDERS (Diet-specific) ──────────────────────────────────
+# Toggleable headings are unique to this module — the shared client has only
+# plain headings. Bullets/paragraphs come from notion_client.
 
 def _toggle_heading(text: str, level: int, children: list = None) -> dict:
     """A toggleable heading (H1/H2/H3). children render inside the toggle."""
     htype = f"heading_{level}"
     payload = {
-        "rich_text": _rich(text),
+        "rich_text": rich(text),
         "is_toggleable": True,
         "color": "default",
     }
@@ -142,16 +57,6 @@ def _toggle_heading(text: str, level: int, children: list = None) -> dict:
     if children:
         block[htype]["children"] = children[:100]
     return block
-
-
-def _bullet(text: str) -> dict:
-    return {"object": "block", "type": "bulleted_list_item",
-            "bulleted_list_item": {"rich_text": _rich(text)}}
-
-
-def _paragraph(text: str) -> dict:
-    return {"object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": _rich(text)}}
 
 
 def build_full_skeleton() -> list:
@@ -179,7 +84,7 @@ def build_full_skeleton() -> list:
     return h1_blocks
 
 
-# ─── 3. READ EXISTING TREE ─────────────────────────────────────────────────────
+# ─── 2. READ EXISTING TREE ─────────────────────────────────────────────────────
 
 def read_diet_tree(page_id: str):
     """Read the full H1>H2>H3 tree into a nested dict for Claude.
@@ -197,7 +102,7 @@ def read_diet_tree(page_id: str):
     for h1 in h1_blocks:
         if not h1.get("type", "").startswith("heading_1"):
             continue
-        h1_name = _extract_rich_text(h1["heading_1"]["rich_text"])
+        h1_name = extract_rich_text(h1["heading_1"]["rich_text"])
         if not h1_name:
             continue
         tree[h1_name] = {}
@@ -210,7 +115,7 @@ def read_diet_tree(page_id: str):
         for h2 in h2_blocks:
             if not h2.get("type", "").startswith("heading_2"):
                 continue
-            h2_name = _extract_rich_text(h2["heading_2"]["rich_text"])
+            h2_name = extract_rich_text(h2["heading_2"]["rich_text"])
             if not h2_name:
                 continue
             key2 = f"{h1_name}>{h2_name}"
@@ -228,7 +133,7 @@ def read_diet_tree(page_id: str):
                 for h3 in h3_blocks:
                     if not h3.get("type", "").startswith("heading_3"):
                         continue
-                    h3_name = _extract_rich_text(h3["heading_3"]["rich_text"])
+                    h3_name = extract_rich_text(h3["heading_3"]["rich_text"])
                     if not h3_name:
                         continue
                     key3 = f"{h1_name}>{h2_name}>{h3_name}"
@@ -247,13 +152,13 @@ def _content_to_text(blocks: list) -> str:
     for b in blocks:
         btype = b.get("type", "")
         rt = b.get(btype, {}).get("rich_text", [])
-        txt = _extract_rich_text(rt)
+        txt = extract_rich_text(rt)
         if txt:
             out.append(txt)
     return "\n".join(out)
 
 
-# ─── 4. CLAUDE: DECIDE WHICH SECTIONS TO UPDATE ────────────────────────────────
+# ─── 3. CLAUDE: DECIDE WHICH SECTIONS TO UPDATE ────────────────────────────────
 
 _DIET_SYSTEM = """You maintain a structured personal DIET knowledge page in Notion.
 
@@ -332,7 +237,7 @@ def decide_updates(tree: dict, summary_text: str, summary_title: str):
         return None, str(e)
 
 
-# ─── 5. APPLY UPDATES SURGICALLY ───────────────────────────────────────────────
+# ─── 4. APPLY UPDATES SURGICALLY ───────────────────────────────────────────────
 
 def apply_updates(updates: list, block_map: dict):
     """For each update, locate the target section block and refresh its content.
@@ -388,7 +293,7 @@ def _resolve_path(path: str, block_map: dict):
     return None
 
 
-# ─── 6. NOTION PAGE / SKELETON SETUP ───────────────────────────────────────────
+# ─── 5. NOTION PAGE / SKELETON SETUP ───────────────────────────────────────────
 
 def find_or_create_diet_page():
     """Find the 'Diet' page in DIET_ID, or create it with the full skeleton.
@@ -397,28 +302,18 @@ def find_or_create_diet_page():
     if page:
         return page["id"], False, None
 
-    # Create new page + skeleton
-    try:
-        resp = requests.post(
-            "https://api.notion.com/v1/pages",
-            headers=NOTION_HEADERS,
-            json={
-                "parent": {"database_id": DIET_ID},
-                "icon": {"emoji": "🥗"},
-                "properties": {"Name": {"title": [{"text": {"content": "Diet"}}]}},
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return None, False, f"Notion {resp.status_code}: {resp.text[:300]}"
-        page_id = resp.json()["id"]
+    # Create new empty page first (skeleton appended in a second pass because
+    # Notion only nests 2 levels deep per create request).
+    page_id, err = create_page(
+        DIET_ID,
+        {"Name": {"title": [{"text": {"content": "Diet"}}]}},
+        icon="🥗",
+    )
+    if not page_id:
+        return None, False, err
 
-        # Append skeleton H1 toggles (with nested H2>H3) one H1 at a time,
-        # because the Notion API only nests 2 levels deep per request.
-        err = _append_skeleton_deep(page_id)
-        return page_id, True, err
-    except Exception as e:
-        return None, False, str(e)
+    err = _append_skeleton_deep(page_id)
+    return page_id, True, err
 
 
 def _append_skeleton_deep(page_id: str):
@@ -453,7 +348,7 @@ def _append_skeleton_deep(page_id: str):
     return None
 
 
-# ─── 7. MAIN HANDLER ───────────────────────────────────────────────────────────
+# ─── 6. MAIN HANDLER ───────────────────────────────────────────────────────────
 
 async def handle_implement_diet(update, summary_name: str):
     """
@@ -491,7 +386,7 @@ async def handle_implement_diet(update, summary_name: str):
         return
 
     summary_id = summary_page["id"]
-    summary_title = _extract_rich_text(
+    summary_title = extract_rich_text(
         next((p.get("title", []) for p in summary_page.get("properties", {}).values()
               if p.get("type") == "title"), [])
     )
@@ -555,7 +450,7 @@ def _content_to_text_deep(blocks: list) -> str:
     for b in blocks:
         btype = b.get("type", "")
         rt = b.get(btype, {}).get("rich_text", [])
-        txt = _extract_rich_text(rt)
+        txt = extract_rich_text(rt)
         if not txt:
             continue
         if btype == "heading_1":   out.append(f"# {txt}")
