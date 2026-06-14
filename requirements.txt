@@ -1,15 +1,15 @@
-# Pinned to prevent a breaking upstream release from taking David down on the
-# next Railway deploy. The ~= operator allows patch/minor updates within the
-# same major version but blocks breaking major bumps.
+# Minimum-version floors rather than tight pins, so an older build-image Python
+# doesn't reject the very latest releases.
 #
-# To upgrade deliberately, bump a version here and redeploy.
+# newspaper4k + lxml were removed: lxml compiles from C source and needs system
+# libraries (libxml2-dev / libxslt-dev) that Railway's build image lacks, which
+# was failing the build. learn.py falls back to BeautifulSoup (pure Python) for
+# article extraction, so nothing is lost for normal use.
 
-python-telegram-bot[job-queue]~=22.8
-requests~=2.34
-pytz~=2026.2
-PyPDF2~=3.0
-beautifulsoup4~=4.15
-newspaper4k~=0.9
-google-api-python-client~=2.197
-google-auth~=2.54
-# lxml  # uncomment if newspaper4k requests it at install time
+python-telegram-bot[job-queue]>=21.0
+requests>=2.31
+pytz>=2024.1
+PyPDF2>=3.0
+beautifulsoup4>=4.12
+google-api-python-client>=2.100
+google-auth>=2.30
