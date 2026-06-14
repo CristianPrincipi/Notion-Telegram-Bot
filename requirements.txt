@@ -10,4 +10,6 @@ pytz~=2026.2
 PyPDF2~=3.0
 beautifulsoup4~=4.15
 newspaper4k~=0.9
+google-api-python-client~=2.197
+google-auth~=2.54
 # lxml  # uncomment if newspaper4k requests it at install time
