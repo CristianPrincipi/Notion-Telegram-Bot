@@ -4,17 +4,16 @@ import json
 import requests
 from bs4 import BeautifulSoup
 
+from notion_client import (
+    NOTION_BASE, notion_request, create_page,
+    paragraph as _paragraph, heading2 as _heading2, callout as _callout,
+    quote as _quote, bullet as _bullet, divider as _divider, rich,
+)
+
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-NOTION_KEY = os.environ.get("NOTION_KEY")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID = os.environ.get("LEARN_ID")                  # videos, articles, podcasts
 LETTI_ID = os.environ.get("LETTI_ID")                  # books  (already exists in David)
-
-NOTION_HEADERS = {
-    "Authorization": f"Bearer {NOTION_KEY}",
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28",
-}
 
 SUPPORTED_TYPES = ["video", "article", "book", "podcast", "pdf"]
 
@@ -168,30 +167,8 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
 
 
 # ─── 3. NOTION BLOCK BUILDER ───────────────────────────────────────────────────
-
-def _paragraph(text: str) -> dict:
-    return {"object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _heading2(text: str) -> dict:
-    return {"object": "block", "type": "heading_2",
-            "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _callout(text: str, emoji: str = "💡", color: str = "blue_background") -> dict:
-    return {"object": "block", "type": "callout",
-            "callout": {"rich_text": [{"type": "text", "text": {"content": text}}],
-                        "icon": {"emoji": emoji}, "color": color}}
-
-def _quote(text: str) -> dict:
-    return {"object": "block", "type": "quote",
-            "quote": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _bullet(text: str) -> dict:
-    return {"object": "block", "type": "bulleted_list_item",
-            "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
-
-def _divider() -> dict:
-    return {"object": "block", "type": "divider", "divider": {}}
+# Basic builders (_paragraph, _heading2, _callout, _quote, _bullet, _divider)
+# are imported from notion_client. Only the link-bearing source builder is local.
 
 def _source_link(url: str) -> dict:
     return {"object": "block", "type": "paragraph",
@@ -262,29 +239,15 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict], metadat
     if author and content_type in ("book", "article"):
         properties["Author"] = {"rich_text": [{"text": {"content": author[:500]}}]}
 
-    page_body = {
-        "parent":     {"database_id": db_id},
-        "icon":       {"emoji": TYPE_EMOJI.get(content_type, "📖")},
-        "properties": properties,
-        "children":   blocks[:100],          # Notion API limit: 100 blocks per request
-    }
-
-    resp = requests.post("https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=page_body)
-    if resp.status_code != 200:
-        return False, f"Notion {resp.status_code}: {resp.text[:300]}"
-
-    page_id = resp.json()["id"]
-
-    # Append remaining blocks in batches of 100
-    remaining = blocks[100:]
-    while remaining:
-        batch, remaining = remaining[:100], remaining[100:]
-        requests.patch(
-            f"https://api.notion.com/v1/blocks/{page_id}/children",
-            headers=NOTION_HEADERS,
-            json={"children": batch},
-        )
-
+    # Shared create_page handles the >100-block batching and retries internally
+    page_id, err = create_page(
+        db_id,
+        properties,
+        children=blocks,
+        icon=TYPE_EMOJI.get(content_type, "📖"),
+    )
+    if not page_id:
+        return False, err or "Unknown error creating page."
     return True, page_id
 
 
