@@ -140,12 +140,25 @@ def create_event(summary: str, start_dt: datetime, duration_minutes: int = DEFAU
         return None, f"Could not create event: {e}"
 
 
-# ─── EVENT QUERIES (for the daily reminder poll) ───────────────────────────────
+# ─── EVENT QUERIES (for the daily reminder poll + conflict detection) ───────────
+
+def _to_local(iso_str: str) -> datetime:
+    """Parse a Google ISO datetime string into a Europe/Rome-aware datetime."""
+    dt = datetime.fromisoformat(iso_str)
+    if dt.tzinfo is None:
+        return TIMEZONE.localize(dt)
+    return dt.astimezone(TIMEZONE)
+
 
 def _list_events_between(start_dt: datetime, end_dt: datetime):
-    """List events whose start falls in [start_dt, end_dt). Returns (events, error).
+    """List events that OVERLAP [start_dt, end_dt). Returns (events, error).
 
-    Each returned item is a dict: {"summary", "start_dt" (tz-aware), "all_day" (bool)}.
+    Note the API semantics: timeMin filters by an event's end time and timeMax by
+    its start time, so this returns every event overlapping the window (not just
+    those that start inside it) — which is exactly what conflict detection needs.
+
+    Each returned item: {"summary", "start_dt" (tz-aware), "end_dt" (tz-aware or
+    None for all-day), "all_day" (bool)}.
     """
     service, err = _get_service()
     if err:
@@ -165,23 +178,38 @@ def _list_events_between(start_dt: datetime, end_dt: datetime):
     out = []
     for ev in resp.get("items", []):
         start = ev.get("start", {})
+        end = ev.get("end", {})
         summary = ev.get("summary", "(no title)")
 
         if "dateTime" in start:
-            # Timed event — parse ISO and convert to local tz
-            dt = datetime.fromisoformat(start["dateTime"])
-            if dt.tzinfo is None:
-                dt = TIMEZONE.localize(dt)
-            else:
-                dt = dt.astimezone(TIMEZONE)
-            out.append({"summary": summary, "start_dt": dt, "all_day": False})
+            # Timed event
+            start_local = _to_local(start["dateTime"])
+            end_local = _to_local(end["dateTime"]) if end.get("dateTime") else None
+            out.append({"summary": summary, "start_dt": start_local,
+                        "end_dt": end_local, "all_day": False})
         elif "date" in start:
             # All-day event
             d = datetime.fromisoformat(start["date"])
-            dt = TIMEZONE.localize(datetime(d.year, d.month, d.day, 0, 0))
-            out.append({"summary": summary, "start_dt": dt, "all_day": True})
+            start_local = TIMEZONE.localize(datetime(d.year, d.month, d.day, 0, 0))
+            out.append({"summary": summary, "start_dt": start_local,
+                        "end_dt": None, "all_day": True})
 
     return out, None
+
+
+def find_conflicts(start_dt: datetime, end_dt: datetime):
+    """Return (conflicts, error): TIMED events overlapping [start_dt, end_dt).
+
+    All-day events are ignored (they'd "overlap" everything that day). Relies on
+    the overlap semantics of _list_events_between, so two back-to-back events —
+    one ending exactly when the next begins — are NOT flagged.
+
+    Each conflict: {"summary", "start_dt", "end_dt"}.
+    """
+    events, err = _list_events_between(start_dt, end_dt)
+    if err:
+        return [], err
+    return [e for e in events if not e["all_day"]], None
 
 
 def get_events_for_day(target_date: datetime):
