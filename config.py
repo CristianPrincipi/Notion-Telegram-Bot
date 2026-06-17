@@ -69,3 +69,12 @@ MORNING_BRIEFING_MINUTE = 30
 # Evening Briefing — tomorrow's events (enough lead time to prep tonight).
 EVENING_BRIEFING_HOUR   = 20
 EVENING_BRIEFING_MINUTE = 0
+
+# Budget Pacing — a "trending over" alert (Step 4). Fires only when, past the
+# noisy early-month days, you're projected to blow the ceiling by a meaningful
+# margin. The Morning Briefing already shows the daily pace tag; this is the
+# louder mid-day escalation with the projection + driver category.
+BUDGET_PACING_HOUR          = 13     # 13:00 — a mid-day checkpoint, separate from both briefings
+BUDGET_PACING_MINUTE        = 0
+BUDGET_PACING_MIN_DAY       = 5      # skip days 1-4: total/day projections are too noisy that early
+BUDGET_PACING_THRESHOLD_PCT = 0.05   # only warn if projected to exceed the ceiling by >= 5%
