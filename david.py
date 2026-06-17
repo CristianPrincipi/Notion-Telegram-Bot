@@ -12,14 +12,16 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
-from reminder import handle_remind, build_today_message, build_tomorrow_message
+from reminder import handle_remind
 import PyPDF2
 
 from config import (
-    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
+    GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
     genre_help, category_help, priority_help,
 )
 from notion_client import notion_request
+from budget import budget
+from proactive.scheduler import register_all
 
 
 # --- CONFIGURATION ---
@@ -47,51 +49,8 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 # --- NOTION FUNCTIONS --- #
 
 # --- BUDGET --- #
-def budget():
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
-
-    # Filter by the relation to the current Month ID
-    query_data = {
-        "filter": {
-            "property": "Account",
-            "relation": {"contains": MONTH_ID},
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
-
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-        return None
-
-    results = response.json().get("results", [])
-
-    # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
-    cat_Tot = {}
-    grand_Total = 0.0
-
-    for page in results:
-        props = page.get("properties", {})
-
-        line_amount = props.get("Amount", {}).get("number", 0) or 0
-        grand_Total += line_amount
-
-        cat_multi = props.get("Category", {}).get("multi_select", [])
-        category_name = cat_multi[0].get("name", "Other") if cat_multi else "Other"
-
-        cat_Tot[category_name] = cat_Tot.get(category_name, 0) + line_amount
-
-    remaining = BUDGET_CEILING - grand_Total
-
-    # Construct message — show every category dynamically (not just the hardcoded 4)
-    msg = "💰 **Monthly Budget**\n"
-    msg += "━━━━━━━━━━━━━━━\n"
-    for cat in sorted(cat_Tot, key=lambda c: cat_Tot[c], reverse=True):
-        msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
-    msg += "━━━━━━━━━━━━━━━\n"
-    msg += f"**Spent: €{grand_Total:.2f}**\n"
-    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
-
-    return msg
+# budget() now lives in budget.py (compute_budget / format_budget / budget), so
+# the proactive jobs can reuse the raw numbers. Imported above.
 
 
 # --- NEW READED BOOK --- #
@@ -125,9 +84,6 @@ def find_Book_Page(book_name):
         return None
     results = response.json().get("results")
     return results[0]["id"] if results else None
-
-
-
 
 
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
@@ -360,23 +316,6 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         )
     except Exception:
         print(f"[notify_error] failed to report error in {where}: {err}")
-
-
-# --- SCHEDULED JOB: DAILY REMINDER POLL --- #
-# Polls Google Calendar each morning (Europe/Rome) and pings Telegram for today's
-# and tomorrow's events. Calendar is the source of truth, so reminders survive
-# Railway restarts — nothing is held in memory.
-async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        today_msg    = build_today_message()
-        tomorrow_msg = build_tomorrow_message()
-
-        if today_msg:
-            await context.bot.send_message(chat_id=CHAT_ID, text=today_msg, parse_mode='Markdown')
-        if tomorrow_msg:
-            await context.bot.send_message(chat_id=CHAT_ID, text=tomorrow_msg, parse_mode='Markdown')
-    except Exception as e:
-        await notify_error(context, "send_daily_reminders", e)
 
 
 # --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
@@ -685,9 +624,11 @@ if __name__ == '__main__':
     # --- SCHEDULED JOBS ---
     try:
         job_queue = application.job_queue
-        # Daily reminder poll at 07:30 Milan — pings today's + tomorrow's calendar events.
-        # 07:30 catches early appointments (≥08:00 covered with >30 min lead time).
-        job_queue.run_daily(send_daily_reminders, time=time(hour=7, minute=30, tzinfo=milan_tz))
+
+        # Steps 1–2 — Morning + Evening Briefings (today+budget / tomorrow).
+        # These fully replace the old send_daily_reminders job.
+        register_all(application, CHAT_ID)
+
         job_queue.run_daily(send_weekly_budget, time=time(hour=9, minute=30, tzinfo=milan_tz), days=(5, 6))  # 0=Mon ... 6=Sun
         print("✅ Scheduled jobs registered.")
     except Exception as e:
@@ -697,7 +638,7 @@ if __name__ == '__main__':
     # LISTEN FOR ANY TEXT MESSAGE... (except commands)
     text_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     application.add_handler(text_handler)
-           
+
     doc_handler = MessageHandler(filters.Document.ALL, handle_document)
     application.add_handler(doc_handler)
 
