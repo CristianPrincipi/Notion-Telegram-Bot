@@ -14,7 +14,7 @@ import re
 
 from calendar_client import (
     parse_date_time, create_event, get_events_for_day, now_local,
-    DEFAULT_EVENT_MINUTES, TIMEZONE,
+    find_conflicts, DEFAULT_EVENT_MINUTES, TIMEZONE,
 )
 from datetime import timedelta
 
@@ -23,8 +23,32 @@ from datetime import timedelta
 REMIND_PATTERN = r"(?i)remind\s+(.+?)\s+(\d{1,2}\.\d{1,2})\s*-\s*(\d{1,2}\.\d{1,2})"
 
 
+def _format_conflict_warning(new_name: str, start_dt, end_dt, conflicts: list) -> str:
+    """Plain-text heads-up about overlapping events.
+
+    Sent as a SEPARATE message from the (Markdown) confirmation so arbitrary
+    event titles can't break Markdown rendering, and only when a conflict exists.
+    """
+    def _range(s, e):
+        if e is None:
+            return s.strftime("%H:%M")
+        return f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}"
+
+    new_slot = _range(start_dt, end_dt)
+
+    if len(conflicts) == 1:
+        c = conflicts[0]
+        return (f'⚠️ Heads up: "{new_name} {new_slot}" overlaps '
+                f'"{c["summary"]} {_range(c["start_dt"], c["end_dt"])}".')
+
+    lines = [f'⚠️ Heads up: "{new_name} {new_slot}" overlaps {len(conflicts)} events:']
+    for c in conflicts:
+        lines.append(f'  • {c["summary"]} {_range(c["start_dt"], c["end_dt"])}')
+    return "\n".join(lines)
+
+
 async def handle_remind(update, user_text: str):
-    """Parse a Remind command, create the calendar event, confirm."""
+    """Parse a Remind command, create the calendar event, confirm, and flag conflicts."""
     match = re.match(REMIND_PATTERN, user_text.strip())
     if not match:
         await update.message.reply_text(
@@ -48,6 +72,12 @@ async def handle_remind(update, user_text: str):
 
     await update.message.reply_text(f"⏳ Adding *{name}* to your calendar…", parse_mode="Markdown")
 
+    # Detect overlaps against the proposed slot BEFORE creating the event, so the
+    # new event itself can't show up in the results. A failed check degrades
+    # gracefully (no warning) rather than blocking the reminder.
+    end_dt = start_dt + timedelta(minutes=DEFAULT_EVENT_MINUTES)
+    conflicts, _ = find_conflicts(start_dt, end_dt)
+
     link, err = create_event(name, start_dt, DEFAULT_EVENT_MINUTES)
     if err:
         await update.message.reply_text(f"❌ Could not create the event: {err}")
@@ -66,6 +96,10 @@ async def handle_remind(update, user_text: str):
         msg += "\n\n⚠️ This is before 08:00 — the morning ping arrives at 07:30, so for very early events rely on Google's 1-hour alert."
 
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+    # Conflict heads-up — separate, plain text, only when there's a real overlap.
+    if conflicts:
+        await update.message.reply_text(_format_conflict_warning(name, start_dt, end_dt, conflicts))
 
 
 def _format_event_line(ev: dict) -> str:
