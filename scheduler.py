@@ -18,8 +18,10 @@ from config import (
     PROACTIVE_TIMEZONE,
     MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE,
     EVENING_BRIEFING_HOUR, EVENING_BRIEFING_MINUTE,
+    BUDGET_PACING_HOUR, BUDGET_PACING_MINUTE,
 )
 from proactive.briefing import build_morning_briefing, build_evening_briefing
+from proactive.budget_watch import build_pacing_warning
 
 _TZ = pytz.timezone(PROACTIVE_TIMEZONE)
 
@@ -57,6 +59,15 @@ async def _evening_briefing_job(context: ContextTypes.DEFAULT_TYPE):
         await _report_error(context, "evening_briefing", e)
 
 
+async def _budget_pacing_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = build_pacing_warning()
+        if text:  # only when meaningfully trending over — otherwise silent
+            await context.bot.send_message(chat_id=context.job.chat_id, text=text)
+    except Exception as e:
+        await _report_error(context, "budget_pacing", e)
+
+
 def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
@@ -79,4 +90,11 @@ def register_all(application, chat_id):
         name="evening_briefing",
     )
 
-    print("✅ Proactive jobs registered: morning_briefing, evening_briefing.")
+    jq.run_daily(
+        _budget_pacing_job,
+        time=time(hour=BUDGET_PACING_HOUR, minute=BUDGET_PACING_MINUTE, tzinfo=_TZ),
+        chat_id=chat_id,
+        name="budget_pacing",
+    )
+
+    print("✅ Proactive jobs registered: morning_briefing, evening_briefing, budget_pacing.")
