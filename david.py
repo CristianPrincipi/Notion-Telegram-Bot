@@ -89,10 +89,15 @@ def find_Book_Page(book_name):
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
     """Extract text between begin_text and end_text from a PDF.
 
-    Matching is punctuation-insensitive and de-hyphenates line breaks, so
-    markers still match when PyPDF2 inserts spaces around commas ("word ,")
-    or splits long words across lines ("assoluta- mente"). An index map keeps
-    the *returned* quote readable (original spacing/casing preserved).
+    Matching is SPACE-INSENSITIVE: all whitespace and punctuation are stripped
+    from both the markers and the PDF text before comparison, so markers still
+    match when PyPDF2 corrupts the extraction with spurious in-word spaces
+    ("es perienza"), hyphenated line breaks ("predici- bile"), or spaces around
+    punctuation ("word ,"). An index map maps matches back to the original text
+    so the returned quote stays readable.
+
+    Note: the returned quote is sliced from the raw extraction, so any in-word
+    spaces the PDF introduced will still be present in the saved text.
 
     Returns (extracted_quote: str, error: str | None).
     Always run via asyncio.to_thread() — never call directly from the event loop.
@@ -102,10 +107,8 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         return re.sub(r"\s+", " ", t or "").strip()
 
     def search_key(t):
-        t = (t or "").lower()
-        t = re.sub(r"-\s+", "", t)                          # join line-break hyphenation
-        t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)    # punctuation -> space
-        return re.sub(r"\s+", " ", t).strip()
+        # keep only word chars (letters/digits incl. accents), lowercased — no spaces
+        return "".join(re.findall(r"\w", (t or "").lower(), flags=re.UNICODE))
 
     key_begin = search_key(begin_text)
     key_end   = search_key(end_text)
@@ -124,18 +127,16 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
             except Exception:
                 parts.append("")
         original = " ".join(p for p in parts if p)
-        original = re.sub(r"-\s+", "", original)            # de-hyphenate source too
         if not original.strip():
             return None, "No extractable text in PDF (it may be scanned images — needs OCR)."
 
-        # Normalized search string + map back to original character indices
-        norm_chars, index_map, prev_space = [], [], True
+        # Continuous normalized stream + map each kept char back to its original index
+        norm_chars, index_map = [], []
         for i, ch in enumerate(original):
             lo = ch.lower()
             if re.match(r"\w", lo, flags=re.UNICODE):
-                norm_chars.append(lo); index_map.append(i); prev_space = False
-            elif not prev_space:
-                norm_chars.append(" "); index_map.append(i); prev_space = True
+                norm_chars.append(lo)
+                index_map.append(i)
         norm = "".join(norm_chars)
 
         bpos = norm.find(key_begin)
