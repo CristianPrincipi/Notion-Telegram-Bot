@@ -12,16 +12,15 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
-from reminder import handle_remind
+from pkm import handle_get
+from reminder import handle_remind, build_today_message, build_tomorrow_message
 import PyPDF2
 
 from config import (
-    GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
+    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
     genre_help, category_help, priority_help,
 )
 from notion_client import notion_request
-from budget import budget
-from proactive.scheduler import register_all
 
 
 # --- CONFIGURATION ---
@@ -49,8 +48,51 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 # --- NOTION FUNCTIONS --- #
 
 # --- BUDGET --- #
-# budget() now lives in budget.py (compute_budget / format_budget / budget), so
-# the proactive jobs can reuse the raw numbers. Imported above.
+def budget():
+    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
+
+    # Filter by the relation to the current Month ID
+    query_data = {
+        "filter": {
+            "property": "Account",
+            "relation": {"contains": MONTH_ID},
+        }
+    }
+    response = notion_request("POST", url, json=query_data)
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}")
+        return None
+
+    results = response.json().get("results", [])
+
+    # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
+    cat_Tot = {}
+    grand_Total = 0.0
+
+    for page in results:
+        props = page.get("properties", {})
+
+        line_amount = props.get("Amount", {}).get("number", 0) or 0
+        grand_Total += line_amount
+
+        cat_multi = props.get("Category", {}).get("multi_select", [])
+        category_name = cat_multi[0].get("name", "Other") if cat_multi else "Other"
+
+        cat_Tot[category_name] = cat_Tot.get(category_name, 0) + line_amount
+
+    remaining = BUDGET_CEILING - grand_Total
+
+    # Construct message — show every category dynamically (not just the hardcoded 4)
+    msg = "💰 **Monthly Budget**\n"
+    msg += "━━━━━━━━━━━━━━━\n"
+    for cat in sorted(cat_Tot, key=lambda c: cat_Tot[c], reverse=True):
+        msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
+    msg += "━━━━━━━━━━━━━━━\n"
+    msg += f"**Spent: €{grand_Total:.2f}**\n"
+    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
+
+    return msg
 
 
 # --- NEW READED BOOK --- #
@@ -86,33 +128,25 @@ def find_Book_Page(book_name):
     return results[0]["id"] if results else None
 
 
+
+
+
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
     """Extract text between begin_text and end_text from a PDF.
 
-    Matching is SPACE-INSENSITIVE: all whitespace and punctuation are stripped
-    from both the markers and the PDF text before comparison, so markers still
-    match when PyPDF2 corrupts the extraction with spurious in-word spaces
-    ("es perienza"), hyphenated line breaks ("predici- bile"), or spaces around
-    punctuation ("word ,"). An index map maps matches back to the original text
-    so the returned quote stays readable.
-
-    Note: the returned quote is sliced from the raw extraction, so any in-word
-    spaces the PDF introduced will still be present in the saved text.
-
+    Processes pages incrementally — stops as soon as both markers are found,
+    so large books don't require reading every page.
     Returns (extracted_quote: str, error: str | None).
     Always run via asyncio.to_thread() — never call directly from the event loop.
     """
 
-    def collapse(t):
+    def _norm(t):
         return re.sub(r"\s+", " ", t or "").strip()
 
-    def search_key(t):
-        # keep only word chars (letters/digits incl. accents), lowercased — no spaces
-        return "".join(re.findall(r"\w", (t or "").lower(), flags=re.UNICODE))
+    norm_begin = _norm(begin_text).lower()
+    norm_end   = _norm(end_text).lower()
 
-    key_begin = search_key(begin_text)
-    key_end   = search_key(end_text)
-    if not key_begin or not key_end:
+    if not norm_begin or not norm_end:
         return None, "Begin or End text cannot be empty."
 
     try:
@@ -120,42 +154,28 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         if not reader.pages:
             return None, "PDF appears to be empty."
 
-        parts = []
+        accumulated     = ""
+        begin_pos_found = -1
+
         for page in reader.pages:
-            try:
-                parts.append(collapse(page.extract_text()))
-            except Exception:
-                parts.append("")
-        original = " ".join(p for p in parts if p)
-        if not original.strip():
-            return None, "No extractable text in PDF (it may be scanned images — needs OCR)."
+            accumulated += " " + _norm(page.extract_text())
+            acc_lower    = accumulated.lower()
 
-        # Continuous normalized stream + map each kept char back to its original index
-        norm_chars, index_map = [], []
-        for i, ch in enumerate(original):
-            lo = ch.lower()
-            if re.match(r"\w", lo, flags=re.UNICODE):
-                norm_chars.append(lo)
-                index_map.append(i)
-        norm = "".join(norm_chars)
+            if begin_pos_found == -1:
+                bp = acc_lower.find(norm_begin)
+                if bp != -1:
+                    begin_pos_found = bp
 
-        bpos = norm.find(key_begin)
-        if bpos == -1:
-            return None, f"Begin text not found in PDF.\nSearched for: '{begin_text[:100]}'"
+            if begin_pos_found != -1:
+                search_from = begin_pos_found + len(norm_begin)
+                ep = acc_lower.find(norm_end, search_from)
+                if ep != -1:
+                    raw = accumulated[begin_pos_found : ep + len(norm_end)]
+                    return _norm(raw), None
 
-        epos = norm.find(key_end, bpos + len(key_begin))
-        if epos == -1:
-            start_orig = index_map[bpos]
-            follow = original[start_orig:start_orig + 400]
-            return None, (
-                "End text not found after begin marker.\n"
-                f"Searched for: '{end_text[:100]}'\n\n"
-                f"Text right after your begin marker (copy the real wording from here):\n«{follow}…»"
-            )
-
-        start_orig = index_map[bpos]
-        end_orig   = index_map[epos + len(key_end) - 1]
-        return collapse(original[start_orig:end_orig + 1]), None
+        if begin_pos_found == -1:
+            return None, f"Begin text not found in PDF.\nSearched for: \'{begin_text[:100]}\'"
+        return None, f"End text not found after begin marker.\nSearched for: \'{end_text[:100]}\'"
 
     except PyPDF2.errors.PdfReadError as e:
         return None, f"Could not read PDF: {e}"
@@ -343,6 +363,23 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         print(f"[notify_error] failed to report error in {where}: {err}")
 
 
+# --- SCHEDULED JOB: DAILY REMINDER POLL --- #
+# Polls Google Calendar each morning (Europe/Rome) and pings Telegram for today's
+# and tomorrow's events. Calendar is the source of truth, so reminders survive
+# Railway restarts — nothing is held in memory.
+async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        today_msg    = build_today_message()
+        tomorrow_msg = build_tomorrow_message()
+
+        if today_msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=today_msg, parse_mode='Markdown')
+        if tomorrow_msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=tomorrow_msg, parse_mode='Markdown')
+    except Exception as e:
+        await notify_error(context, "send_daily_reminders", e)
+
+
 # --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
 async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -387,7 +424,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`Learn pdf`  _(attach PDF as caption)_\n\n"
             "🔧 *IMPLEMENT*\n"
             "`Implement [Page Name] - [Area]`\n"
-            "_Merges a Learn page into an Area Manual_",
+            "_Merges a Learn page into an Area Manual_\n\n"
+            "🔎 *GET — retrieve from a Manual*\n"
+            "`Get [Topic] - [Area]`\n"
+            "`Get ? - [Area]`  _(list all topics)_\n"
+            "_e.g. Get Active Recall - Brain_",
             parse_mode="Markdown",
         )
         return
@@ -475,6 +516,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
     if re.match(r"(?i)implement\s+.+\s*-\s*.+", user_text):
         await handle_implement(update, user_text)
+        return
+
+    # --- REGEX FOR GET (PKM retrieval): "Get [Argument] - [Area]" ---
+    # Separator is SPACE-hyphen-SPACE so intra-word hyphens (e.g. "Step-by-Step")
+    # aren't mistaken for the Argument/Area divider. Read-only, no Claude call.
+    if re.match(r"(?i)^get\s+.+\s+-\s+.+$", user_text):
+        await handle_get(update, user_text)
         return
 
     # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
@@ -649,11 +697,9 @@ if __name__ == '__main__':
     # --- SCHEDULED JOBS ---
     try:
         job_queue = application.job_queue
-
-        # Steps 1–2 — Morning + Evening Briefings (today+budget / tomorrow).
-        # These fully replace the old send_daily_reminders job.
-        register_all(application, CHAT_ID)
-
+        # Daily reminder poll at 07:30 Milan — pings today's + tomorrow's calendar events.
+        # 07:30 catches early appointments (≥08:00 covered with >30 min lead time).
+        job_queue.run_daily(send_daily_reminders, time=time(hour=7, minute=30, tzinfo=milan_tz))
         job_queue.run_daily(send_weekly_budget, time=time(hour=9, minute=30, tzinfo=milan_tz), days=(5, 6))  # 0=Mon ... 6=Sun
         print("✅ Scheduled jobs registered.")
     except Exception as e:
@@ -663,7 +709,7 @@ if __name__ == '__main__':
     # LISTEN FOR ANY TEXT MESSAGE... (except commands)
     text_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     application.add_handler(text_handler)
-
+           
     doc_handler = MessageHandler(filters.Document.ALL, handle_document)
     application.add_handler(doc_handler)
 
