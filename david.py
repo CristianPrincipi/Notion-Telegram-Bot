@@ -89,19 +89,27 @@ def find_Book_Page(book_name):
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
     """Extract text between begin_text and end_text from a PDF.
 
-    Processes pages incrementally — stops as soon as both markers are found,
-    so large books don't require reading every page.
+    Matching is punctuation-insensitive and de-hyphenates line breaks, so
+    markers still match when PyPDF2 inserts spaces around commas ("word ,")
+    or splits long words across lines ("assoluta- mente"). An index map keeps
+    the *returned* quote readable (original spacing/casing preserved).
+
     Returns (extracted_quote: str, error: str | None).
     Always run via asyncio.to_thread() — never call directly from the event loop.
     """
 
-    def _norm(t):
+    def collapse(t):
         return re.sub(r"\s+", " ", t or "").strip()
 
-    norm_begin = _norm(begin_text).lower()
-    norm_end   = _norm(end_text).lower()
+    def search_key(t):
+        t = (t or "").lower()
+        t = re.sub(r"-\s+", "", t)                          # join line-break hyphenation
+        t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)    # punctuation -> space
+        return re.sub(r"\s+", " ", t).strip()
 
-    if not norm_begin or not norm_end:
+    key_begin = search_key(begin_text)
+    key_end   = search_key(end_text)
+    if not key_begin or not key_end:
         return None, "Begin or End text cannot be empty."
 
     try:
@@ -109,28 +117,44 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         if not reader.pages:
             return None, "PDF appears to be empty."
 
-        accumulated     = ""
-        begin_pos_found = -1
-
+        parts = []
         for page in reader.pages:
-            accumulated += " " + _norm(page.extract_text())
-            acc_lower    = accumulated.lower()
+            try:
+                parts.append(collapse(page.extract_text()))
+            except Exception:
+                parts.append("")
+        original = " ".join(p for p in parts if p)
+        original = re.sub(r"-\s+", "", original)            # de-hyphenate source too
+        if not original.strip():
+            return None, "No extractable text in PDF (it may be scanned images — needs OCR)."
 
-            if begin_pos_found == -1:
-                bp = acc_lower.find(norm_begin)
-                if bp != -1:
-                    begin_pos_found = bp
+        # Normalized search string + map back to original character indices
+        norm_chars, index_map, prev_space = [], [], True
+        for i, ch in enumerate(original):
+            lo = ch.lower()
+            if re.match(r"\w", lo, flags=re.UNICODE):
+                norm_chars.append(lo); index_map.append(i); prev_space = False
+            elif not prev_space:
+                norm_chars.append(" "); index_map.append(i); prev_space = True
+        norm = "".join(norm_chars)
 
-            if begin_pos_found != -1:
-                search_from = begin_pos_found + len(norm_begin)
-                ep = acc_lower.find(norm_end, search_from)
-                if ep != -1:
-                    raw = accumulated[begin_pos_found : ep + len(norm_end)]
-                    return _norm(raw), None
+        bpos = norm.find(key_begin)
+        if bpos == -1:
+            return None, f"Begin text not found in PDF.\nSearched for: '{begin_text[:100]}'"
 
-        if begin_pos_found == -1:
-            return None, f"Begin text not found in PDF.\nSearched for: \'{begin_text[:100]}\'"
-        return None, f"End text not found after begin marker.\nSearched for: \'{end_text[:100]}\'"
+        epos = norm.find(key_end, bpos + len(key_begin))
+        if epos == -1:
+            start_orig = index_map[bpos]
+            follow = original[start_orig:start_orig + 400]
+            return None, (
+                "End text not found after begin marker.\n"
+                f"Searched for: '{end_text[:100]}'\n\n"
+                f"Text right after your begin marker (copy the real wording from here):\n«{follow}…»"
+            )
+
+        start_orig = index_map[bpos]
+        end_orig   = index_map[epos + len(key_end) - 1]
+        return collapse(original[start_orig:end_orig + 1]), None
 
     except PyPDF2.errors.PdfReadError as e:
         return None, f"Could not read PDF: {e}"
