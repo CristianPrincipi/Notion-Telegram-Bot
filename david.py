@@ -4,9 +4,10 @@ import requests
 import json
 import logging
 import re
+import random
 import asyncio
 import pytz
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from telegram.ext import filters as tg_filters
@@ -20,7 +21,10 @@ from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
     genre_help, category_help, priority_help,
 )
-from notion_client import notion_request
+from notion_client import (
+    notion_request, query_database, get_children,
+    get_page_title, extract_rich_text,
+)
 
 
 # --- CONFIGURATION ---
@@ -36,6 +40,12 @@ LEARN_ID = os.environ.get("LEARN_ID")
 DIET_ID = os.environ.get("DIET_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
 FINANCE_ID = os.environ.get("FINANCE_ID")
+
+
+# --- LEARN PROACTIVE SETTINGS (Steps 5 & 6) ---
+NUDGE_AGE_DAYS = 3   # only nudge about Learn items at least this many days old
+NUDGE_MAX      = 5   # max items listed in a single nudge
+TAKEAWAY_SCAN  = 8   # max Learn pages read while hunting for a weekly takeaway
 
 
 # --- NOTION API ---
@@ -93,6 +103,78 @@ def budget():
     msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
 
     return msg
+
+
+# --- STEP 5: LEARN NUDGE --- #
+def build_learn_nudge():
+    """List Learn entries not yet implemented and at least NUDGE_AGE_DAYS old.
+
+    Reads the Learn DB (no Claude call). Returns a plain-text message, or None
+    when there's nothing worth nudging about (so no empty ping is sent).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=NUDGE_AGE_DAYS)).isoformat()
+    filter_obj = {
+        "and": [
+            {"property": "Implemented", "checkbox": {"equals": False}},
+            {"timestamp": "created_time", "created_time": {"on_or_before": cutoff}},
+        ]
+    }
+    sorts = [{"timestamp": "created_time", "direction": "ascending"}]
+
+    pages, err = query_database(LEARN_ID, filter_obj=filter_obj, sorts=sorts)
+    if err or not pages:
+        return None
+
+    titles = [get_page_title(p) for p in pages]
+    shown  = titles[:NUDGE_MAX]
+    lines  = [f"📥 Unprocessed Learn items ({len(titles)})",
+              "Saved a while back and not implemented yet:", ""]
+    lines += [f"• {t}" for t in shown]
+    extra  = len(titles) - len(shown)
+    if extra > 0:
+        lines.append(f"…and {extra} more")
+    lines += ["", "File one with:  Implement [name] - [Area]"]
+    return "\n".join(lines)
+
+
+# --- STEP 6: TAKEAWAY OF THE WEEK --- #
+def _extract_takeaways(blocks):
+    """Return the bullets under a Learn page's '✅ Key Takeaways' heading."""
+    out, capturing = [], False
+    for b in blocks:
+        btype = b.get("type", "")
+        text  = extract_rich_text(b.get(btype, {}).get("rich_text", []))
+        if btype == "heading_2":
+            capturing = "key takeaway" in text.lower()
+            continue
+        if capturing and btype == "bulleted_list_item" and text.strip():
+            out.append(text.strip())
+        elif capturing and btype.startswith("heading_"):
+            break
+    return out
+
+
+def build_weekly_takeaway():
+    """Resurface one random Key Takeaway from a random Learn page (no Claude call).
+
+    Returns a plain-text message, or None if no page yields a takeaway.
+    """
+    pages, err = query_database(LEARN_ID)
+    if err or not pages:
+        return None
+
+    random.shuffle(pages)
+    for page in pages[:TAKEAWAY_SCAN]:
+        blocks, berr = get_children(page["id"])
+        if berr or not blocks:
+            continue
+        takeaways = _extract_takeaways(blocks)
+        if takeaways:
+            pick  = random.choice(takeaways)
+            title = get_page_title(page)
+            return (f"🎓 Takeaway of the week\n"
+                    f"From \u201c{title}\u201d:\n\n{pick}")
+    return None
 
 
 # --- NEW READED BOOK --- #
@@ -390,6 +472,28 @@ async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
     except Exception as e:
         await notify_error(context, "send_weekly_budget", e)
+
+
+# --- SCHEDULED JOB: LEARN NUDGE (Step 5) --- #
+# Sent as plain text (no parse_mode) — Learn titles can contain Markdown-breaking
+# characters that would otherwise make Telegram reject the message.
+async def send_learn_nudge(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        msg = build_learn_nudge()
+        if msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+    except Exception as e:
+        await notify_error(context, "send_learn_nudge", e)
+
+
+# --- SCHEDULED JOB: TAKEAWAY OF THE WEEK (Step 6) --- #
+async def send_weekly_takeaway(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        msg = build_weekly_takeaway()
+        if msg:
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+    except Exception as e:
+        await notify_error(context, "send_weekly_takeaway", e)
 
 
 # --- TELEGRAM MESSAGE HANDLER ---
@@ -701,6 +805,11 @@ if __name__ == '__main__':
         # 07:30 catches early appointments (≥08:00 covered with >30 min lead time).
         job_queue.run_daily(send_daily_reminders, time=time(hour=7, minute=30, tzinfo=milan_tz))
         job_queue.run_daily(send_weekly_budget, time=time(hour=9, minute=30, tzinfo=milan_tz), days=(5, 6))  # 0=Mon ... 6=Sun
+        # Step 5 — Learn nudge: Mon & Thu at 07:35 (just after the reminder poll).
+        # Change the days tuple to run it more/less often (e.g. range(7) for daily).
+        job_queue.run_daily(send_learn_nudge, time=time(hour=7, minute=35, tzinfo=milan_tz), days=(0, 3))
+        # Step 6 — Takeaway of the week: Sunday evening at 18:00.
+        job_queue.run_daily(send_weekly_takeaway, time=time(hour=18, minute=0, tzinfo=milan_tz), days=(6,))
         print("✅ Scheduled jobs registered.")
     except Exception as e:
         print(f"⚠️ Scheduled jobs not available: {e}")
