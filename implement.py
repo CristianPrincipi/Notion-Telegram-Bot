@@ -5,7 +5,7 @@ import requests
 
 from notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
-    delete_block, create_page, get_page_title,
+    delete_block, create_page, get_page_title, update_page,
     paragraph as _paragraph, heading2 as _heading2, heading3 as _heading3,
     callout as _callout, bullet as _bullet, numbered as _numbered, divider as _divider,
 )
@@ -254,6 +254,7 @@ async def handle_implement(update, user_text: str):
       B) Find (or prepare) 'Manual' page in AREA_{TARGET_AREA}_ID database
       C) Merge both with Claude → structured Manual JSON
       D) Update (or create) the Manual page in Notion
+      E) Tick the source page's 'Implemented' checkbox (feeds the Learn-nudge job)
     """
 
     # ── Parse command ──────────────────────────────────────────────────────────
@@ -365,6 +366,10 @@ async def handle_implement(update, user_text: str):
             await update.message.reply_text(f"❌ Could not update Manual: {err}")
             return
         action = "updated 🔄"
+
+    # ── Step E: Mark the source Learn page as implemented (best-effort) ─────────
+    # Drives the Learn-nudge job, which only surfaces still-unimplemented items.
+    update_page(source_page_id, {"Implemented": {"checkbox": True}})
 
     routine_count     = len(merged.get("routine", []))
     improvement_count = len(merged.get("improvements", []))
