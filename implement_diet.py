@@ -6,6 +6,7 @@ import requests
 from notion_client import (
     NOTION_BASE, notion_request, search_page_in_db, get_children,
     append_children, delete_block, create_page, extract_rich_text, rich,
+    update_page,
     bullet as _bullet, paragraph as _paragraph,
 )
 
@@ -361,6 +362,7 @@ async def handle_implement_diet(update, summary_name: str):
       C) Read the current tree
       D) Claude decides which sections to update
       E) Apply surgical updates; report the plan
+      F) Tick the source page's 'Implemented' checkbox (feeds the Learn-nudge job)
     """
 
     summary_name = summary_name.strip()
@@ -427,6 +429,11 @@ async def handle_implement_diet(update, summary_name: str):
 
     # ── Send the implementation plan BEFORE applying (per spec) ────────────────
     await update.message.reply_text(_format_plan(plan, summary_title), parse_mode="Markdown")
+
+    # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
+    # The act of running Implement marks it processed, so the Learn-nudge job
+    # stops surfacing it regardless of how many Diet sections matched.
+    update_page(summary_id, {"Implemented": {"checkbox": True}})
 
     if not updates:
         await update.message.reply_text(
