@@ -97,6 +97,40 @@ def search_page_in_db(db_id: str, query: str, exact: bool = False):
         return None, str(e)
 
 
+def query_database(db_id: str, filter_obj: dict = None, sorts: list = None, page_size: int = 100):
+    """Query a Notion database with an optional filter and sort, following pagination.
+
+    Generic counterpart to search_page_in_db (which only filters by Name). Used by
+    the Learn-nudge and Takeaway jobs. `filter_obj` and `sorts` are passed straight
+    through to the Notion query API. Returns (pages, error).
+    """
+    pages, cursor = [], None
+    try:
+        while True:
+            body = {"page_size": page_size}
+            if filter_obj:
+                body["filter"] = filter_obj
+            if sorts:
+                body["sorts"] = sorts
+            if cursor:
+                body["start_cursor"] = cursor
+            resp = notion_request(
+                "POST",
+                f"{NOTION_BASE}/databases/{db_id}/query",
+                json=body,
+            )
+            if resp.status_code != 200:
+                return [], f"Notion {resp.status_code}: {resp.text[:200]}"
+            data = resp.json()
+            pages.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+        return pages, None
+    except Exception as e:
+        return [], str(e)
+
+
 def get_children(block_id: str):
     """Get direct children of a block/page (handles pagination). Returns (blocks, error)."""
     blocks, cursor = [], None
@@ -176,6 +210,21 @@ def create_page(parent_db_id: str, properties: dict, children: list = None, icon
         return page_id, None
     except Exception as e:
         return None, str(e)
+
+
+def update_page(page_id: str, properties: dict):
+    """Patch a page's properties (e.g. tick a checkbox). Returns (ok, error)."""
+    try:
+        resp = notion_request(
+            "PATCH",
+            f"{NOTION_BASE}/pages/{page_id}",
+            json={"properties": properties},
+        )
+        if resp.status_code != 200:
+            return False, f"Notion {resp.status_code}: {resp.text[:200]}"
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 # ─── BLOCK BUILDERS ────────────────────────────────────────────────────────────
