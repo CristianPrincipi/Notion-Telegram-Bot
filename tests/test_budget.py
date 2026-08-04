@@ -1,13 +1,17 @@
 """Budget tests — Notion mocked with `responses`, so these run offline.
 
-Covers both implementations, because there are two:
+There is ONE implementation, in budget.py:
 
-  david.budget()          the one the `B` command and the weekly recap call
-  budget.compute_budget() the shared one proactive/ calls, which also does pacing
+  compute_budget()  aggregates the month and works out the pacing numbers
+  format_budget(b)  renders the recap text
+  budget()          compute + format — what the `B` command and the Sunday
+                    recap send, reached as david.budget
 
-They aggregate the same data and are expected to agree on the totals; a test
-below asserts exactly that, so if one is changed without the other the suite
-says so.
+david.py used to carry its own independent copy. Same maths, same output, but a
+second place to fix a pagination or rounding bug and a second place to forget.
+The tests below still drive `david.budget()` because that is the shipping path
+for the `B` command, and one asserts it IS budget.budget rather than a copy of
+it.
 """
 
 from datetime import datetime
@@ -196,11 +200,44 @@ def test_compute_budget_with_no_expenses_has_no_top_category(frozen_june_10):
     assert b["projected_over"] == 0.0
 
 
+# ─── ONE IMPLEMENTATION ────────────────────────────────────────────────────────
+
+EQUIVALENCE_CASES = {
+    "several categories": [expense(10.00, "Food"), expense(5.50, "Food"),
+                           expense(30.00, "Shopping"), expense(2.50, "Gift")],
+    "single category":    [expense(7.25, "Food")],
+    "no expenses":        [],
+    "null amount":        [expense(None, "Food"), expense(5.00, "Food")],
+    "no category":        [expense(10.00, None)],
+    "ties on amount":     [expense(10.00, "Food"), expense(10.00, "Gift")],
+    "over the ceiling":   [expense(500.00, "Shopping")],
+}
+
+
+@pytest.mark.parametrize("rows", EQUIVALENCE_CASES.values(), ids=EQUIVALENCE_CASES)
 @responses.activate
-def test_format_budget_matches_the_bot_reply(frozen_june_10):
-    """The shared formatter must still produce the recap the `B` command sends."""
-    rows = [expense(10.00, "Food"), expense(30.00, "Shopping")]
+def test_the_b_command_and_the_shared_recap_agree_exactly(rows):
+    """Byte-for-byte, across every shape of data the aggregation can meet.
+
+    Written while david.py still had its own copy of budget(), to prove the two
+    were interchangeable before one was deleted. It keeps earning its place
+    afterwards: it is what would catch the recap drifting if the `B` command
+    were ever pointed somewhere else again.
+    """
     notion_query(rows)
     notion_query(rows)
 
-    assert format_budget(compute_budget()) == david.budget()
+    assert david.budget() == format_budget(compute_budget())
+
+
+def test_there_is_only_one_budget_implementation():
+    """`B` must call the shared budget(), not a private copy.
+
+    david.py carried its own duplicate for a while — same maths, same output,
+    but a second place to fix and a second place to forget. budget.py was
+    written to replace it and says so in its docstring; the call site simply
+    never switched over.
+    """
+    assert david.budget is budget_module.budget, (
+        "david.py has its own budget() again — the recap can now drift from the "
+        "one proactive/ uses")

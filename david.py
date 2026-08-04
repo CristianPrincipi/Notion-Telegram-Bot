@@ -16,8 +16,9 @@ from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 import config
+from budget import budget
 from config import (
-    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
+    GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from notion_client import notion_request, query_database
@@ -98,45 +99,15 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 # as the handlers below do. They stay sync so they remain directly testable.
 
 # --- BUDGET --- #
-def budget():
-    # Paginated: Notion caps a query at 100 rows, so a single request silently
-    # understates the total from the 101st expense of the month onwards.
-    results, err = query_database(
-        EXPENSES_ID,
-        filter_obj={"property": "Account", "relation": {"contains": MONTH_ID}},
-    )
-
-    if err:
-        print(f"Error: {err}")
-        return None
-
-    # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
-    cat_Tot = {}
-    grand_Total = 0.0
-
-    for page in results:
-        props = page.get("properties", {})
-
-        line_amount = props.get("Amount", {}).get("number", 0) or 0
-        grand_Total += line_amount
-
-        cat_multi = props.get("Category", {}).get("multi_select", [])
-        category_name = cat_multi[0].get("name", "Other") if cat_multi else "Other"
-
-        cat_Tot[category_name] = cat_Tot.get(category_name, 0) + line_amount
-
-    remaining = BUDGET_CEILING - grand_Total
-
-    # Construct message — show every category dynamically (not just the hardcoded 4)
-    msg = "💰 **Monthly Budget**\n"
-    msg += "━━━━━━━━━━━━━━━\n"
-    for cat in sorted(cat_Tot, key=lambda c: cat_Tot[c], reverse=True):
-        msg += f"**{cat}: €{cat_Tot[cat]:.2f}**\n"
-    msg += "━━━━━━━━━━━━━━━\n"
-    msg += f"**Spent: €{grand_Total:.2f}**\n"
-    msg += f"**Remaining: €{remaining:.2f}** (of €{BUDGET_CEILING:.0f})"
-
-    return msg
+# Imported, not defined here. budget.py owns the aggregation and the recap text,
+# and proactive/ already reads its compute_budget() for the morning pace tag and
+# the pacing warning. david.py used to carry a second, independent copy: same
+# maths, same output, but a second place to fix a pagination or rounding bug and
+# a second place to forget. budget.py was written as its replacement and says so
+# in its own docstring — the `B` command simply never switched over.
+#
+# Still reached as david.budget, so the call sites and the spies in the tests are
+# unchanged.
 
 
 # --- NEW READED BOOK --- #
