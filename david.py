@@ -19,7 +19,7 @@ from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
     PROACTIVE_TIMEZONE, genre_help,
 )
-from notion_client import notion_request
+from notion_client import notion_request, query_database
 from proactive.scheduler import register_all
 
 # Configured at import so config.validate() can still be the first statement in
@@ -65,22 +65,16 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 
 # --- BUDGET --- #
 def budget():
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
+    # Paginated: Notion caps a query at 100 rows, so a single request silently
+    # understates the total from the 101st expense of the month onwards.
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Account", "relation": {"contains": MONTH_ID}},
+    )
 
-    # Filter by the relation to the current Month ID
-    query_data = {
-        "filter": {
-            "property": "Account",
-            "relation": {"contains": MONTH_ID},
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
-
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
+    if err:
+        print(f"Error: {err}")
         return None
-
-    results = response.json().get("results", [])
 
     # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
     cat_Tot = {}
@@ -133,14 +127,13 @@ def add_New_Book(name, author, genre):
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
     """Search LETTI database for a book by name. Returns page_id or None."""
-    url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
-    response = notion_request("POST", url, json={
-        "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
-    })
-    if response.status_code != 200:
-        print(f"Errore query Notion: {response.status_code}")
+    results, err = query_database(
+        LETTI_ID,
+        filter_obj={"property": "Name", "title": {"contains": book_name.strip()}},
+    )
+    if err:
+        print(f"Errore query Notion: {err}")
         return None
-    results = response.json().get("results")
     return results[0]["id"] if results else None
 
 
@@ -293,20 +286,15 @@ def add_Expenses(name, amount, category):
 # --- UPDATE EXPENSES FUNCTION ---
 def update_Expense(name, amount, category):
     # 1. Find the expense page ID by name
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
-    query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": name.strip()}
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+    )
 
-    if response.status_code != 200:
-        print(f"Error querying Notion for expense: {response.status_code}")
+    if err:
+        print(f"Error querying Notion for expense: {err}")
         return False, None
 
-    results = response.json().get("results", [])
     if not results:
         print(f"No expense found with name: {name}")
         return False, None
@@ -334,20 +322,15 @@ def update_Expense(name, amount, category):
 # --- DELETE EXPENSES FUNCTION ---
 def delete_Expense(name):
     # 1. Find the expense page ID by name
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
-    query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": name.strip()}
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+    )
 
-    if response.status_code != 200:
-        print(f"Error querying Notion for expense: {response.status_code}")
+    if err:
+        print(f"Error querying Notion for expense: {err}")
         return False, None
 
-    results = response.json().get("results", [])
     if not results:
         print(f"No expense found with name: {name}")
         return False, None
