@@ -108,6 +108,39 @@ reject non-PDF MIME types and files over **15 MB**, and both cap the download at
 30 s per request / 2 minutes overall — Telegram's own download helper has no
 timeout and can hang a worker indefinitely.
 
+## Concurrency
+
+Every Notion, Anthropic and PyPDF2 call in David is a synchronous, blocking
+call. python-telegram-bot runs updates on one event loop, so making one of those
+calls directly inside an `async def` stops the **entire** bot for its duration —
+no other command answered, no scheduled job fired. A `Learn video` on a long
+transcript could sit in a 300-second Anthropic read and take David down with it
+for five minutes.
+
+So the blocking functions stay synchronous (they remain directly testable) and
+every handler reaches them through `asyncio.to_thread`. The operations that could
+otherwise run forever — the Anthropic calls, article and transcript fetches, PDF
+parsing — also get an `asyncio.wait_for` cap from `config.py`, and answer with a
+clean Telegram message when it fires.
+
+Only **reads** are capped that way. `wait_for` cancels the waiting coroutine but
+cannot cancel the worker thread, so timing out a write would report a failure
+while it was still in flight. Notion calls are already bounded by
+`notion_client.notion_request`'s per-request timeout and its bounded retries.
+
+Notion requests reuse a pooled `requests.Session`, one per worker thread —
+`requests.Session` is not thread-safe, and a shared one can hand the same socket
+to two threads at once.
+
+**Updates are still processed sequentially, and that is deliberate.** Freeing the
+event loop is not the same as processing two updates at once. Sequential
+processing is currently the only thing serialising the read-modify-write cycles
+that `page_lock.py` does not cover — it protects the Implement Manual/Diet flows,
+but nothing yet protects, say, two overlapping expense edits. Enabling
+`concurrent_updates` before those locks exist and are verified reintroduces the
+lost-update bug `page_lock.py` was written to prevent.
+`tests/test_async_io.py` fails if it is turned on.
+
 ## Development
 
 ```bash

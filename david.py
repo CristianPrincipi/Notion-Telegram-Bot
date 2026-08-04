@@ -63,6 +63,13 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 
 
 # --- NOTION FUNCTIONS --- #
+#
+# Everything in this section is SYNCHRONOUS and makes blocking HTTP calls. None
+# of it may be called directly from an `async def` — python-telegram-bot runs
+# updates on one event loop, so a blocking call here stops every other command
+# and every scheduled job for its whole duration. Call them with
+#   await asyncio.to_thread(fn, ...)
+# as the handlers below do. They stay sync so they remain directly testable.
 
 # --- BUDGET --- #
 def budget():
@@ -369,7 +376,7 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
 # --- SCHEDULED JOB: SEND BUDGET RECAP --- #
 async def send_budget_recap(context: ContextTypes.DEFAULT_TYPE):
     try:
-        result_text = budget()
+        result_text = await asyncio.to_thread(budget)
         if result_text:
             await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
         else:
@@ -569,7 +576,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REGEX FOR BUDGET: Look for "B"
     if re.fullmatch(r"(?i)B", user_text):
-        result_text = budget()
+        result_text = await asyncio.to_thread(budget)
         if result_text:
             await update.message.reply_text(result_text, parse_mode='Markdown')
         else:
@@ -615,7 +622,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ Adding '{book_name}' '{author}' '{genre_input}' to Notion...")
 
         # CALL THE NOTION FUNCTION
-        page_id = add_New_Book(book_name, author, genre)
+        page_id = await asyncio.to_thread(add_New_Book, book_name, author, genre)
 
         if page_id:
             await update.message.reply_text("✅ Success! Book added to your database.")
@@ -636,7 +643,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quote_content = quote_match.group(3).strip()
 
         await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
-        page_id = find_Book_Page(book_name)
+        page_id = await asyncio.to_thread(find_Book_Page, book_name)
 
         if not page_id:
             await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
@@ -652,7 +659,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- MANUAL MODE: full quote provided directly ---
-        if add_Quote(page_id, quote_title, quote_content):
+        if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
             await update.message.reply_text(f"✍️ Quote added to '{book_name}'!")
         else:
             await update.message.reply_text("❌ Error during quote transcription.")
@@ -685,7 +692,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
-        success, page_id = update_Expense(name, amount, category)
+        success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
 
         if success:
             await update.message.reply_text(f"✅ Expense '{name}' updated successfully!")
@@ -703,7 +710,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Deleting expense '{name}'...")
 
-        success, page_id = delete_Expense(name)
+        success, page_id = await asyncio.to_thread(delete_Expense, name)
 
         if success:
             await update.message.reply_text(f"🗑️ Expense '{name}' deleted successfully!")
@@ -738,7 +745,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
 
         # CALL THE NOTION FUNCTION
-        success = add_Expenses(name, amount, category)
+        success = await asyncio.to_thread(add_Expenses, name, amount, category)
 
         if success:
             await update.message.reply_text("✅ Success! Expenses added to your database.")
@@ -849,7 +856,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Find book in Notion
         await update.message.reply_text(f"🔍 Searching \'{book_name}\' in library…")
-        page_id = find_Book_Page(book_name)
+        page_id = await asyncio.to_thread(find_Book_Page, book_name)
         if not page_id:
             await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
             return
@@ -888,7 +895,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Save to Notion
-        if add_Quote(page_id, quote_title, quote_content):
+        if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
             await update.message.reply_text(f"✍️ Quote added to \'{book_name}\'!")
         else:
             await update.message.reply_text("❌ Error saving quote to Notion.")
@@ -907,6 +914,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     config.validate()
 
+    # UPDATES STAY SEQUENTIAL — do not add .concurrent_updates() here.
+    #
+    # Every blocking call now runs on a worker thread, so one slow command no
+    # longer freezes the bot: the event loop stays free to answer other commands
+    # and to fire scheduled jobs while a Learn summarisation is in flight. That
+    # is a different thing from processing two UPDATES at once, which this line
+    # deliberately still does not do.
+    #
+    # Sequential processing is currently the only thing serialising the
+    # read-modify-write cycles that page_lock.py does not cover. The per-page
+    # locks protect the Implement Manual/Diet flows; nothing yet protects, say,
+    # two overlapping expense edits. Turning concurrency on before those locks
+    # are in place AND verified would reintroduce exactly the lost-update class
+    # of bug page_lock.py exists to prevent.
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # --- SCHEDULED JOBS ---
