@@ -34,6 +34,8 @@ import implement
 import implement_diet
 import learn
 import page_lock
+import proactive.scheduler as scheduler
+import reminder
 from conftest import FakeContext, FakeDocument, FakeUpdate, run
 
 
@@ -273,6 +275,43 @@ def test_implement_diet_runs_every_call_off_the_loop(offloaded, diet_stubs):
     assert update.message.replied_with("section(s) modified")
 
 
+# ─── 4b. THE CALENDAR PATHS ────────────────────────────────────────────────────
+# Google Calendar's client is as blocking as Notion's, and the proactive jobs
+# fire at fixed times whether or not you are mid-conversation.
+
+def test_remind_calls_google_calendar_off_the_loop(offloaded, monkeypatch):
+    stubs = stub_module(monkeypatch, reminder, {
+        "find_conflicts": lambda start, end: ([], None),
+        "create_event":   lambda name, start, minutes: ("https://cal/link", None),
+    })
+    update = FakeUpdate(text="Remind Dentist 12.06 - 14.30")
+
+    run(reminder.handle_remind(update, update.message.text))
+
+    assert offloaded == expect(stubs, "find_conflicts", "create_event")
+    assert update.message.replied_with("Reminder set")
+
+
+PROACTIVE_JOBS = [
+    ("_morning_briefing_job", "build_morning_briefing"),
+    ("_evening_briefing_job", "build_evening_briefing"),
+    ("_budget_pacing_job",    "build_pacing_warning"),
+]
+
+
+@pytest.mark.parametrize("job, builder", PROACTIVE_JOBS, ids=[j for j, _ in PROACTIVE_JOBS])
+def test_proactive_jobs_build_their_text_off_the_loop(offloaded, monkeypatch, job, builder):
+    """A job that blocks the loop freezes inbound commands just as hard."""
+    stubs = stub_module(monkeypatch, scheduler, {builder: lambda: "COMPOSED TEXT"})
+    context = FakeContext()
+    context.job = type("Job", (), {"chat_id": "-100123"})()
+
+    run(getattr(scheduler, job)(context))
+
+    assert offloaded == expect(stubs, builder)
+    assert context.bot.sent == [("-100123", "COMPOSED TEXT")]
+
+
 # ─── 5. LONG OPERATIONS ARE BOUNDED ────────────────────────────────────────────
 # to_thread alone stops a slow call freezing the bot, but it does not stop the
 # COMMAND hanging forever. These assert the wait_for caps, and that the user is
@@ -441,6 +480,9 @@ OFFLOADED_FUNCTIONS = [
     implement.clear_page_blocks_by_id, implement.update_page,
     implement_diet.read_diet_tree, implement_diet.decide_updates,
     implement_diet.apply_updates, implement_diet.find_or_create_diet_page,
+    reminder.find_conflicts, reminder.create_event,
+    scheduler.build_morning_briefing, scheduler.build_evening_briefing,
+    scheduler.build_pacing_warning,
 ]
 
 
