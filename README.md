@@ -69,6 +69,22 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Diag` / `Find [name]` / `DBs` | Notion ID diagnostics |
 
+## Scheduled messages
+
+All times Europe/Rome, configured in `config.py` and attached by
+`david.register_jobs()`.
+
+| Time | Job | Message |
+| --- | --- | --- |
+| 07:30 daily | `morning_briefing` | Today's calendar events + a one-line budget pace |
+| 13:00 daily | `budget_pacing` | Overspend projection — **only** when trending meaningfully over |
+| 20:00 daily | `evening_briefing` | Tomorrow's events. Silent when tomorrow is empty |
+| 09:30 Sat + Sun | `weekly_budget` | Full per-category budget recap |
+
+The two briefings replaced the old `send_daily_reminders` job, which sent both
+today's and tomorrow's events at 07:30. Running both would have sent today's
+events twice each morning.
+
 ### File uploads
 
 PDFs are accepted on the `Learn pdf` and `Add q ... / ...` captions. Both paths

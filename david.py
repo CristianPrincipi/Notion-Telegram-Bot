@@ -10,16 +10,17 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from learn import handle_learn
 from implement import handle_implement
-from reminder import handle_remind, build_today_message, build_tomorrow_message
+from reminder import handle_remind
 from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 import config
 from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
-    genre_help,
+    PROACTIVE_TIMEZONE, genre_help,
 )
 from notion_client import notion_request
+from proactive.scheduler import register_all
 
 # Configured at import so config.validate() can still be the first statement in
 # __main__ and have somewhere to send its warnings.
@@ -378,23 +379,6 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         print(f"[notify_error] failed to report error in {where}: {err}")
 
 
-# --- SCHEDULED JOB: DAILY REMINDER POLL --- #
-# Polls Google Calendar each morning (Europe/Rome) and pings Telegram for today's
-# and tomorrow's events. Calendar is the source of truth, so reminders survive
-# Railway restarts — nothing is held in memory.
-async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        today_msg    = build_today_message()
-        tomorrow_msg = build_tomorrow_message()
-
-        if today_msg:
-            await context.bot.send_message(chat_id=CHAT_ID, text=today_msg, parse_mode='Markdown')
-        if tomorrow_msg:
-            await context.bot.send_message(chat_id=CHAT_ID, text=tomorrow_msg, parse_mode='Markdown')
-    except Exception as e:
-        await notify_error(context, "send_daily_reminders", e)
-
-
 # --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
 async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -405,6 +389,53 @@ async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
     except Exception as e:
         await notify_error(context, "send_weekly_budget", e)
+
+
+# --- SCHEDULED JOB REGISTRATION --- #
+
+def register_jobs(application, chat_id) -> bool:
+    """Attach every scheduled job. Call once, at startup. Returns True if scheduling is on.
+
+    Two families:
+      - the weekly budget recap, defined above
+      - the proactive briefings, which live in proactive/ and are attached by
+        proactive.scheduler.register_all
+
+    The briefings REPLACE the old send_daily_reminders job rather than joining
+    it: the morning briefing owns the 07:30 slot that job used, and the evening
+    briefing owns tomorrow's events. Running both would send today's events
+    twice at 07:30 and tomorrow's twice (07:30 and 20:00).
+
+    Like register_handlers, this is a function rather than inline __main__ code
+    so the wiring is importable and can be tested.
+    """
+    try:
+        job_queue = application.job_queue
+        if job_queue is None:
+            print("⚠️ JobQueue unavailable — scheduled jobs not registered "
+                  "(install python-telegram-bot[job-queue]).")
+            return False
+
+        # Weekly budget recap — the full per-category breakdown, Sat + Sun 09:30.
+        # Distinct from the proactive one-line pace tag and the pacing warning.
+        #
+        # days is (6, 0) = Saturday, Sunday. python-telegram-bot v20 changed this
+        # mapping from monday-sunday to SUNDAY-saturday, so the old (5, 6) — which
+        # carried a "0=Mon ... 6=Sun" comment — had been firing Fri + Sat.
+        job_queue.run_daily(
+            send_weekly_budget,
+            time=time(hour=9, minute=30, tzinfo=pytz.timezone(PROACTIVE_TIMEZONE)),
+            days=(6, 0),                      # 0=Sun, 1=Mon ... 6=Sat
+            name="weekly_budget",
+        )
+
+        # Morning briefing (07:30), evening briefing (20:00), budget pacing (13:00).
+        register_all(application, chat_id)
+        return True
+    except Exception as e:
+        print(f"⚠️ Scheduled jobs not available: {e}")
+        print("Bot will still work normally — scheduling runs fine on Railway.")
+        return False
 
 
 # --- ACCESS CONTROL --- #
@@ -826,21 +857,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     config.validate()
 
-    milan_tz = pytz.timezone("Europe/Rome")
-
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # --- SCHEDULED JOBS ---
-    try:
-        job_queue = application.job_queue
-        # Daily reminder poll at 07:30 Milan — pings today's + tomorrow's calendar events.
-        # 07:30 catches early appointments (≥08:00 covered with >30 min lead time).
-        job_queue.run_daily(send_daily_reminders, time=time(hour=7, minute=30, tzinfo=milan_tz))
-        job_queue.run_daily(send_weekly_budget, time=time(hour=9, minute=30, tzinfo=milan_tz), days=(5, 6))  # 0=Mon ... 6=Sun
-        print("✅ Scheduled jobs registered.")
-    except Exception as e:
-        print(f"⚠️ Scheduled jobs not available: {e}")
-        print("Bot will still work normally — scheduling runs fine on Railway.")
+    register_jobs(application, CHAT_ID)
 
     # --- HANDLERS (owner-only) ---
     # config.validate() already proved OWNER_ID is set and numeric.

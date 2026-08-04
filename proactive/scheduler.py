@@ -1,7 +1,7 @@
 """
 Registers every proactive job onto the python-telegram-bot JobQueue.
 
-david.py __main__ calls register_all(application, CHAT_ID) once at startup.
+david.register_jobs() calls register_all(application, CHAT_ID) once at startup.
 Add one run_daily / run_repeating call per feature as you build the roadmap.
 
 Error handling mirrors david.notify_error but is kept local on purpose: this
