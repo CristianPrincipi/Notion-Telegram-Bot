@@ -185,10 +185,9 @@ ROUTES = [
           "name and author are stripped"),
     Route("Add b Dune - Herbert - z", NO_HANDLER, reply("Invalid genre"),
           "unknown genre is rejected before touching Notion"),
-    # KNOWN BUG: group(3) is not .strip()ed before the GENRE_MAP lookup, so a
-    # trailing space on an otherwise valid genre code is rejected.
-    Route("Add b Dune - Herbert - s ", NO_HANDLER, reply("Invalid genre"),
-          "trailing space after genre code is rejected", known_bug=True),
+    Route("Add b Dune - Herbert - s ", "add_New_Book",
+          {"name": "Dune", "author": "Herbert", "genre": "Satira"},
+          "trailing space after the genre code is tolerated"),
 
     # ── ADD QUOTE ──────────────────────────────────────────────────────────────
     Route("Add q Dune - On Fear - Fear is the mind-killer.",
@@ -267,21 +266,16 @@ ROUTES = [
     Route("add e carrefour 2.20 f", "add_Expenses",
           {"name": "carrefour", "amount": 2.20, "category": "Food"},
           "command is case-insensitive, name keeps its case"),
-    # KNOWN BUG: the 'c' → Carrefour shortcut is a case-sensitive `==` while the
-    # command itself is case-insensitive, so "Add e C 5" logs a name of "C".
     Route("Add e C 5", "add_Expenses",
-          {"name": "C", "amount": 5.0, "category": "Food"},
-          "uppercase 'C' is NOT expanded to Carrefour", known_bug=True),
-    # KNOWN BUG: an unknown category code is dropped and silently replaced with
-    # the default instead of being reported as a typo.
-    Route("Add e Beer 5 zzz", "add_Expenses",
-          {"name": "Beer", "amount": 5.0, "category": "Food"},
-          "unknown category silently becomes the default", known_bug=True),
-    # KNOWN BUG: the amount regex is unanchored and only understands a dot, so a
-    # comma decimal is truncated — "2,20" is recorded as €2.00, not €2.20.
+          {"name": "Carrefour", "amount": 5.0, "category": "Food"},
+          "the 'c' shortcut is case-insensitive like the command"),
+    Route("Add e Beer 5 zzz", NO_HANDLER, reply("unknown category"),
+          "a typo'd category is reported, not silently defaulted"),
     Route("Add e Carrefour 2,20", "add_Expenses",
-          {"name": "Carrefour", "amount": 2.0, "category": "Food"},
-          "comma decimal silently truncates the amount", known_bug=True),
+          {"name": "Carrefour", "amount": 2.20, "category": "Food"},
+          "comma decimal parses to the same value as a dot"),
+    Route("Add e Free 0", NO_HANDLER, reply("greater than zero"),
+          "a zero amount is rejected"),
 
     # ── PRECEDENCE ─────────────────────────────────────────────────────────────
     # Reminder is checked before the expense commands, so an expense-looking
@@ -294,23 +288,17 @@ ROUTES = [
           "find_Book_Page → add_Quote",
           {"book_name": "Dune", "quote_title": "Note", "quote_text": "Add e coffee 5"},
           "precedence: quote body may contain another command"),
-    # KNOWN BUG: `Add b` is matched with re.search (unanchored) and is checked
-    # before Implement, so an Implement whose page name contains "add b " plus
-    # two " - " separators is hijacked by the book parser.
-    Route("Implement Add b guide - Notes - Brain", NO_HANDLER, reply("Invalid genre"),
-          "unanchored 'Add b' hijacks an Implement command", known_bug=True),
-    # KNOWN BUG: same root cause on the expense side — `Add e` uses re.search, so
-    # a sentence that merely mentions it creates a real expense in Notion.
-    Route("Please add e coffee 3 for me", "add_Expenses",
-          {"name": "coffee", "amount": 3.0, "category": "Food"},
-          "unanchored 'add e' fires mid-sentence", known_bug=True),
-    # KNOWN BUG: and on the quote side. This row is what tells `re.search` apart
-    # from `re.fullmatch` for the quote pattern — every other quote row matches
-    # the whole string either way, so without it that anchoring is untested.
+    # Anchoring keeps `Add b` from hijacking an Implement that merely contains it.
+    Route("Implement Add b guide - Notes - Brain", "handle_implement",
+          {"user_text": "Implement Add b guide - Notes - Brain"},
+          "precedence: 'Add b' inside an Implement no longer hijacks it"),
+    Route("Please add e coffee 3 for me", NO_HANDLER, reply("I didn't get that"),
+          "'add e' no longer fires mid-sentence"),
+    # This row is what tells re.fullmatch apart from re.search for the quote
+    # pattern — every other quote row matches the whole string either way.
     Route("note: Add q Dune - On Fear - Fear is the mind-killer.",
-          "find_Book_Page → add_Quote",
-          {"book_name": "Dune", "quote_title": "On Fear", "quote_text": "Fear is the mind-killer."},
-          "unanchored 'Add q' fires mid-sentence", known_bug=True),
+          NO_HANDLER, reply("I didn't get that"),
+          "'Add q' no longer fires mid-sentence"),
 
     # ── UNRECOGNISED ───────────────────────────────────────────────────────────
     Route("hello", NO_HANDLER, reply("I didn't get that"), "plain chatter"),
@@ -319,10 +307,8 @@ ROUTES = [
     Route("Find", NO_HANDLER, reply("I didn't get that"), "'Find' with no query"),
     Route("Add e Carrefour", NO_HANDLER, reply("I didn't get that"), "expense with no amount"),
     Route("Add b Dune - Herbert", NO_HANDLER, reply("I didn't get that"), "book with no genre"),
-    # KNOWN BUG: the single-letter commands use re.fullmatch on the raw text, so
-    # a stray trailing space (easy to send from a phone keyboard) misses.
-    Route("B ", NO_HANDLER, reply("I didn't get that"),
-          "trailing space defeats the budget command", known_bug=True),
+    # handle_message strips before matching, so phone-keyboard whitespace is fine.
+    Route("B ", "budget", {}, "a stray trailing space still runs the command"),
 ]
 
 

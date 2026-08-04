@@ -5,21 +5,22 @@ import requests
 import re
 import asyncio
 import pytz
-from datetime import datetime, time
+from datetime import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from learn import handle_learn
 from implement import handle_implement
 from reminder import handle_remind
+from calendar_client import now_local
 from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 import config
 from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
-    PROACTIVE_TIMEZONE, genre_help,
+    PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
-from notion_client import notion_request
+from notion_client import notion_request, query_database
 from proactive.scheduler import register_all
 
 # Configured at import so config.validate() can still be the first statement in
@@ -65,22 +66,16 @@ headers = {'Authorization': f"Bearer {NOTION_KEY}",
 
 # --- BUDGET --- #
 def budget():
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
+    # Paginated: Notion caps a query at 100 rows, so a single request silently
+    # understates the total from the 101st expense of the month onwards.
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Account", "relation": {"contains": MONTH_ID}},
+    )
 
-    # Filter by the relation to the current Month ID
-    query_data = {
-        "filter": {
-            "property": "Account",
-            "relation": {"contains": MONTH_ID},
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
-
-    if response.status_code != 200:
-        print(f"Error: {response.status_code}")
+    if err:
+        print(f"Error: {err}")
         return None
-
-    results = response.json().get("results", [])
 
     # Single-pass aggregation — one dict, no variable shadowing, O(n) not O(n²)
     cat_Tot = {}
@@ -133,14 +128,13 @@ def add_New_Book(name, author, genre):
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
     """Search LETTI database for a book by name. Returns page_id or None."""
-    url = f"https://api.notion.com/v1/databases/{LETTI_ID}/query"
-    response = notion_request("POST", url, json={
-        "filter": {"property": "Name", "title": {"contains": book_name.strip()}}
-    })
-    if response.status_code != 200:
-        print(f"Errore query Notion: {response.status_code}")
+    results, err = query_database(
+        LETTI_ID,
+        filter_obj={"property": "Name", "title": {"contains": book_name.strip()}},
+    )
+    if err:
+        print(f"Errore query Notion: {err}")
         return None
-    results = response.json().get("results")
     return results[0]["id"] if results else None
 
 
@@ -266,7 +260,10 @@ def add_Quote(page_id, quote_title, quote_text):
 def add_Expenses(name, amount, category):
 
     # --- GENERATE TODAY DATE ---
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Europe/Rome, not the host clock: Railway runs UTC, so a naive now() files
+    # anything logged after local midnight under YESTERDAY — and at a month
+    # boundary, into the wrong month's budget entirely.
+    today = now_local().strftime("%Y-%m-%d")
 
     data = {
         "parent": {"database_id": EXPENSES_ID},
@@ -293,20 +290,15 @@ def add_Expenses(name, amount, category):
 # --- UPDATE EXPENSES FUNCTION ---
 def update_Expense(name, amount, category):
     # 1. Find the expense page ID by name
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
-    query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": name.strip()}
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+    )
 
-    if response.status_code != 200:
-        print(f"Error querying Notion for expense: {response.status_code}")
+    if err:
+        print(f"Error querying Notion for expense: {err}")
         return False, None
 
-    results = response.json().get("results", [])
     if not results:
         print(f"No expense found with name: {name}")
         return False, None
@@ -334,20 +326,15 @@ def update_Expense(name, amount, category):
 # --- DELETE EXPENSES FUNCTION ---
 def delete_Expense(name):
     # 1. Find the expense page ID by name
-    url = f"https://api.notion.com/v1/databases/{EXPENSES_ID}/query"
-    query_data = {
-        "filter": {
-            "property": "Name",
-            "title": {"contains": name.strip()}
-        }
-    }
-    response = notion_request("POST", url, json=query_data)
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+    )
 
-    if response.status_code != 200:
-        print(f"Error querying Notion for expense: {response.status_code}")
+    if err:
+        print(f"Error querying Notion for expense: {err}")
         return False, None
 
-    results = response.json().get("results", [])
     if not results:
         print(f"No expense found with name: {name}")
         return False, None
@@ -379,8 +366,8 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         print(f"[notify_error] failed to report error in {where}: {err}")
 
 
-# --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
-async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
+# --- SCHEDULED JOB: SEND BUDGET RECAP --- #
+async def send_budget_recap(context: ContextTypes.DEFAULT_TYPE):
     try:
         result_text = budget()
         if result_text:
@@ -388,7 +375,7 @@ async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
     except Exception as e:
-        await notify_error(context, "send_weekly_budget", e)
+        await notify_error(context, "send_budget_recap", e)
 
 
 # --- SCHEDULED JOB REGISTRATION --- #
@@ -416,17 +403,16 @@ def register_jobs(application, chat_id) -> bool:
                   "(install python-telegram-bot[job-queue]).")
             return False
 
-        # Weekly budget recap — the full per-category breakdown, Sat + Sun 09:30.
+        # Budget recap — the full per-category breakdown, Sunday 09:30.
         # Distinct from the proactive one-line pace tag and the pacing warning.
         #
-        # days is (6, 0) = Saturday, Sunday. python-telegram-bot v20 changed this
-        # mapping from monday-sunday to SUNDAY-saturday, so the old (5, 6) — which
-        # carried a "0=Mon ... 6=Sun" comment — had been firing Fri + Sat.
+        # SUNDAY is a named constant on purpose: a bare integer here is exactly
+        # how this call site ran on the wrong days for months (see config.py).
         job_queue.run_daily(
-            send_weekly_budget,
+            send_budget_recap,
             time=time(hour=9, minute=30, tzinfo=pytz.timezone(PROACTIVE_TIMEZONE)),
-            days=(6, 0),                      # 0=Sun, 1=Mon ... 6=Sat
-            name="weekly_budget",
+            days=(SUNDAY,),
+            name="budget_recap",
         )
 
         # Morning briefing (07:30), evening briefing (20:00), budget pacing (13:00).
@@ -460,11 +446,19 @@ def register_handlers(application, owner_id: int):
     owner_only = build_owner_filter(owner_id)
 
     # LISTEN FOR ANY TEXT MESSAGE... (except commands)
-    application.add_handler(
-        MessageHandler(filters.TEXT & (~filters.COMMAND) & owner_only, handle_message))
+    # ~EDITED_MESSAGE: python-telegram-bot matches edited_message by default, so
+    # without it, correcting a typo in an expense re-runs the command and creates
+    # a SECOND Notion entry.
+    application.add_handler(MessageHandler(
+        filters.TEXT & (~filters.COMMAND) & owner_only
+        & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_message))
 
-    application.add_handler(
-        MessageHandler(filters.Document.ALL & owner_only, handle_document))
+    # Same for uploads: editing a file's caption would re-download the PDF and
+    # append the quote to Notion a second time.
+    application.add_handler(MessageHandler(
+        filters.Document.ALL & owner_only & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_document))
 
     # Catch-all for everyone else. Registered LAST: within a handler group PTB
     # stops at the first match, so the owner's messages are taken by the handlers
@@ -492,9 +486,52 @@ async def handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+# --- COMMAND ARGUMENT PARSING --- #
+# Every command pattern below is matched with re.fullmatch, never re.search: a
+# partial match must fail loudly rather than execute a command the user only
+# mentioned in passing. That only holds if the incoming text is stripped first,
+# which handle_message does — otherwise a trailing space from a phone keyboard
+# would defeat every command instead of just `B`.
+
+# Accepts a dot or a comma decimal separator. Italian keyboards produce commas
+# by reflex, and the old \d+\.?\d* matched "2" out of "2,20" and dropped the
+# rest, recording EUR 2.00 as a success.
+AMOUNT = r"(\d+(?:[.,]\d+)?)"
+
+
+def parse_amount(raw: str):
+    """Parse an amount written with either separator. Returns (amount, error)."""
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        return None, f"❌ Error: '{raw}' is not a valid amount."
+    if value <= 0:
+        return None, f"❌ Error: amount must be greater than zero, got {value:g}."
+    return value, None
+
+
+def resolve_category(raw):
+    """Map a category shortcut to its Notion name. Returns (category, error).
+
+    An ABSENT category falls back to the default. A SUPPLIED but unrecognised one
+    is an error — otherwise a typo silently files the expense under Food, which
+    is indistinguishable from having meant the default. Mirrors how genre already
+    behaves.
+    """
+    if raw is None or not raw.strip():
+        return DEFAULT_CATEGORY, None
+    category = CATEGORY_MAP.get(raw.strip().lower())
+    if category is None:
+        return None, (f"❌ Error: unknown category '{raw.strip()}'. "
+                      f"Please use: {category_help()}")
+    return category, None
+
+
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    # Stripped once, here: every pattern below is a fullmatch, so stray leading
+    # or trailing whitespace would otherwise miss every command.
+    user_text = (update.message.text or "").strip()
     print(f"Received: {user_text}") # So you can see it in Colab logs
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
@@ -550,24 +587,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- FIND: "Find [query]" → search pages/databases by name, return IDs ---
-    find_match = re.match(r"(?i)find\s+(.+)", user_text)
+    find_match = re.fullmatch(r"(?i)find\s+(.+)", user_text)
     if find_match:
         await handle_find(update, find_match.group(1))
         return
 
     # --- REGEX FOR REMINDER: "Remind [Name] [Date] - [Time]" ---
-    if re.match(r"(?i)remind\s+", user_text):
+    if re.fullmatch(r"(?i)remind\s+(.+)", user_text):
         await handle_remind(update, user_text)
         return
 
     # --- REGEX FOR NEW BOOK: Look for "Add b [Book's Name] - [Author] - [Genre]"
     book_pattern = r"(?i)add b (.+?) - (.+?) - (.+)"
-    book_match = re.search(book_pattern, user_text)
+    book_match = re.fullmatch(book_pattern, user_text)
 
     if book_match:
         book_name = book_match.group(1).strip()
         author = book_match.group(2).strip()
-        genre_input = book_match.group(3)
+        genre_input = book_match.group(3).strip()
 
         genre = GENRE_MAP.get(genre_input.lower())
 
@@ -591,7 +628,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #   Manual:  Add q [Book] - [Title] - [Full quote]
     #   PDF:     Add q [Book] - [Title] - [Begin text] / [End text]
     quote_pattern = r"(?i)add q (.+?) - (.+?) - ([\s\S]+)"
-    quote_match = re.search(quote_pattern, user_text)
+    quote_match = re.fullmatch(quote_pattern, user_text)
 
     if quote_match:
         book_name     = quote_match.group(1).strip()
@@ -622,22 +659,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
-    if re.match(r"(?i)learn\s+\w+", user_text):
+    if re.fullmatch(r"(?i)learn\s+\w+[\s\S]*", user_text):
         await handle_learn(update, user_text)
         return
 
     # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
-    if re.match(r"(?i)implement\s+.+\s*-\s*.+", user_text):
+    if re.fullmatch(r"(?i)implement\s+.+\s*-\s*.+", user_text):
         await handle_implement(update, user_text)
         return
 
     # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
-    update_expense_match = re.fullmatch(r"(?i)U e (.+?) (\d+\.?\d*)(?:\s+(\w+))?", user_text)
+    update_expense_match = re.fullmatch(rf"(?i)U e (.+?) {AMOUNT}(?:\s+(\w+))?", user_text)
     if update_expense_match:
         name = update_expense_match.group(1).strip()
-        amount = float(update_expense_match.group(2))
-        category_input = update_expense_match.group(3)
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
+
+        amount, err = parse_amount(update_expense_match.group(2))
+        if err:
+            await update.message.reply_text(err)
+            return
+
+        category, err = resolve_category(update_expense_match.group(3))
+        if err:
+            await update.message.reply_text(err)
+            return
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
@@ -671,19 +715,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # REGEX FOR EXPENSES: Look for "Add e [Name] [Amount] [Category]"
-    pattern = r"(?i)add e (.+?) (\d+\.?\d*)(?:\s+(\w+))?"
-    expenses_match = re.search(pattern, user_text)
+    pattern = rf"(?i)add e (.+?) {AMOUNT}(?:\s+(\w+))?"
+    expenses_match = re.fullmatch(pattern, user_text)
 
     if expenses_match:
         name = expenses_match.group(1).strip()
-        amount = float(expenses_match.group(2))
-        category_input = expenses_match.group(3)
 
-        # --- IF NAME = C -> CARREFOUR
-        if name == "c": name = "Carrefour"
+        amount, err = parse_amount(expenses_match.group(2))
+        if err:
+            await update.message.reply_text(err)
+            return
 
-        # --- IF CATEGORY = NULL -> FOOD
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
+        # --- IF NAME = C -> CARREFOUR (case-insensitive, like the command itself)
+        if name.lower() == "c": name = "Carrefour"
+
+        # --- CATEGORY: absent -> default, supplied but unknown -> error
+        category, err = resolve_category(expenses_match.group(3))
+        if err:
+            await update.message.reply_text(err)
+            return
 
         await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
 
