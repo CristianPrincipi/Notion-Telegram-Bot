@@ -13,6 +13,7 @@ delete event, etc.) can be added by importing from this module.
 
 import os
 import json
+import threading
 from datetime import datetime, timedelta
 
 import pytz
@@ -33,19 +34,35 @@ DEFAULT_EVENT_MINUTES = 60
 GOOGLE_REMINDER_MINUTES = [24 * 60, 60]  # 1 day before, 1 hour before
 
 
-# ─── SERVICE (lazy singleton) ──────────────────────────────────────────────────
-_service = None
+# ─── SERVICE (lazy, one per thread) ────────────────────────────────────────────
+# ONE SERVICE PER THREAD, not one shared singleton.
+#
+# google-api-python-client is built on httplib2, which is NOT thread-safe:
+# httplib2.Http keeps a plain dict of live connections keyed by host and reuses
+# them, so two threads sharing one service can be handed the same socket and
+# interleave their requests on it. Google's own guidance is that each thread
+# needs its own Http. This is the same hazard notion_client.py solves for
+# requests.Session, for the same reason — every calendar call now runs inside an
+# asyncio.to_thread worker, and with concurrent updates the morning briefing job
+# and a `Remind` command really can run at the same instant.
+#
+# A shared singleton was safe right up until updates stopped being sequential.
+#
+# Cheap to build per thread: google-api-python-client ships a static discovery
+# document for calendar v3, so build() does not hit the network. The pool is
+# bounded (min(32, cpu_count + 4) workers) and threads are reused.
+_thread_local = threading.local()
 
 
 def _get_service():
-    """Build (once) and return the authenticated Calendar API service.
+    """Build (once per thread) and return the authenticated Calendar API service.
 
     Returns (service, error). On any auth/config problem returns (None, error)
     so callers can surface a clean message instead of crashing.
     """
-    global _service
-    if _service is not None:
-        return _service, None
+    service = getattr(_thread_local, "service", None)
+    if service is not None:
+        return service, None
 
     if not _CREDS_JSON:
         return None, "GOOGLE_CREDENTIALS_JSON is not set in environment."
@@ -56,8 +73,9 @@ def _get_service():
 
         info = json.loads(_CREDS_JSON)
         creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-        _service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        return _service, None
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        _thread_local.service = service
+        return service, None
     except json.JSONDecodeError as e:
         return None, f"GOOGLE_CREDENTIALS_JSON is not valid JSON: {e}"
     except Exception as e:

@@ -15,8 +15,9 @@ import re
 
 from calendar_client import (
     parse_date_time, create_event, get_events_for_day, now_local,
-    find_conflicts, DEFAULT_EVENT_MINUTES,
+    find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )
+from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from datetime import timedelta
 
 # Remind [Name] [DD.MM] - [HH.MM]
@@ -79,10 +80,24 @@ async def handle_remind(update, user_text: str):
     # Both calls below are blocking Google Calendar round trips, so they run on
     # worker threads: on the event loop they would freeze every other command and
     # every scheduled job until Google answered.
+    #
+    # They also run under one lock on the calendar, because together they are a
+    # check-then-act: "does anything overlap this slot?" then "create it". Two
+    # overlapping reminders would each check against a calendar that did not yet
+    # contain the other, so both would report a clear slot and neither would warn
+    # about the collision they just created. The conflict check silently stops
+    # working for exactly the pair of events it exists to catch.
     end_dt = start_dt + timedelta(minutes=DEFAULT_EVENT_MINUTES)
-    conflicts, _ = await asyncio.to_thread(find_conflicts, start_dt, end_dt)
+    try:
+        async with page_lock(CALENDAR_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+            conflicts, _ = await asyncio.to_thread(find_conflicts, start_dt, end_dt)
+            link, err = await asyncio.to_thread(
+                create_event, name, start_dt, DEFAULT_EVENT_MINUTES)
+    except PageBusy:
+        await update.message.reply_text(
+            "⏳ Another reminder is still being created. Try again in a moment.")
+        return
 
-    link, err = await asyncio.to_thread(create_event, name, start_dt, DEFAULT_EVENT_MINUTES)
     if err:
         await update.message.reply_text(f"❌ Could not create the event: {err}")
         return

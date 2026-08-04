@@ -21,6 +21,7 @@ from config import (
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from notion_client import notion_request, query_database
+from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
 
 # Configured at import so config.validate() can still be the first statement in
@@ -46,6 +47,31 @@ LEARN_ID = os.environ.get("LEARN_ID")
 DIET_ID = os.environ.get("DIET_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
 FINANCE_ID = os.environ.get("FINANCE_ID")
+
+
+# --- EXPENSE WRITE SERIALISATION ---
+# `U e` and `D e` are both find-then-mutate: query the Expenses DB by name, take
+# results[0], then PATCH that page. The query and the PATCH are two round trips,
+# and between them another run can read the SAME results[0].
+#
+# The delete case is the one that bites. Notion excludes archived pages from
+# query results, which is what makes `D e Carrefour` twice in a row correctly
+# delete two different rows — the second query no longer sees the first one.
+# Overlap them and both queries run before either archive, both resolve to the
+# same page, and both archive it. You are told "deleted successfully" twice and
+# one row is still there.
+#
+# Locked on EXPENSES_ID rather than on the expense name: page_lock keys must be
+# database ids so the lock table stays bounded (see page_lock.py), and expense
+# names come from the user. Serialising every expense write costs nothing here —
+# they take about a second and David has one user.
+#
+# `Add e` is deliberately NOT locked. It is a bare create with no preceding read,
+# so it cannot double-target a row or lose an update. Locking it would only
+# serialise it against the other two, which does not make "add X" and "delete X"
+# sent at the same instant any less ambiguous than they already are.
+BUSY_EXPENSE_MESSAGE = ("⏳ Another expense write is still running. "
+                        "Give it a second and try again.")
 
 
 # --- PDF ATTACHMENT LIMITS ---
@@ -692,7 +718,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
-        success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
+        try:
+            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+                success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
+        except PageBusy:
+            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+            return
 
         if success:
             await update.message.reply_text(f"✅ Expense '{name}' updated successfully!")
@@ -710,7 +741,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Deleting expense '{name}'...")
 
-        success, page_id = await asyncio.to_thread(delete_Expense, name)
+        try:
+            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+                success, page_id = await asyncio.to_thread(delete_Expense, name)
+        except PageBusy:
+            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+            return
 
         if success:
             await update.message.reply_text(f"🗑️ Expense '{name}' deleted successfully!")
