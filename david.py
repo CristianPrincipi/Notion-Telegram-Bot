@@ -17,7 +17,7 @@ import PyPDF2
 import config
 from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
-    PROACTIVE_TIMEZONE, genre_help,
+    PROACTIVE_TIMEZONE, category_help, genre_help,
 )
 from notion_client import notion_request, query_database
 from proactive.scheduler import register_all
@@ -475,9 +475,52 @@ async def handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+# --- COMMAND ARGUMENT PARSING --- #
+# Every command pattern below is matched with re.fullmatch, never re.search: a
+# partial match must fail loudly rather than execute a command the user only
+# mentioned in passing. That only holds if the incoming text is stripped first,
+# which handle_message does — otherwise a trailing space from a phone keyboard
+# would defeat every command instead of just `B`.
+
+# Accepts a dot or a comma decimal separator. Italian keyboards produce commas
+# by reflex, and the old \d+\.?\d* matched "2" out of "2,20" and dropped the
+# rest, recording EUR 2.00 as a success.
+AMOUNT = r"(\d+(?:[.,]\d+)?)"
+
+
+def parse_amount(raw: str):
+    """Parse an amount written with either separator. Returns (amount, error)."""
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        return None, f"❌ Error: '{raw}' is not a valid amount."
+    if value <= 0:
+        return None, f"❌ Error: amount must be greater than zero, got {value:g}."
+    return value, None
+
+
+def resolve_category(raw):
+    """Map a category shortcut to its Notion name. Returns (category, error).
+
+    An ABSENT category falls back to the default. A SUPPLIED but unrecognised one
+    is an error — otherwise a typo silently files the expense under Food, which
+    is indistinguishable from having meant the default. Mirrors how genre already
+    behaves.
+    """
+    if raw is None or not raw.strip():
+        return DEFAULT_CATEGORY, None
+    category = CATEGORY_MAP.get(raw.strip().lower())
+    if category is None:
+        return None, (f"❌ Error: unknown category '{raw.strip()}'. "
+                      f"Please use: {category_help()}")
+    return category, None
+
+
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+    # Stripped once, here: every pattern below is a fullmatch, so stray leading
+    # or trailing whitespace would otherwise miss every command.
+    user_text = (update.message.text or "").strip()
     print(f"Received: {user_text}") # So you can see it in Colab logs
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
@@ -533,24 +576,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- FIND: "Find [query]" → search pages/databases by name, return IDs ---
-    find_match = re.match(r"(?i)find\s+(.+)", user_text)
+    find_match = re.fullmatch(r"(?i)find\s+(.+)", user_text)
     if find_match:
         await handle_find(update, find_match.group(1))
         return
 
     # --- REGEX FOR REMINDER: "Remind [Name] [Date] - [Time]" ---
-    if re.match(r"(?i)remind\s+", user_text):
+    if re.fullmatch(r"(?i)remind\s+(.+)", user_text):
         await handle_remind(update, user_text)
         return
 
     # --- REGEX FOR NEW BOOK: Look for "Add b [Book's Name] - [Author] - [Genre]"
     book_pattern = r"(?i)add b (.+?) - (.+?) - (.+)"
-    book_match = re.search(book_pattern, user_text)
+    book_match = re.fullmatch(book_pattern, user_text)
 
     if book_match:
         book_name = book_match.group(1).strip()
         author = book_match.group(2).strip()
-        genre_input = book_match.group(3)
+        genre_input = book_match.group(3).strip()
 
         genre = GENRE_MAP.get(genre_input.lower())
 
@@ -574,7 +617,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #   Manual:  Add q [Book] - [Title] - [Full quote]
     #   PDF:     Add q [Book] - [Title] - [Begin text] / [End text]
     quote_pattern = r"(?i)add q (.+?) - (.+?) - ([\s\S]+)"
-    quote_match = re.search(quote_pattern, user_text)
+    quote_match = re.fullmatch(quote_pattern, user_text)
 
     if quote_match:
         book_name     = quote_match.group(1).strip()
@@ -605,22 +648,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
-    if re.match(r"(?i)learn\s+\w+", user_text):
+    if re.fullmatch(r"(?i)learn\s+\w+[\s\S]*", user_text):
         await handle_learn(update, user_text)
         return
 
     # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
-    if re.match(r"(?i)implement\s+.+\s*-\s*.+", user_text):
+    if re.fullmatch(r"(?i)implement\s+.+\s*-\s*.+", user_text):
         await handle_implement(update, user_text)
         return
 
     # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
-    update_expense_match = re.fullmatch(r"(?i)U e (.+?) (\d+\.?\d*)(?:\s+(\w+))?", user_text)
+    update_expense_match = re.fullmatch(rf"(?i)U e (.+?) {AMOUNT}(?:\s+(\w+))?", user_text)
     if update_expense_match:
         name = update_expense_match.group(1).strip()
-        amount = float(update_expense_match.group(2))
-        category_input = update_expense_match.group(3)
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
+
+        amount, err = parse_amount(update_expense_match.group(2))
+        if err:
+            await update.message.reply_text(err)
+            return
+
+        category, err = resolve_category(update_expense_match.group(3))
+        if err:
+            await update.message.reply_text(err)
+            return
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
@@ -654,19 +704,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # REGEX FOR EXPENSES: Look for "Add e [Name] [Amount] [Category]"
-    pattern = r"(?i)add e (.+?) (\d+\.?\d*)(?:\s+(\w+))?"
-    expenses_match = re.search(pattern, user_text)
+    pattern = rf"(?i)add e (.+?) {AMOUNT}(?:\s+(\w+))?"
+    expenses_match = re.fullmatch(pattern, user_text)
 
     if expenses_match:
         name = expenses_match.group(1).strip()
-        amount = float(expenses_match.group(2))
-        category_input = expenses_match.group(3)
 
-        # --- IF NAME = C -> CARREFOUR
-        if name == "c": name = "Carrefour"
+        amount, err = parse_amount(expenses_match.group(2))
+        if err:
+            await update.message.reply_text(err)
+            return
 
-        # --- IF CATEGORY = NULL -> FOOD
-        category = CATEGORY_MAP.get(category_input.lower() if category_input else "", DEFAULT_CATEGORY)
+        # --- IF NAME = C -> CARREFOUR (case-insensitive, like the command itself)
+        if name.lower() == "c": name = "Carrefour"
+
+        # --- CATEGORY: absent -> default, supplied but unknown -> error
+        category, err = resolve_category(expenses_match.group(3))
+        if err:
+            await update.message.reply_text(err)
+            return
 
         await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
 
