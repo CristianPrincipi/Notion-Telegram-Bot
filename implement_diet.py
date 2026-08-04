@@ -3,6 +3,7 @@ import re
 import json
 import requests
 
+from page_lock import PageBusy, page_lock
 from notion_client import (
     search_page_in_db, get_children,
     append_children, delete_block, create_page, extract_rich_text, rich,
@@ -243,8 +244,17 @@ def decide_updates(tree: dict, summary_text: str, summary_title: str):
 def apply_updates(updates: list, block_map: dict):
     """For each update, locate the target section block and refresh its content.
 
-    'replace' → delete existing leaf children, append new bullets.
-    'merge'   → append new bullets (Claude already merged & deduped against existing).
+    BOTH modes replace the section's leaf content. _DIET_SYSTEM instructs Claude
+    to return the FULL merged content of every section it touches — "merge" means
+    it merged against the existing bullets itself and removed duplicates, not
+    that Notion should append to what is already there.
+
+    Treating "merge" as append-only (the previous behaviour) wrote that full
+    merged superset ON TOP of the bullets it already contained. Every run
+    therefore duplicated the section, and because read_diet_tree feeds the tree
+    back into the next prompt, the bloat compounded run over run and degraded
+    each subsequent merge. Nothing errored — the page just grew.
+
     Sections not in `updates` are never touched.
     Returns (applied_count, skipped_paths).
     """
@@ -252,7 +262,6 @@ def apply_updates(updates: list, block_map: dict):
 
     for upd in updates:
         path    = upd.get("path", "").strip()
-        mode    = upd.get("mode", "merge")
         bullets = [b for b in upd.get("bullets", []) if b and b.strip()]
         if not path or not bullets:
             continue
@@ -263,20 +272,29 @@ def apply_updates(updates: list, block_map: dict):
             skipped.append(path)
             continue
 
-        # replace → clear current leaf children first
-        if mode == "replace":
-            existing, _ = get_children(block_id)
-            for b in existing:
-                # only delete leaf content, never nested toggle headings
-                if not b.get("type", "").startswith("heading_"):
-                    delete_block(b["id"])
-
-        new_blocks = [_bullet(b) for b in bullets]
-        _, err = append_children(block_id, new_blocks)
+        # APPEND FIRST, DELETE AFTER — see page_lock.py. Notion has no
+        # transactions, so clearing before the append means a failed append
+        # leaves the section permanently empty with nothing to restore from.
+        # Snapshot what to remove, write the replacement, and only delete once
+        # the replacement is committed.
+        existing, err = get_children(block_id)
         if err:
             skipped.append(f"{path} ({err})")
-        else:
-            applied += 1
+            continue
+
+        # Only leaf content is replaceable — nested toggle headings are structure.
+        stale_ids = [b["id"] for b in existing
+                     if not b.get("type", "").startswith("heading_") and b.get("id")]
+
+        _, err = append_children(block_id, [_bullet(b) for b in bullets])
+        if err:
+            # Nothing deleted — the section still holds its previous content.
+            skipped.append(f"{path} ({err})")
+            continue
+
+        for block_id_to_drop in stale_ids:
+            delete_block(block_id_to_drop)
+        applied += 1
 
     return applied, skipped
 
@@ -410,45 +428,57 @@ async def handle_implement_diet(update, summary_name: str):
     if was_created:
         await update.message.reply_text("🥗 First run — built the full Diet structure in Notion.")
 
-    # ── Step C: read the current tree ──────────────────────────────────────────
-    await update.message.reply_text("📂 Reading current Diet structure…")
-    tree, block_map, err = read_diet_tree(page_id)
-    if err:
-        await update.message.reply_text(f"❌ Could not read the Diet tree: {err}")
-        return
+    # ── Steps C–E run under a per-page lock ──────────────────────────────
+    # Taken BEFORE read_diet_tree, not just around the write: Claude decides
+    # which sections to update from the tree it was given, so that decision is
+    # only valid while nobody else is mutating it.
+    try:
+        async with page_lock(page_id):
+            # ── Step C: read the current tree ──────────────────────────────────────────
+            await update.message.reply_text("📂 Reading current Diet structure…")
+            tree, block_map, err = read_diet_tree(page_id)
+            if err:
+                await update.message.reply_text(f"❌ Could not read the Diet tree: {err}")
+                return
 
-    # ── Step D: Claude decides what to update ──────────────────────────────────
-    await update.message.reply_text("🧠 Claude is analysing the summary…")
-    result, err = decide_updates(tree, summary_text, summary_title)
-    if err:
-        await update.message.reply_text(f"❌ Analysis failed: {err}")
-        return
+            # ── Step D: Claude decides what to update ──────────────────────────────────
+            await update.message.reply_text("🧠 Claude is analysing the summary…")
+            result, err = decide_updates(tree, summary_text, summary_title)
+            if err:
+                await update.message.reply_text(f"❌ Analysis failed: {err}")
+                return
 
-    plan    = result.get("plan", {})
-    updates = result.get("updates", [])
+            plan    = result.get("plan", {})
+            updates = result.get("updates", [])
 
-    # ── Send the implementation plan BEFORE applying (per spec) ────────────────
-    await update.message.reply_text(_format_plan(plan, summary_title), parse_mode="Markdown")
+            # ── Send the implementation plan BEFORE applying (per spec) ────────────────
+            await update.message.reply_text(_format_plan(plan, summary_title), parse_mode="Markdown")
 
-    # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
-    # The act of running Implement marks it processed, so the Learn-nudge job
-    # stops surfacing it regardless of how many Diet sections matched.
-    update_page(summary_id, {"Implemented": {"checkbox": True}})
+            # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
+            # The act of running Implement marks it processed, so the Learn-nudge job
+            # stops surfacing it regardless of how many Diet sections matched.
+            update_page(summary_id, {"Implemented": {"checkbox": True}})
 
-    if not updates:
+            if not updates:
+                await update.message.reply_text(
+                    "ℹ️ The summary didn't map to any Diet section — nothing was changed."
+                )
+                return
+
+            # ── Step E: apply surgically ───────────────────────────────────────────────
+            await update.message.reply_text("📝 Applying updates to Notion…")
+            applied, skipped = apply_updates(updates, block_map)
+
+            msg = f"✅ Diet page updated — *{applied}* section(s) modified."
+            if skipped:
+                msg += "\n\n⚠️ Skipped (path not found):\n" + "\n".join(f"• {s}" for s in skipped[:8])
+            await update.message.reply_text(msg, parse_mode="Markdown")
+    except PageBusy:
         await update.message.reply_text(
-            "ℹ️ The summary didn't map to any Diet section — nothing was changed."
+            "⏳ An update to the Diet Manual is already in progress.\n"
+            "Wait for it to finish, then try again."
         )
         return
-
-    # ── Step E: apply surgically ───────────────────────────────────────────────
-    await update.message.reply_text("📝 Applying updates to Notion…")
-    applied, skipped = apply_updates(updates, block_map)
-
-    msg = f"✅ Diet page updated — *{applied}* section(s) modified."
-    if skipped:
-        msg += "\n\n⚠️ Skipped (path not found):\n" + "\n".join(f"• {s}" for s in skipped[:8])
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 def _content_to_text_deep(blocks: list) -> str:

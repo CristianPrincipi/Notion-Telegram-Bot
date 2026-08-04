@@ -3,6 +3,7 @@ import re
 import json
 import requests
 
+from page_lock import PageBusy, page_lock
 from notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
     delete_block, create_page, get_page_title, update_page,
@@ -38,8 +39,18 @@ def get_all_blocks(page_id: str) -> tuple[list[dict], str | None]:
 
 def clear_page_blocks(blocks: list[dict]) -> None:
     """Archive all blocks by deleting them one by one (via shared delete_block)."""
-    for block in blocks:
-        block_id = block.get("id")
+    clear_page_blocks_by_id([b.get("id") for b in blocks])
+
+
+def clear_page_blocks_by_id(block_ids: list) -> None:
+    """Archive blocks from a snapshot of IDs taken before the replacement was written.
+
+    Takes IDs rather than block objects so the caller can snapshot what to delete
+    BEFORE appending the replacement, and only actually delete once the append
+    has succeeded. Deleting from a re-read of the page after appending would
+    delete the new content too.
+    """
+    for block_id in block_ids:
         if block_id:
             delete_block(block_id)
 
@@ -318,54 +329,84 @@ async def handle_implement(update, user_text: str):
         await update.message.reply_text("❌ Source page appears to be empty.")
         return
 
-    # ── Step B: Retrieve (or prepare) Manual in target area ────────────────────
-    await update.message.reply_text(
-        f"📂 Looking for Manual in *{area_name}*…", parse_mode="Markdown"
-    )
+    # ── Steps B–D run under a per-area lock ──────────────────────────────────
+    # The lock is taken BEFORE the read, not just around the write: the merge
+    # is only valid if it was computed from a tree nobody else is mutating.
+    try:
+        async with page_lock(area_db_id):
+            # ── Step B: Retrieve (or prepare) Manual in target area ────────────────────
+            await update.message.reply_text(
+                f"📂 Looking for Manual in *{area_name}*…", parse_mode="Markdown"
+            )
 
-    manual_page, _  = search_page_in_db(area_db_id, "Manual", exact=True)
-    manual_page_id  = manual_page["id"] if manual_page else None
-    manual_text     = ""
-    is_new_manual   = manual_page_id is None
+            manual_page, _  = search_page_in_db(area_db_id, "Manual", exact=True)
+            manual_page_id  = manual_page["id"] if manual_page else None
+            manual_text     = ""
+            is_new_manual   = manual_page_id is None
 
-    if manual_page_id:
-        manual_blocks, _ = get_all_blocks(manual_page_id)
-        manual_text       = blocks_to_text(manual_blocks)
+            if manual_page_id:
+                manual_blocks, _ = get_all_blocks(manual_page_id)
+                manual_text       = blocks_to_text(manual_blocks)
 
-    # ── Step C: Merge with Claude ──────────────────────────────────────────────
-    await update.message.reply_text("🧠 Claude is merging knowledge into Manual…")
+            # ── Step C: Merge with Claude ──────────────────────────────────────────────
+            await update.message.reply_text("🧠 Claude is merging knowledge into Manual…")
 
-    merged, err = merge_with_claude(
-        source_text  = source_text,
-        manual_text  = manual_text,
-        topic        = f"{area_name} — {page_name}",
-        source_title = source_title,
-    )
-    if err:
-        await update.message.reply_text(f"❌ Merge failed: {err}")
+            merged, err = merge_with_claude(
+                source_text  = source_text,
+                manual_text  = manual_text,
+                topic        = f"{area_name} — {page_name}",
+                source_title = source_title,
+            )
+            if err:
+                await update.message.reply_text(f"❌ Merge failed: {err}")
+                return
+
+            # ── Build Notion blocks ────────────────────────────────────────────────────
+            new_blocks = build_manual_blocks(merged, source_title)
+
+            # ── Write to Notion ────────────────────────────────────────────────────────
+            await update.message.reply_text("📝 Writing updated Manual to Notion…")
+
+            if is_new_manual:
+                page_id, err = create_manual_page(area_db_id, new_blocks)
+                if not page_id:
+                    await update.message.reply_text(f"❌ Could not create Manual page: {err}")
+                    return
+                action = "created ✨"
+            else:
+                # APPEND FIRST, DELETE AFTER. Notion has no transactions, so the old
+                # content is the only copy of this knowledge base until the new content
+                # is committed. Clearing first meant a failed append — a 502, a dropped
+                # connection, a Railway restart mid-deploy — left the Manual permanently
+                # empty with nothing to roll back to.
+                #
+                # The page briefly shows the old content followed by the new; that is
+                # the acceptable cost of never having a window where it shows neither.
+                existing_blocks, err = get_all_blocks(manual_page_id)
+                if err:
+                    await update.message.reply_text(f"❌ Could not read the existing Manual: {err}")
+                    return
+                stale_block_ids = [b["id"] for b in existing_blocks if b.get("id")]
+
+                err = append_blocks_to_page(manual_page_id, new_blocks)
+                if err:
+                    # Old content is still intact — nothing has been deleted yet.
+                    await update.message.reply_text(
+                        f"❌ Could not update Manual: {err}\n\n"
+                        "Your existing Manual is unchanged."
+                    )
+                    return
+
+                # Only now that the replacement is committed is it safe to drop the old.
+                clear_page_blocks_by_id(stale_block_ids)
+                action = "updated 🔄"
+    except PageBusy:
+        await update.message.reply_text(
+            f"⏳ An update to the *{area_name}* Manual is already in progress.\n"
+            "Wait for it to finish, then try again.",
+            parse_mode="Markdown",
+        )
         return
-
-    # ── Build Notion blocks ────────────────────────────────────────────────────
-    new_blocks = build_manual_blocks(merged, source_title)
-
-    # ── Write to Notion ────────────────────────────────────────────────────────
-    await update.message.reply_text("📝 Writing updated Manual to Notion…")
-
-    if is_new_manual:
-        page_id, err = create_manual_page(area_db_id, new_blocks)
-        if not page_id:
-            await update.message.reply_text(f"❌ Could not create Manual page: {err}")
-            return
-        action = "created ✨"
-    else:
-        # Clear existing content and replace with merged version
-        existing_blocks, _ = get_all_blocks(manual_page_id)
-        clear_page_blocks(existing_blocks)
-        err = append_blocks_to_page(manual_page_id, new_blocks)
-        if err:
-            await update.message.reply_text(f"❌ Could not update Manual: {err}")
-            return
-        action = "updated 🔄"
 
     # ── Step E: Mark the source Learn page as implemented (best-effort) ─────────
     # Drives the Learn-nudge job, which only surfaces still-unimplemented items.
