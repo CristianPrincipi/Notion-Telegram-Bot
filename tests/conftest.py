@@ -17,6 +17,8 @@ import os
 
 FAKE_ENV = {
     "TELEGRAM_TOKEN":  "test-telegram-token",
+    "OWNER_ID":        "424242",
+    "ANTHROPIC_API_KEY": "test-anthropic-key",
     "NOTION_KEY":      "test-notion-key",
     "DATABASE_ID":     "test-database-id",
     "EXPENSES_ID":     "test-expenses-id",
@@ -38,6 +40,7 @@ for _key, _value in FAKE_ENV.items():
 EXPENSES_ID = FAKE_ENV["EXPENSES_ID"]
 MONTH_ID    = FAKE_ENV["MONTH_ID"]
 LETTI_ID    = FAKE_ENV["LETTI_ID"]
+OWNER_ID    = int(FAKE_ENV["OWNER_ID"])
 NOTION_BASE = "https://api.notion.com/v1"
 
 
@@ -58,10 +61,12 @@ def run(coro):
 class FakeDocument:
     """Stands in for telegram.Document on an uploaded file."""
 
-    def __init__(self, file_id="file-123", mime_type="application/pdf", file_name="book.pdf"):
+    def __init__(self, file_id="file-123", mime_type="application/pdf",
+                 file_name="book.pdf", file_size=1024):
         self.file_id   = file_id
         self.mime_type = mime_type
         self.file_name = file_name
+        self.file_size = file_size      # Telegram may omit this — None is valid
 
 
 class FakeMessage:

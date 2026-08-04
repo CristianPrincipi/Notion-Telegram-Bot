@@ -53,17 +53,22 @@ def upload(caption, mime_type="application/pdf"):
 
 # ─── CAPTION DISPATCH ──────────────────────────────────────────────────────────
 
+@responses.activate
 def test_learn_pdf_caption_routes_to_learn_with_the_file(spies):
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
     update = upload("Learn pdf")
 
     run(david.handle_document(update, FakeContext()))
 
     assert spies["handle_learn"]["user_text"] == "Learn pdf"
-    assert spies["handle_learn"]["file_bytes"] == b"%PDF-1.4 fake"
+    assert spies["handle_learn"]["file_bytes"] == PDF_BYTES
     assert "add_Quote" not in spies
 
 
+@responses.activate
 def test_learn_pdf_caption_is_case_insensitive(spies):
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
+
     run(david.handle_document(upload("LEARN PDF"), FakeContext()))
 
     assert "handle_learn" in spies
@@ -163,6 +168,119 @@ def test_unrecognised_captions_explain_the_supported_ones(spies, caption):
 
     assert update.message.replied_with("File received. Supported captions")
     assert spies == {}
+
+
+# ─── ATTACHMENT LIMITS ─────────────────────────────────────────────────────────
+# Both attachment paths share download_pdf_attachment, so both must reject the
+# same files. Parametrised over the two captions to keep them from drifting.
+
+BOTH_PDF_CAPTIONS = pytest.mark.parametrize("caption", ["Learn pdf", QUOTE_CAPTION])
+
+
+@BOTH_PDF_CAPTIONS
+def test_non_pdf_is_rejected_on_both_paths(spies, caption):
+    update = upload(caption, mime_type="application/epub+zip")
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert update.message.replied_with("Please attach a PDF")
+    assert spies == {}, "a non-PDF reached Notion or Claude"
+
+
+@BOTH_PDF_CAPTIONS
+def test_oversized_pdf_is_rejected_before_downloading(spies, caption):
+    """Telegram reports file_size up front, so an oversized file costs no bytes."""
+    oversized = FakeDocument(file_size=david.MAX_PDF_BYTES + 1)
+    update = FakeUpdate(caption=caption, document=oversized)
+
+    # No responses.activate: any HTTP call at all would raise ConnectionError.
+    run(david.handle_document(update, FakeContext()))
+
+    assert update.message.replied_with("The limit is 15 MB")
+    assert spies == {}
+
+
+@BOTH_PDF_CAPTIONS
+@responses.activate
+def test_pdf_at_the_size_limit_is_accepted(spies, caption):
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
+    at_limit = FakeDocument(file_size=david.MAX_PDF_BYTES)
+    update = FakeUpdate(caption=caption, document=at_limit)
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert not update.message.replied_with("The limit is")
+    assert spies != {}, "a file exactly at the limit should be accepted"
+
+
+@BOTH_PDF_CAPTIONS
+@responses.activate
+def test_oversized_pdf_is_rejected_when_telegram_omits_the_size(spies, caption):
+    """file_size is optional in the Telegram API — the real size is re-checked."""
+    responses.add(responses.GET, FILE_URL, body=b"x" * (david.MAX_PDF_BYTES + 1), status=200)
+    no_size = FakeDocument(file_size=None)
+    update = FakeUpdate(caption=caption, document=no_size)
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert update.message.replied_with("The limit is 15 MB")
+    assert "handle_learn" not in spies
+    assert "add_Quote" not in spies
+
+
+@BOTH_PDF_CAPTIONS
+@responses.activate
+def test_download_failure_is_reported_on_both_paths(spies, caption):
+    responses.add(responses.GET, FILE_URL, status=500, body="telegram is down")
+    update = upload(caption)
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert update.message.replied_with("Download error")
+    assert "handle_learn" not in spies
+    assert "add_Quote" not in spies
+
+
+@BOTH_PDF_CAPTIONS
+def test_download_is_bounded_by_a_timeout_on_both_paths(spies, caption, monkeypatch):
+    """A hung Telegram CDN must not wedge the handler forever.
+
+    The real cap is 2 minutes; the test shortens it so the suite stays fast, and
+    stalls the download so the timeout is what actually fires.
+
+    The stall is only 0.5s because asyncio.to_thread threads cannot be cancelled:
+    asyncio.run() waits for the executor to drain at shutdown, so a longer stall
+    would be added to the suite's runtime even though wait_for returned promptly.
+    """
+    import time as time_module
+
+    monkeypatch.setattr(david, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(david.requests, "get", lambda *a, **kw: time_module.sleep(0.5))
+    update = upload(caption)
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert update.message.replied_with("timed out")
+    assert "handle_learn" not in spies
+    assert "add_Quote" not in spies
+
+
+@responses.activate
+def test_download_uses_a_per_request_timeout(spies):
+    """A stalled socket must fail fast rather than sit for the full 2 minutes."""
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
+    seen = {}
+    real_get = david.requests.get
+
+    def spy_get(url, **kwargs):
+        seen.update(kwargs)
+        return real_get(url, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(david.requests, "get", spy_get)
+        run(david.handle_document(upload("Learn pdf"), FakeContext()))
+
+    assert seen.get("timeout") == david.HTTP_TIMEOUT_SECONDS
 
 
 # ─── PURE HELPERS ──────────────────────────────────────────────────────────────
