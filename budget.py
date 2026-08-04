@@ -21,7 +21,7 @@ from datetime import datetime
 import pytz
 
 from config import BUDGET_CEILING
-from notion_client import notion_request, NOTION_BASE
+from notion_client import query_database
 
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
 MONTH_ID    = os.environ.get("MONTH_ID")
@@ -49,19 +49,15 @@ def compute_budget() -> dict | None:
         "projected_over":   float,   # max(0, projected_total - ceiling)
       }
     """
-    # NOTE: single query (Notion returns up to 100 rows). The old budget() did
-    # the same. If a month can exceed 100 expenses, switch to the paginated
-    # query_database() helper introduced in Step 5.
-    resp = notion_request(
-        "POST",
-        f"{NOTION_BASE}/databases/{EXPENSES_ID}/query",
-        json={"filter": {"property": "Account", "relation": {"contains": MONTH_ID}}},
+    # Paginated: Notion caps a query at 100 rows. This feeds the morning briefing
+    # and the pacing warning, so an unpaginated query understated both.
+    results, err = query_database(
+        EXPENSES_ID,
+        filter_obj={"property": "Account", "relation": {"contains": MONTH_ID}},
     )
-    if resp.status_code != 200:
-        print(f"[compute_budget] Notion {resp.status_code}: {resp.text[:200]}")
+    if err:
+        print(f"[compute_budget] {err}")
         return None
-
-    results = resp.json().get("results", [])
 
     per_category: dict[str, float] = {}
     total = 0.0

@@ -18,7 +18,7 @@ from conftest import FakeContext, run
 MORNING = "morning_briefing"
 EVENING = "evening_briefing"
 PACING  = "budget_pacing"
-WEEKLY  = "weekly_budget"
+WEEKLY  = "budget_recap"
 
 CHAT_ID = "-1001234567"
 
@@ -64,17 +64,19 @@ def test_every_job_targets_the_owner_chat(scheduled):
             f"{name} would send to {job.chat_id!r}")
 
 
-def test_the_weekly_recap_runs_only_at_the_weekend(scheduled):
+def test_the_budget_recap_runs_on_sunday_only(scheduled):
     """python-telegram-bot v20 renumbered days from monday-sunday to SUNDAY-saturday.
 
-    The pre-existing days=(5, 6) carried a "0=Mon ... 6=Sun" comment written for
-    v13, so under v21+ the weekend recap was firing Friday and Saturday. This
-    asserts the weekday names the trigger actually resolves to rather than the
-    integers passed in, so a future renumbering fails here too.
+    The original days=(5, 6) carried a "0=Mon ... 6=Sun" comment written for v13,
+    so under v21+ this fired Friday and Saturday. It is now Sunday only, written
+    as config.SUNDAY rather than a bare integer.
+
+    Asserts the weekday NAMES the trigger resolves to, not the integers passed
+    in, so a future renumbering fails here too.
     """
     days = str(jobs_by_name(scheduled)[WEEKLY].job.trigger.fields[4])
 
-    assert set(days.split(",")) == {"sat", "sun"}, f"weekly recap fires on {days}"
+    assert set(days.split(",")) == {"sun"}, f"budget recap fires on {days}"
 
 
 def test_the_briefings_run_every_day(scheduled):

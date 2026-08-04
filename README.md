@@ -79,11 +79,27 @@ All times Europe/Rome, configured in `config.py` and attached by
 | 07:30 daily | `morning_briefing` | Today's calendar events + a one-line budget pace |
 | 13:00 daily | `budget_pacing` | Overspend projection — **only** when trending meaningfully over |
 | 20:00 daily | `evening_briefing` | Tomorrow's events. Silent when tomorrow is empty |
-| 09:30 Sat + Sun | `weekly_budget` | Full per-category budget recap |
+| 09:30 Sunday | `budget_recap` | Full per-category budget recap |
 
 The two briefings replaced the old `send_daily_reminders` job, which sent both
 today's and tomorrow's events at 07:30. Running both would have sent today's
 events twice each morning.
+
+### Input rules
+
+Commands are matched with `re.fullmatch` against the stripped message, so a
+command only runs when the whole message *is* that command — mentioning one
+mid-sentence does nothing. Surrounding whitespace is ignored.
+
+Amounts accept either decimal separator (`2,20` and `2.20` are the same) and
+must be greater than zero. An omitted category falls back to `Food`; a supplied
+but unrecognised one is reported as an error rather than silently defaulted.
+
+Editing a sent message does **not** re-run the command — otherwise fixing a typo
+would create a second Notion entry.
+
+Expense dates use Europe/Rome, not the host clock, so an expense logged after
+local midnight is not filed under the previous day.
 
 ### File uploads
 
