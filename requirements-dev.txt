@@ -1,0 +1,9 @@
+# Test + lint dependencies. Install with:  pip install -r requirements-dev.txt
+#
+# Includes the runtime requirements because the router tests import david.py,
+# which imports python-telegram-bot, PyPDF2 and friends at module scope.
+-r requirements.txt
+
+pytest>=8.0
+responses>=0.25     # intercepts requests/* so Notion is testable offline
+ruff>=0.6

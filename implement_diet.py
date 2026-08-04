@@ -4,10 +4,10 @@ import json
 import requests
 
 from notion_client import (
-    NOTION_BASE, notion_request, search_page_in_db, get_children,
+    search_page_in_db, get_children,
     append_children, delete_block, create_page, extract_rich_text, rich,
     update_page,
-    bullet as _bullet, paragraph as _paragraph,
+    bullet as _bullet,
 )
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────

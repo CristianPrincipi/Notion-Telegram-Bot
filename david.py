@@ -1,30 +1,38 @@
 import os
 import io
-import requests
-import json
 import logging
+import requests
 import re
 import asyncio
 import pytz
 from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
 from reminder import handle_remind, build_today_message, build_tomorrow_message
 from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
+import config
 from config import (
-    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
-    genre_help, category_help, priority_help,
+    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
+    genre_help,
 )
 from notion_client import notion_request
+
+# Configured at import so config.validate() can still be the first statement in
+# __main__ and have somewhere to send its warnings.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("david")
 
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+OWNER_ID = os.environ.get("OWNER_ID")
 NOTION_KEY = os.environ.get("NOTION_KEY")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
@@ -36,6 +44,13 @@ LEARN_ID = os.environ.get("LEARN_ID")
 DIET_ID = os.environ.get("DIET_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
 FINANCE_ID = os.environ.get("FINANCE_ID")
+
+
+# --- PDF ATTACHMENT LIMITS ---
+MAX_PDF_MB    = 15
+MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
+HTTP_TIMEOUT_SECONDS     = 30    # per-request cap: fail fast on a stalled socket
+DOWNLOAD_TIMEOUT_SECONDS = 120   # whole-operation cap
 
 
 # --- NOTION API ---
@@ -392,6 +407,60 @@ async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
         await notify_error(context, "send_weekly_budget", e)
 
 
+# --- ACCESS CONTROL --- #
+# David is single-user: it spends the owner's Notion and Anthropic quota and can
+# write to their databases, so every command is owner-only. Authorization is a
+# python-telegram-bot filter rather than a check inside handle_message, so an
+# unauthorized update is dropped by the dispatcher and never reaches handler
+# code — a new command cannot forget to check.
+
+def build_owner_filter(owner_id: int):
+    """Filter matching only the owner's messages."""
+    return filters.User(user_id=owner_id)
+
+
+def register_handlers(application, owner_id: int):
+    """Attach every message handler, all gated on the owner.
+
+    Lives here rather than inline in __main__ so the authorization wiring is
+    importable and can be tested against real Update objects. Testing a filter
+    rebuilt inside a test would only prove the test agrees with itself.
+    """
+    owner_only = build_owner_filter(owner_id)
+
+    # LISTEN FOR ANY TEXT MESSAGE... (except commands)
+    application.add_handler(
+        MessageHandler(filters.TEXT & (~filters.COMMAND) & owner_only, handle_message))
+
+    application.add_handler(
+        MessageHandler(filters.Document.ALL & owner_only, handle_document))
+
+    # Catch-all for everyone else. Registered LAST: within a handler group PTB
+    # stops at the first match, so the owner's messages are taken by the handlers
+    # above and never reach this one — and it is scoped to ~owner_only anyway.
+    application.add_handler(MessageHandler(~owner_only, handle_unauthorized))
+
+
+async def handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log an unauthorized attempt and drop it.
+
+    Deliberately silent — replying would confirm to whoever probed the bot that
+    it is live and listening. Nothing here touches Notion or the Anthropic API.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    content = (getattr(message, "text", None) or getattr(message, "caption", None) or "")
+
+    logger.warning(
+        "Unauthorized attempt — user_id=%s username=%s chat_id=%s content=%r",
+        getattr(user, "id", None),
+        getattr(user, "username", None),
+        getattr(chat, "id", None),
+        content[:80],
+    )
+
+
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -481,7 +550,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page_id = add_New_Book(book_name, author, genre)
 
         if page_id:
-            await update.message.reply_text(f"✅ Success! Book added to your database.")
+            await update.message.reply_text("✅ Success! Book added to your database.")
         else:
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
         return
@@ -591,11 +660,75 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = add_Expenses(name, amount, category)
 
         if success:
-            await update.message.reply_text(f"✅ Success! Expenses added to your database.")
+            await update.message.reply_text("✅ Success! Expenses added to your database.")
         else:
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
     else:
         await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
+
+
+# --- PDF ATTACHMENT DOWNLOAD --- #
+
+def validate_pdf_attachment(doc) -> str | None:
+    """Cheap local checks on an attachment. Returns an error message, or None if OK.
+
+    Split out from the download so a caller can reject a bad file before spending
+    a Notion lookup on it. Pure and network-free, so calling it twice is free.
+    """
+    if doc is None:
+        return "❌ No file attached."
+
+    if doc.mime_type != "application/pdf":
+        return "❌ Please attach a PDF file."
+
+    # Telegram reports file_size up front for most uploads — reject oversized
+    # files before downloading them. It is optional in the API, so the real
+    # size is checked again after the download.
+    if doc.file_size is not None and doc.file_size > MAX_PDF_BYTES:
+        return (f"❌ That PDF is {doc.file_size / 1024 / 1024:.1f} MB. "
+                f"The limit is {MAX_PDF_MB} MB.")
+
+    return None
+
+
+async def download_pdf_attachment(context: ContextTypes.DEFAULT_TYPE, doc):
+    """Validate and download an attached PDF. Returns (pdf_bytes, error_message).
+
+    WHY THIS EXISTS: tg_file.download_as_bytearray() has no built-in timeout and
+    can hang forever on Railway. requests.get() with a timeout fails fast if the
+    download stalls, and asyncio.wait_for caps the whole operation regardless.
+    Both attachment paths in handle_document go through here, so neither can
+    regress to an unbounded download.
+    """
+    err = validate_pdf_attachment(doc)
+    if err:
+        return None, err
+
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        # tg_file.file_path is the full Telegram CDN URL in PTB v20+
+
+        def _download():
+            resp = requests.get(tg_file.file_path, timeout=HTTP_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            return resp.content
+
+        content = await asyncio.wait_for(
+            asyncio.to_thread(_download),
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return None, ("❌ Download timed out after 2 minutes.\n"
+                      "Try a smaller PDF.")
+    except Exception as e:
+        return None, f"❌ Download error: {e}"
+
+    # file_size is optional in the Telegram API, so re-check what actually arrived.
+    if len(content) > MAX_PDF_BYTES:
+        return None, (f"❌ That PDF is {len(content) / 1024 / 1024:.1f} MB. "
+                      f"The limit is {MAX_PDF_MB} MB.")
+
+    return content, None
 
 
 # --- HANDLER FUNCTION FOR PDF ---
@@ -612,16 +745,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Learn pdf ──────────────────────────────────────────────────────────────
     if re.match(r"(?i)learn\s+pdf", caption):
         await update.message.reply_text("⏳ Downloading your PDF…")
-        tg_file    = await context.bot.get_file(doc.file_id)
-        file_bytes = await tg_file.download_as_bytearray()
-        await handle_learn(update, caption, file_bytes=bytes(file_bytes))
+        file_bytes, err = await download_pdf_attachment(context, doc)
+        if err:
+            await update.message.reply_text(err)
+            return
+        await handle_learn(update, caption, file_bytes=file_bytes)
         return
 
     # ── Add q [Book] - [Title] - [Begin] / [End]  (extract quote from PDF) ────
     quote_pdf_match = re.match(r"(?i)add q (.+?) - (.+?) - (.+?) / (.+)", caption)
     if quote_pdf_match:
-        if doc.mime_type != "application/pdf":
-            await update.message.reply_text("❌ Please attach a PDF file.")
+        # Checked before the Notion lookup so a wrong-format file costs no API call.
+        err = validate_pdf_attachment(doc)
+        if err:
+            await update.message.reply_text(err)
             return
 
         book_name   = quote_pdf_match.group(1).strip()
@@ -636,35 +773,26 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
             return
 
-        # Download PDF from Telegram + extract quote — both run in a background
-        # thread under a single timeout.
-        #
-        # WHY: tg_file.download_as_bytearray() has no built-in timeout and can hang
-        # forever on Railway. requests.get() with timeout=30 fails fast if the
-        # download stalls. asyncio.wait_for covers the entire operation so the
-        # 2-minute cap is always enforced.
         await update.message.reply_text("📄 Reading PDF and extracting quote…")
+
+        pdf_bytes, err = await download_pdf_attachment(context, doc)
+        if err:
+            await update.message.reply_text(err)
+            return
+
+        # Extraction stays on a worker thread under its own cap: it parses every
+        # page of the PDF, which would otherwise block the event loop (see the
+        # note on extract_quote_from_pdf).
         try:
-            tg_file = await context.bot.get_file(doc.file_id)
-            # tg_file.file_path is the full Telegram CDN URL in PTB v20+
-
-            def _download_and_extract():
-                resp = requests.get(tg_file.file_path, timeout=30)
-                resp.raise_for_status()
-                return extract_quote_from_pdf(resp.content, begin_text, end_text)
-
             quote_content, err = await asyncio.wait_for(
-                asyncio.to_thread(_download_and_extract),
-                timeout=120,
+                asyncio.to_thread(extract_quote_from_pdf, pdf_bytes, begin_text, end_text),
+                timeout=DOWNLOAD_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             await update.message.reply_text(
                 "❌ Timed out after 2 minutes.\n"
                 "Try shorter Begin/End markers or a smaller PDF."
             )
-            return
-        except Exception as e:
-            await update.message.reply_text(f"❌ Download error: {e}")
             return
 
         if err:
@@ -696,6 +824,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- START THE BOT ---
 if __name__ == '__main__':
+    config.validate()
+
     milan_tz = pytz.timezone("Europe/Rome")
 
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -712,12 +842,9 @@ if __name__ == '__main__':
         print(f"⚠️ Scheduled jobs not available: {e}")
         print("Bot will still work normally — scheduling runs fine on Railway.")
 
-    # LISTEN FOR ANY TEXT MESSAGE... (except commands)
-    text_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
-    application.add_handler(text_handler)
-           
-    doc_handler = MessageHandler(filters.Document.ALL, handle_document)
-    application.add_handler(doc_handler)
+    # --- HANDLERS (owner-only) ---
+    # config.validate() already proved OWNER_ID is set and numeric.
+    register_handlers(application, int(OWNER_ID))
 
     # --- GLOBAL ERROR HANDLER ---
     # Any unhandled exception in a handler lands here and is reported to you,

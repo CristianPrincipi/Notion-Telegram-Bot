@@ -1,0 +1,36 @@
+name: CI
+
+# This is the pre-deploy gate: David deploys by pushing to GitHub, so a red run
+# here is the only warning before a broken router reaches Telegram.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        # No secrets: tests/conftest.py installs a fake environment and every
+        # HTTP call is intercepted, so nothing reaches Notion, Telegram or Google.
+        run: pytest
