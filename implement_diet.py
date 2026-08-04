@@ -2,6 +2,8 @@ import asyncio
 import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 
 from config import ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT
@@ -90,66 +92,138 @@ def build_full_skeleton() -> list:
 
 # ─── 2. READ EXISTING TREE ─────────────────────────────────────────────────────
 
+# Notion has no recursive block read — children come one request per parent — so
+# the three-level Diet tree costs ~67 requests on a populated skeleton
+# (1 page + 4 H1 + 17 H2 + 45 H3). Walked depth-first and sequentially that is
+# the slowest thing David does, and every one of those round trips is spent
+# waiting rather than working.
+#
+# Siblings at a level are independent, so read_diet_tree walks BREADTH-first and
+# fetches each level concurrently instead.
+#
+# Four workers, not more. Notion rate-limits an integration to roughly three
+# requests per second on average, so a wider pool mostly buys 429s and the
+# retry backoff in notion_request — slower overall, and rude. Four is enough to
+# keep requests in flight while others wait on the wire.
+_TREE_FETCH_WORKERS = 4
+
+
+def _heading_name(block: dict, level: int) -> str | None:
+    """The text of a toggle heading at `level`, or None if it is not one.
+
+    startswith rather than ==: a toggleable heading is still type "heading_2".
+    """
+    if not block.get("type", "").startswith(f"heading_{level}"):
+        return None
+    return extract_rich_text(block[f"heading_{level}"]["rich_text"]) or None
+
+
+def _children_of_many(block_ids: list) -> tuple[dict, str | None]:
+    """Fetch the children of many blocks at once. Returns ({block_id: blocks}, error).
+
+    Any error fails the whole read. The previous depth-first version discarded
+    errors below the top level (`h2_blocks, _ = get_children(...)`), which meant
+    a transient failure reading one section made that section look EMPTY rather
+    than unreadable — and an empty section is exactly what makes Claude decide to
+    populate it. apply_updates would then replace real content with content
+    merged against nothing. Failing the read is the safe direction: the handler
+    reports it and writes nothing.
+    """
+    if not block_ids:
+        return {}, None
+
+    children, error = {}, None
+    workers = min(_TREE_FETCH_WORKERS, len(block_ids))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="diet-tree") as pool:
+        for block_id, (blocks, err) in zip(block_ids, pool.map(get_children, block_ids)):
+            if err:
+                error = error or err
+            else:
+                children[block_id] = blocks
+    return children, error
+
+
 def read_diet_tree(page_id: str):
     """Read the full H1>H2>H3 tree into a nested dict for Claude.
 
-    BLOCKING, and the heaviest read in the flow: one Notion request per heading,
-    walked depth-first, so a populated skeleton is dozens of sequential round
-    trips. handle_implement_diet runs it via asyncio.to_thread.
+    BLOCKING — dozens of Notion requests, four at a time. handle_implement_diet
+    runs it via asyncio.to_thread.
 
     Returns (tree, block_map, error) where:
       tree      = {h1: {h2: {h3: "text content", ...}, ...}, ...}
       block_map = {"h1>h2>h3": block_id}  — used later to locate sections to update
+
+    A section with no content reads as "" rather than being left out: Claude has
+    to see that it exists and is empty in order to fill it.
     """
     tree, block_map = {}, {}
 
+    # ── Level 1: the page's own children ───────────────────────────────────────
     h1_blocks, err = get_children(page_id)
     if err:
         return {}, {}, err
 
+    h1s = []                                   # [(h1_name, h1_block), ...]
     for h1 in h1_blocks:
-        if not h1.get("type", "").startswith("heading_1"):
-            continue
-        h1_name = extract_rich_text(h1["heading_1"]["rich_text"])
+        h1_name = _heading_name(h1, 1)
         if not h1_name:
             continue
         tree[h1_name] = {}
         block_map[h1_name] = h1["id"]
+        h1s.append((h1_name, h1))
 
-        if not h1.get("has_children"):
-            continue
-        h2_blocks, _ = get_children(h1["id"])
+    # ── Level 2: every H1's children, in one pass ──────────────────────────────
+    # has_children is already on the parent payload, so a childless block is
+    # never asked for — that alone skips most of the empty skeleton.
+    h2_children, err = _children_of_many(
+        [h1["id"] for _, h1 in h1s if h1.get("has_children")])
+    if err:
+        return {}, {}, err
 
-        for h2 in h2_blocks:
-            if not h2.get("type", "").startswith("heading_2"):
-                continue
-            h2_name = extract_rich_text(h2["heading_2"]["rich_text"])
+    h2s = []                                   # [(h1_name, h2_name, h2_block), ...]
+    for h1_name, h1 in h1s:
+        for h2 in h2_children.get(h1["id"], []):
+            h2_name = _heading_name(h2, 2)
             if not h2_name:
                 continue
-            key2 = f"{h1_name}>{h2_name}"
-            block_map[key2] = h2["id"]
+            block_map[f"{h1_name}>{h2_name}"] = h2["id"]
+            h2s.append((h1_name, h2_name, h2))
 
-            if not h2.get("has_children"):
-                tree[h1_name][h2_name] = ""
+    # ── Level 3: every H2's children, in one pass ──────────────────────────────
+    h3_children, err = _children_of_many(
+        [h2["id"] for _, _, h2 in h2s if h2.get("has_children")])
+    if err:
+        return {}, {}, err
+
+    h3s = []                                   # [(h1_name, h2_name, h3_name, h3_block), ...]
+    for h1_name, h2_name, h2 in h2s:
+        if not h2.get("has_children"):
+            tree[h1_name][h2_name] = ""
+            continue
+
+        blocks = h3_children.get(h2["id"], [])
+        # An H2 either holds H3 toggles, or leaf content directly.
+        if not any(b.get("type", "").startswith("heading_3") for b in blocks):
+            tree[h1_name][h2_name] = _content_to_text(blocks)
+            continue
+
+        tree[h1_name][h2_name] = {}
+        for h3 in blocks:
+            h3_name = _heading_name(h3, 3)
+            if not h3_name:
                 continue
-            h3_blocks, _ = get_children(h2["id"])
+            block_map[f"{h1_name}>{h2_name}>{h3_name}"] = h3["id"]
+            h3s.append((h1_name, h2_name, h3_name, h3))
 
-            # Are there H3 toggles, or just content directly under H2?
-            has_h3 = any(b.get("type", "").startswith("heading_3") for b in h3_blocks)
-            if has_h3:
-                tree[h1_name][h2_name] = {}
-                for h3 in h3_blocks:
-                    if not h3.get("type", "").startswith("heading_3"):
-                        continue
-                    h3_name = extract_rich_text(h3["heading_3"]["rich_text"])
-                    if not h3_name:
-                        continue
-                    key3 = f"{h1_name}>{h2_name}>{h3_name}"
-                    block_map[key3] = h3["id"]
-                    content_blocks, _ = (get_children(h3["id"]) if h3.get("has_children") else ([], None))
-                    tree[h1_name][h2_name][h3_name] = _content_to_text(content_blocks)
-            else:
-                tree[h1_name][h2_name] = _content_to_text(h3_blocks)
+    # ── Level 4: the leaf content under every H3, in one pass ──────────────────
+    leaf_children, err = _children_of_many(
+        [h3["id"] for *_, h3 in h3s if h3.get("has_children")])
+    if err:
+        return {}, {}, err
+
+    for h1_name, h2_name, h3_name, h3 in h3s:
+        tree[h1_name][h2_name][h3_name] = _content_to_text(
+            leaf_children.get(h3["id"], []))
 
     return tree, block_map, None
 
