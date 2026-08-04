@@ -10,6 +10,7 @@ with no way to roll back.
 """
 
 import asyncio
+import time
 
 import pytest
 
@@ -364,6 +365,9 @@ def test_implement_refuses_a_concurrent_manual_update(monkeypatch):
 
 
 def test_implement_diet_refuses_a_concurrent_update(monkeypatch):
+    # Keyed on the Diet DATABASE, not the Diet page: the page id is not known
+    # until find_or_create_diet_page returns, and that call is itself the
+    # check-then-act the lock has to cover. See test_locks_are_keyed_on_databases.
     monkeypatch.setattr(implement_diet, "DIET_ID", "diet-db-1")
     monkeypatch.setattr(implement_diet, "search_page_in_db",
                         lambda db, name, exact=False: ({"id": "summary-1",
@@ -376,7 +380,7 @@ def test_implement_diet_refuses_a_concurrent_update(monkeypatch):
                         lambda: ("diet-page-1", False, None))
 
     async def main():
-        async with page_lock.page_lock("diet-page-1"):
+        async with page_lock.page_lock("diet-db-1"):
             update_obj = FakeUpdate(text="Implement Protein Basics - Diet")
             # wait_for so a regression to queueing FAILS here rather
             # than deadlocking the suite.
@@ -386,3 +390,62 @@ def test_implement_diet_refuses_a_concurrent_update(monkeypatch):
     result = run(main())
 
     assert result.message.replied_with("already in progress")
+
+
+def test_two_overlapping_diet_runs_create_only_one_diet_page(monkeypatch):
+    """THE create race. Two first-runs must not build two Diet pages.
+
+    find_or_create_diet_page is a check-then-act: search for "Diet", create it
+    with a full skeleton if missing. It used to run OUTSIDE the lock, because the
+    lock was keyed on the page id it returns — so two overlapping runs both
+    searched an empty database, both found nothing, and both created one. Every
+    later run then picks one of the two arbitrarily and half the knowledge base
+    lands in a page nobody reads. Nothing errors.
+
+    Concurrency is what makes this reachable, which is exactly why it had to be
+    closed before turning concurrency on.
+    """
+    monkeypatch.setattr(implement_diet, "DIET_ID", "diet-db-1")
+    created = []
+    database = {}      # stands in for the Diet DB; populated by whoever creates first
+
+    def find_or_create_diet_page():
+        if "page" in database:
+            return database["page"], False, None
+        # The real call searches Notion, creates a page, then writes the whole
+        # skeleton — a wide window between the check and the act. The sleep
+        # reproduces it: an instant stub is effectively atomic, so no
+        # interleaving is possible and the test would pass against the bug.
+        # It runs inside asyncio.to_thread, so the loop stays free and the
+        # second run really does get to reach this function.
+        time.sleep(0.05)
+        page_id = f"diet-page-{len(created)}"
+        database["page"] = page_id
+        created.append(page_id)
+        return page_id, True, None
+
+    monkeypatch.setattr(implement_diet, "find_or_create_diet_page", find_or_create_diet_page)
+    monkeypatch.setattr(implement_diet, "search_page_in_db",
+                        lambda db, name, exact=False: ({"id": "summary-1",
+                                                        "properties": {}}, None))
+    monkeypatch.setattr(implement_diet, "get_children",
+                        lambda bid: ([{"type": "paragraph",
+                                       "paragraph": {"rich_text": [
+                                           {"plain_text": "some summary text"}]}}], None))
+    monkeypatch.setattr(implement_diet, "read_diet_tree", lambda pid: ({}, {}, None))
+    monkeypatch.setattr(implement_diet, "decide_updates",
+                        lambda tree, text, title: ({"plan": {}, "updates": []}, None))
+    monkeypatch.setattr(implement_diet, "update_page", lambda pid, props: (True, None))
+
+    async def one_run():
+        update_obj = FakeUpdate(text="Implement Protein Basics - Diet")
+        await implement_diet.handle_implement_diet(update_obj, "Protein Basics")
+        return update_obj
+
+    async def main():
+        return await asyncio.gather(one_run(), one_run())
+
+    run(main())
+
+    assert created == ["diet-page-0"], (
+        f"built {len(created)} Diet pages ({created}) — the create race is open")

@@ -21,6 +21,7 @@ from config import (
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from notion_client import notion_request, query_database
+from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
 
 # Configured at import so config.validate() can still be the first statement in
@@ -46,6 +47,31 @@ LEARN_ID = os.environ.get("LEARN_ID")
 DIET_ID = os.environ.get("DIET_ID")
 BRAIN_ID = os.environ.get("BRAIN_ID")
 FINANCE_ID = os.environ.get("FINANCE_ID")
+
+
+# --- EXPENSE WRITE SERIALISATION ---
+# `U e` and `D e` are both find-then-mutate: query the Expenses DB by name, take
+# results[0], then PATCH that page. The query and the PATCH are two round trips,
+# and between them another run can read the SAME results[0].
+#
+# The delete case is the one that bites. Notion excludes archived pages from
+# query results, which is what makes `D e Carrefour` twice in a row correctly
+# delete two different rows — the second query no longer sees the first one.
+# Overlap them and both queries run before either archive, both resolve to the
+# same page, and both archive it. You are told "deleted successfully" twice and
+# one row is still there.
+#
+# Locked on EXPENSES_ID rather than on the expense name: page_lock keys must be
+# database ids so the lock table stays bounded (see page_lock.py), and expense
+# names come from the user. Serialising every expense write costs nothing here —
+# they take about a second and David has one user.
+#
+# `Add e` is deliberately NOT locked. It is a bare create with no preceding read,
+# so it cannot double-target a row or lose an update. Locking it would only
+# serialise it against the other two, which does not make "add X" and "delete X"
+# sent at the same instant any less ambiguous than they already are.
+BUSY_EXPENSE_MESSAGE = ("⏳ Another expense write is still running. "
+                        "Give it a second and try again.")
 
 
 # --- PDF ATTACHMENT LIMITS ---
@@ -360,6 +386,41 @@ def delete_Expense(name):
     return True, page_id
 
 
+# --- DETACHED (BACKGROUND) COMMANDS --- #
+
+def run_detached(context: ContextTypes.DEFAULT_TYPE, update: Update, coro, name: str):
+    """Run a long command as a background task instead of awaiting it inline.
+
+    WHY THIS EXISTS
+    ---------------
+    Moving blocking work onto worker threads freed the event LOOP, but
+    python-telegram-bot still processes updates one at a time: it will not look
+    at the next update until this handler returns. So a five-minute `Learn video`
+    left every other command sitting in the queue behind it, even though the loop
+    itself was idle the whole time.
+
+    Detaching only the genuinely long commands fixes that without enabling
+    concurrent_updates. Everything else — expenses, budget, quotes, books,
+    reminders, diagnostics — stays strictly sequential, so a write followed by a
+    read of the same data still cannot be reordered. `Add e` then `B` always
+    reports the new total. That guarantee is the reason this is a per-command
+    decision and not a global switch.
+
+    WHAT THIS ALLOWS TO OVERLAP
+    ---------------------------
+    Two detached commands can now run at once, which is exactly what the locks
+    are for: two Implements against the same area are refused by the area lock,
+    and two against Diet by the Diet lock. Nothing detached here touches the
+    expense or calendar paths.
+
+    Uses Application.create_task rather than asyncio.create_task so exceptions
+    reach the global error handler instead of vanishing into a dropped task, and
+    so a task still in flight is awaited on shutdown rather than killed
+    mid-write. Passing `update` is what gives that error handler its context.
+    """
+    return context.application.create_task(coro, update=update, name=name)
+
+
 # --- ERROR REPORTING HELPER --- #
 async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exception):
     """Send a Telegram message to the owner when something fails silently in the background."""
@@ -666,13 +727,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
+    # Detached: fetch + Claude can run for minutes. See run_detached.
     if re.fullmatch(r"(?i)learn\s+\w+[\s\S]*", user_text):
-        await handle_learn(update, user_text)
+        run_detached(context, update, handle_learn(update, user_text), "learn")
         return
 
     # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
+    # Detached: the Claude merge alone is tens of seconds, under a page lock.
     if re.fullmatch(r"(?i)implement\s+.+\s*-\s*.+", user_text):
-        await handle_implement(update, user_text)
+        run_detached(context, update, handle_implement(update, user_text), "implement")
         return
 
     # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
@@ -692,7 +755,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
 
-        success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
+        try:
+            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+                success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
+        except PageBusy:
+            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+            return
 
         if success:
             await update.message.reply_text(f"✅ Expense '{name}' updated successfully!")
@@ -710,7 +778,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(f"⏳ Deleting expense '{name}'...")
 
-        success, page_id = await asyncio.to_thread(delete_Expense, name)
+        try:
+            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+                success, page_id = await asyncio.to_thread(delete_Expense, name)
+        except PageBusy:
+            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+            return
 
         if success:
             await update.message.reply_text(f"🗑️ Expense '{name}' deleted successfully!")
@@ -819,6 +892,72 @@ async def download_pdf_attachment(context: ContextTypes.DEFAULT_TYPE, doc):
     return content, None
 
 
+# --- UPLOAD WORK (run detached; see run_detached) --- #
+# Split out of handle_document so the slow half — a download capped at 2 minutes,
+# PyPDF2 parsing, and for Learn a full Claude summarisation — can run as a
+# background task while the cheap validation stays inline and rejects a bad file
+# immediately.
+
+async def _learn_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                            doc, caption: str):
+    await update.message.reply_text("⏳ Downloading your PDF…")
+    file_bytes, err = await download_pdf_attachment(context, doc)
+    if err:
+        await update.message.reply_text(err)
+        return
+    await handle_learn(update, caption, file_bytes=file_bytes)
+
+
+async def _quote_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, doc,
+                            book_name: str, quote_title: str,
+                            begin_text: str, end_text: str):
+    # Find book in Notion
+    await update.message.reply_text(f"🔍 Searching \'{book_name}\' in library…")
+    page_id = await asyncio.to_thread(find_Book_Page, book_name)
+    if not page_id:
+        await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
+        return
+
+    await update.message.reply_text("📄 Reading PDF and extracting quote…")
+
+    pdf_bytes, err = await download_pdf_attachment(context, doc)
+    if err:
+        await update.message.reply_text(err)
+        return
+
+    # Extraction stays on a worker thread under its own cap: it parses every
+    # page of the PDF, which would otherwise block the event loop (see the
+    # note on extract_quote_from_pdf).
+    try:
+        quote_content, err = await asyncio.wait_for(
+            asyncio.to_thread(extract_quote_from_pdf, pdf_bytes, begin_text, end_text),
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        await update.message.reply_text(
+            "❌ Timed out after 2 minutes.\n"
+            "Try shorter Begin/End markers or a smaller PDF."
+        )
+        return
+
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+        return
+
+    # Preview
+    preview = quote_content[:300] + ("..." if len(quote_content) > 300 else "")
+    await update.message.reply_text(
+        f"📖 *Extracted* ({len(quote_content)} chars):\n\n_{preview}_",
+        parse_mode="Markdown",
+    )
+
+    # Save to Notion
+    if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
+        await update.message.reply_text(f"✍️ Quote added to \'{book_name}\'!")
+    else:
+        await update.message.reply_text("❌ Error saving quote to Notion.")
+
+
 # --- HANDLER FUNCTION FOR PDF ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle file uploads. Dispatches based on the message caption.
@@ -832,12 +971,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Learn pdf ──────────────────────────────────────────────────────────────
     if re.match(r"(?i)learn\s+pdf", caption):
-        await update.message.reply_text("⏳ Downloading your PDF…")
-        file_bytes, err = await download_pdf_attachment(context, doc)
+        # Validated inline — it is pure and network-free, so a wrong file type or
+        # an oversized upload is refused immediately rather than from a task.
+        # download_pdf_attachment checks again; calling it twice costs nothing.
+        err = validate_pdf_attachment(doc)
         if err:
             await update.message.reply_text(err)
             return
-        await handle_learn(update, caption, file_bytes=file_bytes)
+        run_detached(context, update,
+                     _learn_pdf_upload(update, context, doc, caption), "learn-pdf")
         return
 
     # ── Add q [Book] - [Title] - [Begin] / [End]  (extract quote from PDF) ────
@@ -849,56 +991,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(err)
             return
 
-        book_name   = quote_pdf_match.group(1).strip()
-        quote_title = quote_pdf_match.group(2).strip()
-        begin_text  = quote_pdf_match.group(3).strip()
-        end_text    = quote_pdf_match.group(4).strip()
-
-        # Find book in Notion
-        await update.message.reply_text(f"🔍 Searching \'{book_name}\' in library…")
-        page_id = await asyncio.to_thread(find_Book_Page, book_name)
-        if not page_id:
-            await update.message.reply_text(f"⚠️ \'{book_name}\' not found in library.")
-            return
-
-        await update.message.reply_text("📄 Reading PDF and extracting quote…")
-
-        pdf_bytes, err = await download_pdf_attachment(context, doc)
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        # Extraction stays on a worker thread under its own cap: it parses every
-        # page of the PDF, which would otherwise block the event loop (see the
-        # note on extract_quote_from_pdf).
-        try:
-            quote_content, err = await asyncio.wait_for(
-                asyncio.to_thread(extract_quote_from_pdf, pdf_bytes, begin_text, end_text),
-                timeout=DOWNLOAD_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            await update.message.reply_text(
-                "❌ Timed out after 2 minutes.\n"
-                "Try shorter Begin/End markers or a smaller PDF."
-            )
-            return
-
-        if err:
-            await update.message.reply_text(f"❌ {err}")
-            return
-
-        # Preview
-        preview = quote_content[:300] + ("..." if len(quote_content) > 300 else "")
-        await update.message.reply_text(
-            f"📖 *Extracted* ({len(quote_content)} chars):\n\n_{preview}_",
-            parse_mode="Markdown",
-        )
-
-        # Save to Notion
-        if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
-            await update.message.reply_text(f"✍️ Quote added to \'{book_name}\'!")
-        else:
-            await update.message.reply_text("❌ Error saving quote to Notion.")
+        run_detached(
+            context, update,
+            _quote_pdf_upload(
+                update, context, doc,
+                quote_pdf_match.group(1).strip(),   # book name
+                quote_pdf_match.group(2).strip(),   # quote title
+                quote_pdf_match.group(3).strip(),   # begin text
+                quote_pdf_match.group(4).strip(),   # end text
+            ),
+            "quote-pdf")
         return
 
     # ── Unknown caption ────────────────────────────────────────────────────────
@@ -916,18 +1018,20 @@ if __name__ == '__main__':
 
     # UPDATES STAY SEQUENTIAL — do not add .concurrent_updates() here.
     #
-    # Every blocking call now runs on a worker thread, so one slow command no
-    # longer freezes the bot: the event loop stays free to answer other commands
-    # and to fire scheduled jobs while a Learn summarisation is in flight. That
-    # is a different thing from processing two UPDATES at once, which this line
-    # deliberately still does not do.
+    # This is a decision, not a leftover. Responsiveness is bought a different
+    # way: the long commands (Learn, Implement, the PDF uploads) are dispatched
+    # with run_detached, so they no longer hold up the queue, while every fast
+    # command still runs to completion before the next update is looked at.
     #
-    # Sequential processing is currently the only thing serialising the
-    # read-modify-write cycles that page_lock.py does not cover. The per-page
-    # locks protect the Implement Manual/Diet flows; nothing yet protects, say,
-    # two overlapping expense edits. Turning concurrency on before those locks
-    # are in place AND verified would reintroduce exactly the lost-update class
-    # of bug page_lock.py exists to prevent.
+    # Global concurrency would buy nothing on top of that and would cost the one
+    # guarantee sequential dispatch still provides: ORDERING. `Add e Carrefour 5`
+    # followed by `B` must report the new total. Locks cannot give that back —
+    # they stop two cycles interleaving, they do not decide which runs first. So
+    # the choice was per-command, and it is asserted in tests/test_concurrency.py
+    # (test_fast_commands_stay_sequential).
+    #
+    # The locks are in place either way — expenses, calendar, and both Implement
+    # flows — because run_detached does let two long commands overlap.
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     # --- SCHEDULED JOBS ---
