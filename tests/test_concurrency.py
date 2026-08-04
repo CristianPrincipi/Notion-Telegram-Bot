@@ -258,7 +258,122 @@ def test_the_shared_calendar_service_singleton_is_gone():
         "calendar_client._service is back — that is one Http shared by every thread")
 
 
-# ─── 4. THE KEYING RULE ────────────────────────────────────────────────────────
+# ─── 4. WHICH COMMANDS RUN DETACHED ────────────────────────────────────────────
+# Only the long ones. That split is the whole design: it buys responsiveness
+# without giving up the ordering guarantee that global concurrent_updates would
+# have cost. Both halves are asserted — detaching too much is as wrong as
+# detaching too little.
+
+@pytest.fixture
+def slow_command_stubs(monkeypatch):
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(david, "handle_learn", noop)
+    monkeypatch.setattr(david, "handle_implement", noop)
+    monkeypatch.setattr(david, "find_Book_Page", lambda name: "book-1")
+    monkeypatch.setattr(david, "add_Quote", lambda *a: True)
+    monkeypatch.setattr(david, "budget", lambda: "TOTAL")
+    monkeypatch.setattr(david, "add_Expenses", lambda *a: True)
+    monkeypatch.setattr(david, "update_Expense", lambda *a: (True, "exp-1"))
+    monkeypatch.setattr(david, "delete_Expense", lambda *a: (True, "exp-1"))
+    monkeypatch.setattr(david, "add_New_Book", lambda *a: "book-1")
+
+
+DETACHED = [
+    ("Learn video https://youtu.be/abc", "learn"),
+    ("Implement Memory Techniques - Brain", "implement"),
+]
+
+NOT_DETACHED = [
+    "B",
+    "Add e Carrefour 2.20",
+    "U e Carrefour 5",
+    "D e Carrefour",
+    "Add b Dune - Herbert - s",
+    "Add q Dune - On Fear - Fear is the mind-killer.",
+]
+
+
+@pytest.mark.parametrize("text, task_name", DETACHED, ids=[t for t, _ in DETACHED])
+def test_long_commands_are_detached(slow_command_stubs, text, task_name):
+    context = FakeContext()
+
+    run(david.handle_message(FakeUpdate(text=text), context))
+
+    assert context.application.task_names == [task_name], (
+        f"{text!r} was awaited inline — it will hold up every command behind it")
+
+
+@pytest.mark.parametrize("text", NOT_DETACHED, ids=NOT_DETACHED)
+def test_fast_commands_stay_sequential(slow_command_stubs, text):
+    """THE ordering guarantee.
+
+    These finish before their handler returns, and python-telegram-bot does not
+    look at the next update until then — so `Add e` followed by `B` can never be
+    reordered, and the budget always includes the expense just written. Detaching
+    any of them, or enabling global concurrent_updates, gives that up.
+    """
+    context = FakeContext()
+
+    run(david.handle_message(FakeUpdate(text=text), context))
+
+    assert context.application.task_names == [], (
+        f"{text!r} was detached — a write and the read after it can now reorder")
+
+
+def test_detached_commands_carry_their_update_for_the_error_handler():
+    """Application.create_task routes exceptions to process_error, but only
+    passes along the update it was given — omit it and a crash inside a detached
+    command is reported with no idea which message caused it."""
+    context = FakeContext()
+    update = FakeUpdate(text="Learn video https://youtu.be/abc")
+
+    with pytest.MonkeyPatch.context() as mp:
+        async def noop(*a, **kw):
+            return None
+        mp.setattr(david, "handle_learn", noop)
+        run(david.handle_message(update, context))
+
+    name, passed_update = context.application.tasks[0]
+    assert passed_update is update, f"task {name!r} was dispatched without its update"
+
+
+def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
+    """The responsiveness win, end to end.
+
+    Moving blocking work onto threads freed the event LOOP, but PTB still would
+    not look at the next update until the handler returned — so a five-minute
+    Learn left every other command queued behind it with the loop sitting idle.
+    """
+    order = []
+
+    async def slow_learn(update, user_text, file_bytes=None):
+        order.append("learn-start")
+        await asyncio.sleep(0.1)
+        order.append("learn-end")
+
+    monkeypatch.setattr(david, "handle_learn", slow_learn)
+    monkeypatch.setattr(david, "budget", lambda: order.append("budget") or "TOTAL")
+
+    context = FakeContext()
+
+    async def main():
+        await david.handle_message(
+            FakeUpdate(text="Learn video https://youtu.be/abc"), context)
+        budget_update = FakeUpdate(text="B")
+        await david.handle_message(budget_update, context)
+        return budget_update
+
+    budget_update = run(main())
+
+    assert "learn-end" in order, "the detached command never completed"
+    assert order.index("budget") < order.index("learn-end"), (
+        f"B waited for the Learn to finish — got {order}")
+    assert budget_update.message.replied_with("TOTAL")
+
+
+# ─── 5. THE KEYING RULE ────────────────────────────────────────────────────────
 
 # page_lock keys must be DATABASE ids: page ids are not known until the lookup
 # the lock has to cover, and user-controlled keys (an expense name, a book

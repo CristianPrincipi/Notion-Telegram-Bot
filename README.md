@@ -132,14 +132,51 @@ Notion requests reuse a pooled `requests.Session`, one per worker thread —
 `requests.Session` is not thread-safe, and a shared one can hand the same socket
 to two threads at once.
 
-**Updates are still processed sequentially, and that is deliberate.** Freeing the
-event loop is not the same as processing two updates at once. Sequential
-processing is currently the only thing serialising the read-modify-write cycles
-that `page_lock.py` does not cover — it protects the Implement Manual/Diet flows,
-but nothing yet protects, say, two overlapping expense edits. Enabling
-`concurrent_updates` before those locks exist and are verified reintroduces the
-lost-update bug `page_lock.py` was written to prevent.
-`tests/test_async_io.py` fails if it is turned on.
+### What runs when
+
+Freeing the event loop is not the same as letting two updates run at once.
+python-telegram-bot will not look at the next update until the current handler
+returns, so a five-minute `Learn` still held every other command behind it even
+with the loop idle.
+
+The fix is per-command, not a global switch. The long commands — `Learn`,
+`Implement`, and both PDF upload paths — are dispatched as background tasks
+(`david.run_detached`, built on `Application.create_task` so failures still reach
+the error handler and in-flight work is awaited on shutdown). Everything else
+runs inline.
+
+| | Runs | Ordering |
+| --- | --- | --- |
+| `Learn`, `Implement`, PDF uploads | detached, in the background | may finish in any order |
+| everything else | inline, one at a time | strictly ordered |
+
+**`concurrent_updates` stays off, deliberately.** It would add nothing on top of
+the above and would cost the guarantee sequential dispatch still gives:
+`Add e Carrefour 5` followed by `B` always reports the new total. Locks cannot
+give that back — they stop two cycles interleaving, they do not decide which
+runs first. `tests/test_async_io.py` fails if it is ever enabled.
+
+### Write locks
+
+Detached commands *can* overlap each other, so every find-then-mutate cycle is
+serialised with `page_lock.py`:
+
+| Cycle | Key | On contention |
+| --- | --- | --- |
+| Implement → area Manual | `area_db_id` | refused (a merge takes tens of seconds) |
+| Implement → Diet page | `DIET_ID` | refused |
+| `U e` / `D e` | `EXPENSES_ID` | queues (writes take ~1s) |
+| `Remind` | `CALENDAR_ID` | queues |
+
+**Keys are always database ids, never page ids.** A page id is not known until
+the lookup the lock has to cover, so keying on it forces the find-or-create
+outside the lock — which is how the Diet flow could once build two Diet pages.
+Database ids also keep the lock table bounded; a user-controlled key like an
+expense name would not. `tests/test_concurrency.py` reads the call sites and
+fails on any key that is not one.
+
+`Add e` is deliberately unlocked: a bare create with no preceding read cannot
+double-target a row.
 
 ## Development
 

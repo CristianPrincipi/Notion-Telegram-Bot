@@ -47,13 +47,30 @@ NOTION_BASE = "https://api.notion.com/v1"
 # ─── ASYNC HELPER ──────────────────────────────────────────────────────────────
 
 def run(coro):
-    """Run a coroutine from a sync test.
+    """Run a coroutine from a sync test, then drain any detached commands.
 
     Deliberately plain asyncio instead of pytest-asyncio: the handlers under test
     are self-contained coroutines, so there is nothing to gain from an extra
     plugin whose mode/marker API keeps changing between majors.
+
+    THE DRAIN: the long commands (Learn, Implement, both PDF uploads) are
+    dispatched with Application.create_task and no longer awaited by their
+    handler, so the handler returns while the real work is still pending. A test
+    that only awaited the handler would assert against replies that had not been
+    sent yet. Draining here keeps every existing test honest without each one
+    having to know which commands are detached.
+
+    Bounded by wait_for on purpose: a detached task that never finishes should
+    turn the suite RED, not hang it. A wedged CI run is far worse to diagnose.
     """
-    return asyncio.run(coro)
+    async def _run_then_drain():
+        result = await coro
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        return result
+
+    return asyncio.run(_run_then_drain())
 
 
 # ─── TELEGRAM DOUBLES ──────────────────────────────────────────────────────────
@@ -120,8 +137,29 @@ class FakeBot:
         self.sent.append((chat_id, text))
 
 
+class FakeApplication:
+    """Stands in for telegram.ext.Application, for context.application.create_task.
+
+    Mirrors the real signature, including `update`, so a call site that forgets
+    to pass it — and would silently rob the error handler of its context — fails
+    here rather than in production.
+    """
+
+    def __init__(self):
+        self.tasks = []          # [(name, update), ...] in dispatch order
+
+    def create_task(self, coroutine, update=None, name=None):
+        self.tasks.append((name, update))
+        return asyncio.create_task(coroutine, name=name)
+
+    @property
+    def task_names(self):
+        return [name for name, _ in self.tasks]
+
+
 class FakeContext:
     """Stands in for ContextTypes.DEFAULT_TYPE."""
 
     def __init__(self, file=None):
         self.bot = FakeBot(file=file)
+        self.application = FakeApplication()
