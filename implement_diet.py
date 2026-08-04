@@ -431,21 +431,32 @@ async def handle_implement_diet(update, summary_name: str):
         await update.message.reply_text("❌ The summary page appears to be empty.")
         return
 
-    # ── Step B: find or create the Diet page ───────────────────────────────────
-    # On a first run this also builds the whole skeleton — dozens of writes.
-    page_id, was_created, err = await asyncio.to_thread(find_or_create_diet_page)
-    if err:
-        await update.message.reply_text(f"❌ Could not prepare the Diet page: {err}")
-        return
-    if was_created:
-        await update.message.reply_text("🥗 First run — built the full Diet structure in Notion.")
-
-    # ── Steps C–E run under a per-page lock ──────────────────────────────
-    # Taken BEFORE read_diet_tree, not just around the write: Claude decides
-    # which sections to update from the tree it was given, so that decision is
-    # only valid while nobody else is mutating it.
+    # ── Steps B–E run under a lock on the Diet DATABASE ────────────────────────
+    # Keyed on DIET_ID, not on the Diet page's own id, and taken BEFORE the
+    # find-or-create rather than after it. Both matter:
+    #
+    #   - find_or_create_diet_page is a check-then-act. Outside the lock, two
+    #     overlapping runs both find nothing and both create a "Diet" page with a
+    #     full skeleton. Every later run then picks one of them arbitrarily, so
+    #     half the knowledge lands in a page nobody reads. Nothing errors.
+    #   - the page id is not known until that call returns, so a lock keyed on it
+    #     could not have covered the call that produces it.
+    #
+    # It is also taken before read_diet_tree: Claude decides which sections to
+    # update from the tree it was given, so that decision is only valid while
+    # nobody else is mutating it.
     try:
-        async with page_lock(page_id):
+        async with page_lock(DIET_ID):
+            # ── Step B: find or create the Diet page ───────────────────────────────────
+            # On a first run this also builds the whole skeleton — dozens of writes.
+            page_id, was_created, err = await asyncio.to_thread(find_or_create_diet_page)
+            if err:
+                await update.message.reply_text(f"❌ Could not prepare the Diet page: {err}")
+                return
+            if was_created:
+                await update.message.reply_text(
+                    "🥗 First run — built the full Diet structure in Notion.")
+
             # ── Step C: read the current tree ──────────────────────────────────────────
             await update.message.reply_text("📂 Reading current Diet structure…")
             tree, block_map, err = await asyncio.to_thread(read_diet_tree, page_id)
