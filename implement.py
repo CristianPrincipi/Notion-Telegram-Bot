@@ -1,8 +1,10 @@
+import asyncio
 import os
 import re
 import json
 import requests
 
+from config import ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
@@ -28,6 +30,10 @@ def get_area_db_id(area_name: str) -> str | None:
 # ─── 2. NOTION HELPERS (thin wrappers over the shared client) ──────────────────
 # Most helpers now live in notion_client. These wrappers preserve the existing
 # call sites in this file (get_all_blocks, clear_page_blocks, etc.).
+#
+# All of them BLOCK. handle_implement reaches every one through
+# asyncio.to_thread — calling one directly from the event loop stalls the whole
+# bot for the length of the round trip.
 
 _get_page_title_from_result = get_page_title  # alias for the old name used below
 
@@ -147,7 +153,9 @@ def merge_with_claude(
                 "system":     _IMPLEMENT_SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
-            timeout=(10, 300),
+            # (connect, read) — the read timeout is per socket read, so
+            # handle_implement adds an outer ANTHROPIC_TIMEOUT via wait_for.
+            timeout=(10, ANTHROPIC_READ_TIMEOUT),
         )
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"].strip()
@@ -307,7 +315,7 @@ async def handle_implement(update, user_text: str):
         f"🔍 Searching for *{page_name}* in Learn database…", parse_mode="Markdown"
     )
 
-    source_page, err = search_page_in_db(LEARN_ID, page_name)
+    source_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, page_name)
     if err:
         await update.message.reply_text(
             f"❌ Could not find *{page_name}* in your Learn database.\n\n"
@@ -319,7 +327,7 @@ async def handle_implement(update, user_text: str):
     source_page_id = source_page["id"]
     source_title   = _get_page_title_from_result(source_page)
 
-    source_blocks, err = get_all_blocks(source_page_id)
+    source_blocks, err = await asyncio.to_thread(get_all_blocks, source_page_id)
     if err:
         await update.message.reply_text(f"❌ Could not retrieve content of source page: {err}")
         return
@@ -339,24 +347,39 @@ async def handle_implement(update, user_text: str):
                 f"📂 Looking for Manual in *{area_name}*…", parse_mode="Markdown"
             )
 
-            manual_page, _  = search_page_in_db(area_db_id, "Manual", exact=True)
+            manual_page, _  = await asyncio.to_thread(
+                search_page_in_db, area_db_id, "Manual", exact=True)
             manual_page_id  = manual_page["id"] if manual_page else None
             manual_text     = ""
             is_new_manual   = manual_page_id is None
 
             if manual_page_id:
-                manual_blocks, _ = get_all_blocks(manual_page_id)
+                manual_blocks, _ = await asyncio.to_thread(get_all_blocks, manual_page_id)
                 manual_text       = blocks_to_text(manual_blocks)
 
             # ── Step C: Merge with Claude ──────────────────────────────────────────────
             await update.message.reply_text("🧠 Claude is merging knowledge into Manual…")
 
-            merged, err = merge_with_claude(
-                source_text  = source_text,
-                manual_text  = manual_text,
-                topic        = f"{area_name} — {page_name}",
-                source_title = source_title,
-            )
+            # Tens of seconds on a large Manual, and it happens while the lock is
+            # held. Off the loop, that no longer stops anything else from running.
+            # Timing out here is safe: nothing has been written yet.
+            try:
+                merged, err = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        merge_with_claude,
+                        source_text  = source_text,
+                        manual_text  = manual_text,
+                        topic        = f"{area_name} — {page_name}",
+                        source_title = source_title,
+                    ),
+                    timeout=ANTHROPIC_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                await update.message.reply_text(
+                    f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
+                    "Your Manual is unchanged — nothing was written."
+                )
+                return
             if err:
                 await update.message.reply_text(f"❌ Merge failed: {err}")
                 return
@@ -368,7 +391,7 @@ async def handle_implement(update, user_text: str):
             await update.message.reply_text("📝 Writing updated Manual to Notion…")
 
             if is_new_manual:
-                page_id, err = create_manual_page(area_db_id, new_blocks)
+                page_id, err = await asyncio.to_thread(create_manual_page, area_db_id, new_blocks)
                 if not page_id:
                     await update.message.reply_text(f"❌ Could not create Manual page: {err}")
                     return
@@ -382,13 +405,13 @@ async def handle_implement(update, user_text: str):
                 #
                 # The page briefly shows the old content followed by the new; that is
                 # the acceptable cost of never having a window where it shows neither.
-                existing_blocks, err = get_all_blocks(manual_page_id)
+                existing_blocks, err = await asyncio.to_thread(get_all_blocks, manual_page_id)
                 if err:
                     await update.message.reply_text(f"❌ Could not read the existing Manual: {err}")
                     return
                 stale_block_ids = [b["id"] for b in existing_blocks if b.get("id")]
 
-                err = append_blocks_to_page(manual_page_id, new_blocks)
+                err = await asyncio.to_thread(append_blocks_to_page, manual_page_id, new_blocks)
                 if err:
                     # Old content is still intact — nothing has been deleted yet.
                     await update.message.reply_text(
@@ -398,7 +421,9 @@ async def handle_implement(update, user_text: str):
                     return
 
                 # Only now that the replacement is committed is it safe to drop the old.
-                clear_page_blocks_by_id(stale_block_ids)
+                # One DELETE per stale block, so this is the longest blocking run
+                # in the flow on a big Manual.
+                await asyncio.to_thread(clear_page_blocks_by_id, stale_block_ids)
                 action = "updated 🔄"
     except PageBusy:
         await update.message.reply_text(
@@ -410,7 +435,7 @@ async def handle_implement(update, user_text: str):
 
     # ── Step E: Mark the source Learn page as implemented (best-effort) ─────────
     # Drives the Learn-nudge job, which only surfaces still-unimplemented items.
-    update_page(source_page_id, {"Implemented": {"checkbox": True}})
+    await asyncio.to_thread(update_page, source_page_id, {"Implemented": {"checkbox": True}})
 
     routine_count     = len(merged.get("routine", []))
     improvement_count = len(merged.get("improvements", []))

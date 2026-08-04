@@ -1,8 +1,10 @@
+import asyncio
 import os
 import re
 import json
 import requests
 
+from config import ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from notion_client import (
     search_page_in_db, get_children,
@@ -90,6 +92,10 @@ def build_full_skeleton() -> list:
 
 def read_diet_tree(page_id: str):
     """Read the full H1>H2>H3 tree into a nested dict for Claude.
+
+    BLOCKING, and the heaviest read in the flow: one Notion request per heading,
+    walked depth-first, so a populated skeleton is dozens of sequential round
+    trips. handle_implement_diet runs it via asyncio.to_thread.
 
     Returns (tree, block_map, error) where:
       tree      = {h1: {h2: {h3: "text content", ...}, ...}, ...}
@@ -225,7 +231,9 @@ def decide_updates(tree: dict, summary_text: str, summary_title: str):
                 "system":     _DIET_SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
-            timeout=(10, 300),
+            # (connect, read) — per socket read, so handle_implement_diet adds an
+            # outer ANTHROPIC_TIMEOUT via wait_for.
+            timeout=(10, ANTHROPIC_READ_TIMEOUT),
         )
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"].strip()
@@ -243,6 +251,9 @@ def decide_updates(tree: dict, summary_text: str, summary_title: str):
 
 def apply_updates(updates: list, block_map: dict):
     """For each update, locate the target section block and refresh its content.
+
+    BLOCKING — several Notion round trips per section touched. Run via
+    asyncio.to_thread, never directly from the event loop.
 
     BOTH modes replace the section's leaf content. _DIET_SYSTEM instructs Claude
     to return the FULL merged content of every section it touches — "merge" means
@@ -396,7 +407,7 @@ async def handle_implement_diet(update, summary_name: str):
     await update.message.reply_text(
         f"🔍 Searching for *{summary_name}* in Learn database…", parse_mode="Markdown"
     )
-    summary_page, err = search_page_in_db(LEARN_ID, summary_name)
+    summary_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, summary_name)
     if err:
         await update.message.reply_text(
             f"❌ Could not find *{summary_name}* in your Learn database.\n"
@@ -411,7 +422,7 @@ async def handle_implement_diet(update, summary_name: str):
               if p.get("type") == "title"), [])
     )
 
-    summary_blocks, err = get_children(summary_id)
+    summary_blocks, err = await asyncio.to_thread(get_children, summary_id)
     if err:
         await update.message.reply_text(f"❌ Could not read the summary: {err}")
         return
@@ -421,7 +432,8 @@ async def handle_implement_diet(update, summary_name: str):
         return
 
     # ── Step B: find or create the Diet page ───────────────────────────────────
-    page_id, was_created, err = find_or_create_diet_page()
+    # On a first run this also builds the whole skeleton — dozens of writes.
+    page_id, was_created, err = await asyncio.to_thread(find_or_create_diet_page)
     if err:
         await update.message.reply_text(f"❌ Could not prepare the Diet page: {err}")
         return
@@ -436,14 +448,26 @@ async def handle_implement_diet(update, summary_name: str):
         async with page_lock(page_id):
             # ── Step C: read the current tree ──────────────────────────────────────────
             await update.message.reply_text("📂 Reading current Diet structure…")
-            tree, block_map, err = read_diet_tree(page_id)
+            tree, block_map, err = await asyncio.to_thread(read_diet_tree, page_id)
             if err:
                 await update.message.reply_text(f"❌ Could not read the Diet tree: {err}")
                 return
 
             # ── Step D: Claude decides what to update ──────────────────────────────────
             await update.message.reply_text("🧠 Claude is analysing the summary…")
-            result, err = decide_updates(tree, summary_text, summary_title)
+            # Safe to time out: nothing has been written yet, and the source page
+            # is not yet marked implemented.
+            try:
+                result, err = await asyncio.wait_for(
+                    asyncio.to_thread(decide_updates, tree, summary_text, summary_title),
+                    timeout=ANTHROPIC_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                await update.message.reply_text(
+                    f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
+                    "Your Diet page is unchanged — nothing was written."
+                )
+                return
             if err:
                 await update.message.reply_text(f"❌ Analysis failed: {err}")
                 return
@@ -457,7 +481,7 @@ async def handle_implement_diet(update, summary_name: str):
             # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
             # The act of running Implement marks it processed, so the Learn-nudge job
             # stops surfacing it regardless of how many Diet sections matched.
-            update_page(summary_id, {"Implemented": {"checkbox": True}})
+            await asyncio.to_thread(update_page, summary_id, {"Implemented": {"checkbox": True}})
 
             if not updates:
                 await update.message.reply_text(
@@ -467,7 +491,7 @@ async def handle_implement_diet(update, summary_name: str):
 
             # ── Step E: apply surgically ───────────────────────────────────────────────
             await update.message.reply_text("📝 Applying updates to Notion…")
-            applied, skipped = apply_updates(updates, block_map)
+            applied, skipped = await asyncio.to_thread(apply_updates, updates, block_map)
 
             msg = f"✅ Diet page updated — *{applied}* section(s) modified."
             if skipped:

@@ -10,6 +10,7 @@ calendar each morning and sends Telegram pings for today's and tomorrow's
 events — so reminders survive Railway restarts (nothing is held in memory).
 """
 
+import asyncio
 import re
 
 from calendar_client import (
@@ -75,10 +76,13 @@ async def handle_remind(update, user_text: str):
     # Detect overlaps against the proposed slot BEFORE creating the event, so the
     # new event itself can't show up in the results. A failed check degrades
     # gracefully (no warning) rather than blocking the reminder.
+    # Both calls below are blocking Google Calendar round trips, so they run on
+    # worker threads: on the event loop they would freeze every other command and
+    # every scheduled job until Google answered.
     end_dt = start_dt + timedelta(minutes=DEFAULT_EVENT_MINUTES)
-    conflicts, _ = find_conflicts(start_dt, end_dt)
+    conflicts, _ = await asyncio.to_thread(find_conflicts, start_dt, end_dt)
 
-    link, err = create_event(name, start_dt, DEFAULT_EVENT_MINUTES)
+    link, err = await asyncio.to_thread(create_event, name, start_dt, DEFAULT_EVENT_MINUTES)
     if err:
         await update.message.reply_text(f"❌ Could not create the event: {err}")
         return

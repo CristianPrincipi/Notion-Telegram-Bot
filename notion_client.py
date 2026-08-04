@@ -7,6 +7,7 @@ implement_diet.py. Import from here instead of redefining.
 """
 
 import os
+import threading
 import time
 import requests
 
@@ -21,6 +22,42 @@ HEADERS = {
 NOTION_BASE = "https://api.notion.com/v1"
 
 
+# ─── CONNECTION POOLING ────────────────────────────────────────────────────────
+# requests.request() builds a throwaway Session per call, so every Notion request
+# paid a fresh TCP connect plus a full TLS handshake. One Implement run makes
+# dozens of requests — read_diet_tree alone walks the whole H1>H2>H3 tree one
+# request at a time — so that handshake was a large share of the wall clock.
+# A Session keeps the connection alive and reuses it.
+#
+# ONE SESSION PER THREAD, not one shared. These calls now run inside
+# asyncio.to_thread workers, and requests.Session is not thread-safe: its
+# connection pool can hand the same socket to two threads at once, which corrupts
+# both responses. threading.local() gives each worker thread its own Session and
+# its own pool, which is the supported way to use requests across threads.
+#
+# Sessions are never closed. asyncio.to_thread runs on a bounded default
+# ThreadPoolExecutor (min(32, cpu_count + 4) workers), so the table is bounded by
+# the pool size, and David is a long-lived process that wants those connections
+# kept warm anyway.
+
+_thread_local = threading.local()
+
+
+def _session() -> requests.Session:
+    """The calling thread's Session, created on first use.
+
+    Headers live on the Session rather than being passed per call, so there is
+    one place they are set. A caller can still override them with a `headers=`
+    kwarg — requests merges request-level headers over the Session's.
+    """
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        _thread_local.session = session
+    return session
+
+
 # ─── RETRY WRAPPER ─────────────────────────────────────────────────────────────
 
 def notion_request(method: str, url: str, *, max_retries: int = 3, **kwargs):
@@ -32,13 +69,13 @@ def notion_request(method: str, url: str, *, max_retries: int = 3, **kwargs):
     Returns the requests.Response (caller checks status_code), or raises the
     final exception if every attempt failed at the network level.
     """
-    kwargs.setdefault("headers", HEADERS)
     kwargs.setdefault("timeout", 15)
+    session = _session()
 
     last_exc = None
     for attempt in range(max_retries):
         try:
-            resp = requests.request(method, url, **kwargs)
+            resp = session.request(method, url, **kwargs)
             # Retry only on transient server-side conditions
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                 wait = 2 ** attempt  # 1s, 2s, 4s

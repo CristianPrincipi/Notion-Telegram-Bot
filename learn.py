@@ -1,9 +1,14 @@
+import asyncio
 import os
 import re
 import json
 import requests
 from bs4 import BeautifulSoup
 
+from config import (
+    ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT,
+    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
+)
 from notion_client import (
     create_page,
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
@@ -27,6 +32,9 @@ TYPE_EMOJI = {
 
 
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
+# Everything from here to the end of section 4 is SYNCHRONOUS and blocking —
+# HTTP requests and PyPDF2 parsing. handle_learn calls all of it through
+# asyncio.to_thread; none of it may be awaited directly from the event loop.
 
 def extract_youtube(url: str) -> tuple[str | None, str | None]:
     """Return (transcript_text, error). Uses Supadata API — no IP ban issues."""
@@ -149,7 +157,10 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
                 "system":     _SYSTEM,
                 "messages":   [{"role": "user", "content": user_msg}],
             },
-            timeout=(10, 300),   # (connect timeout, read timeout) — 5 min for long transcripts
+            # (connect, read). The read timeout is per socket read, so it cannot
+            # bound the whole call on its own — handle_learn adds an outer
+            # ANTHROPIC_TIMEOUT via asyncio.wait_for.
+            timeout=(10, ANTHROPIC_READ_TIMEOUT),
         )
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"].strip()
@@ -300,7 +311,17 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
         if not source.startswith("http"):
             await update.message.reply_text("❌ Please provide a YouTube URL.")
             return
-        text, err = extract_youtube(source)
+        try:
+            text, err = await asyncio.wait_for(
+                asyncio.to_thread(extract_youtube, source),
+                timeout=SOURCE_FETCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                f"❌ Fetching the transcript timed out after {SOURCE_FETCH_TIMEOUT}s.\n"
+                "Supadata may be slow or down — try again in a minute."
+            )
+            return
         if err:
             await update.message.reply_text(f"❌ Could not get transcript: {err}\n\nTip: paste the transcript manually.")
             return
@@ -310,7 +331,19 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
         if not source.startswith("http"):
             await update.message.reply_text("❌ Please provide a URL.")
             return
-        result, err = extract_article(source)
+        # The newspaper3k branch of extract_article calls download() with no
+        # timeout of its own, so this outer cap is the only bound on it.
+        try:
+            result, err = await asyncio.wait_for(
+                asyncio.to_thread(extract_article, source),
+                timeout=SOURCE_FETCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                f"❌ Fetching that page timed out after {SOURCE_FETCH_TIMEOUT}s.\n"
+                "The site may be slow or blocking us."
+            )
+            return
         if err:
             await update.message.reply_text(f"❌ Could not extract content: {err}")
             return
@@ -334,7 +367,19 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
                 parse_mode="Markdown",
             )
             return
-        text, err = extract_pdf(file_bytes)
+        # PyPDF2 walks every page; on a long book that is seconds to minutes of
+        # pure CPU, which would pin the event loop just as hard as a network call.
+        try:
+            text, err = await asyncio.wait_for(
+                asyncio.to_thread(extract_pdf, file_bytes),
+                timeout=PDF_PARSE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                f"❌ Reading that PDF timed out after {PDF_PARSE_TIMEOUT}s.\n"
+                "Try a shorter document."
+            )
+            return
         if err:
             await update.message.reply_text(f"❌ Could not read PDF: {err}")
             return
@@ -347,7 +392,20 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     # ── Claude summarization ───────────────────────────────────────────────────
     await update.message.reply_text("🧠 Claude is reading and summarising…")
 
-    summary, err = summarize_with_claude(content_type, text, title, source)
+    # THE call this whole change exists for: a long transcript can hold Claude
+    # for minutes, and until now that froze every other command and every
+    # scheduled job for the duration.
+    try:
+        summary, err = await asyncio.wait_for(
+            asyncio.to_thread(summarize_with_claude, content_type, text, title, source),
+            timeout=ANTHROPIC_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        await update.message.reply_text(
+            f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
+            "Nothing was saved — try again, or use a shorter source."
+        )
+        return
     if err:
         await update.message.reply_text(f"❌ Summarization failed: {err}")
         return
@@ -361,7 +419,11 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     # ── Save to Notion ─────────────────────────────────────────────────────────
     await update.message.reply_text("📝 Saving to Notion…")
 
-    ok, result = create_learn_page(
+    # No wait_for: this WRITES. A wait_for cannot cancel the worker thread, so
+    # timing out here would report failure while the page was still being
+    # created. notion_request already bounds each request and its retries.
+    ok, result = await asyncio.to_thread(
+        create_learn_page,
         content_type, final_title, blocks,
         metadata={"author": final_author},
     )

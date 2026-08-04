@@ -9,6 +9,7 @@ package never imports david.py (david.py is the entrypoint module, so importing
 from it would re-execute it under a second name).
 """
 
+import asyncio
 from datetime import time
 
 import pytz
@@ -39,9 +40,15 @@ async def _report_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exc
         print(f"[proactive:{where}] failed to report: {e}")
 
 
+# Every builder below reads Google Calendar and/or Notion synchronously, so all
+# three run on worker threads. A job that blocks the event loop is no better than
+# a command that does: it freezes inbound commands and the other jobs with it,
+# and the briefings fire at fixed times whether or not you are mid-conversation.
+
+
 async def _morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = build_morning_briefing()
+        text = await asyncio.to_thread(build_morning_briefing)
         if text:
             # Plain text on purpose: event titles may contain Markdown-special
             # characters (_ * `) that would break Markdown parsing.
@@ -52,7 +59,7 @@ async def _morning_briefing_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def _evening_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = build_evening_briefing()
+        text = await asyncio.to_thread(build_evening_briefing)
         if text:
             await context.bot.send_message(chat_id=context.job.chat_id, text=text)
     except Exception as e:
@@ -61,7 +68,7 @@ async def _evening_briefing_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def _budget_pacing_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = build_pacing_warning()
+        text = await asyncio.to_thread(build_pacing_warning)
         if text:  # only when meaningfully trending over — otherwise silent
             await context.bot.send_message(chat_id=context.job.chat_id, text=text)
     except Exception as e:

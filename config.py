@@ -59,6 +59,29 @@ def priority_help() -> str:
     return " · ".join(PRIORITY_MAP.keys())
 
 
+# ─── BLOCKING-CALL TIMEOUTS ────────────────────────────────────────────────────
+# Every blocking call is now run on a worker thread via asyncio.to_thread, so a
+# slow one no longer freezes the bot. These are the OUTER caps (asyncio.wait_for)
+# on the operations that could otherwise run forever. They are separate from, and
+# larger than, the per-request timeouts handed to requests.
+#
+# An outer cap is NOT redundant with a requests timeout. requests' read timeout
+# is per socket read and restarts on every byte, so a server trickling one byte
+# at a time never trips it; wait_for bounds the whole operation regardless.
+#
+# ONLY READS ARE CAPPED THIS WAY. asyncio.wait_for cancels the awaiting task but
+# cannot cancel the worker thread — the blocking call runs to completion in the
+# background either way. Timing out a Notion WRITE would therefore tell the user
+# it failed while it was still in flight. Notion calls are already bounded by
+# notion_request's per-request timeout and its bounded retries, so they are
+# offloaded to a thread but not wrapped in wait_for.
+
+ANTHROPIC_READ_TIMEOUT = 300   # handed to requests — a 2-hour transcript is slow to summarise
+ANTHROPIC_TIMEOUT      = 330   # outer cap; must stay above ANTHROPIC_READ_TIMEOUT
+SOURCE_FETCH_TIMEOUT   = 90    # YouTube transcript or article scrape
+PDF_PARSE_TIMEOUT      = 120   # PyPDF2 text extraction: CPU-bound and unbounded by itself
+
+
 # ─── WEEKDAYS ──────────────────────────────────────────────────────────────────
 # python-telegram-bot's JobQueue.run_daily(days=...) numbers 0-6 as
 # SUNDAY-saturday. It was monday-sunday before PTB v20, and a call site that

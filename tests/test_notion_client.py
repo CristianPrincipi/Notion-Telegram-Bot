@@ -277,3 +277,55 @@ def test_notion_request_sends_the_auth_headers():
     headers = responses.calls[0].request.headers
     assert headers["Authorization"] == "Bearer test-notion-key"
     assert headers["Notion-Version"] == "2022-06-28"
+
+
+# ─── CONNECTION POOLING ────────────────────────────────────────────────────────
+# Losing pooling is invisible: every test above still passes against a fresh
+# requests.request() per call, and production just quietly pays a TLS handshake
+# per request again. These assert the mechanism, because nothing else can.
+
+def test_the_session_carries_the_auth_headers():
+    """Headers moved onto the Session — an empty one would send unauthenticated."""
+    headers = notion_client._session().headers
+
+    assert headers["Authorization"] == "Bearer test-notion-key"
+    assert headers["Notion-Version"] == "2022-06-28"
+
+
+def test_the_same_thread_reuses_one_session():
+    assert notion_client._session() is notion_client._session(), (
+        "a new Session per call defeats the whole point of pooling")
+
+
+def test_each_thread_gets_its_own_session():
+    """requests.Session is not thread-safe and every call now runs in a
+    to_thread worker, so sharing one across threads can hand the same pooled
+    socket to two requests at once."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    main_session = notion_client._session()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker_sessions = [f.result() for f in
+                           [pool.submit(notion_client._session) for _ in range(2)]]
+
+    assert all(s is not main_session for s in worker_sessions), (
+        "a worker thread shared the main thread's Session")
+
+
+def test_notion_request_goes_through_the_pooled_session(monkeypatch):
+    """The call itself must use the Session, not the module-level requests.request."""
+    sent = []
+
+    class FakeResponse:
+        status_code = 200
+
+    def spy_request(method, url, **kwargs):
+        sent.append((method, url, kwargs.get("timeout")))
+        return FakeResponse()
+
+    monkeypatch.setattr(notion_client._session(), "request", spy_request)
+
+    resp = notion_request("POST", QUERY_URL, json={})
+
+    assert resp.status_code == 200
+    assert sent == [("POST", QUERY_URL, 15)], "the request bypassed the Session"
