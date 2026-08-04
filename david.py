@@ -5,19 +5,20 @@ import requests
 import re
 import asyncio
 import pytz
-from datetime import datetime, time
+from datetime import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from learn import handle_learn
 from implement import handle_implement
 from reminder import handle_remind
+from calendar_client import now_local
 from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 import config
 from config import (
     BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
-    PROACTIVE_TIMEZONE, category_help, genre_help,
+    PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from notion_client import notion_request, query_database
 from proactive.scheduler import register_all
@@ -259,7 +260,10 @@ def add_Quote(page_id, quote_title, quote_text):
 def add_Expenses(name, amount, category):
 
     # --- GENERATE TODAY DATE ---
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Europe/Rome, not the host clock: Railway runs UTC, so a naive now() files
+    # anything logged after local midnight under YESTERDAY — and at a month
+    # boundary, into the wrong month's budget entirely.
+    today = now_local().strftime("%Y-%m-%d")
 
     data = {
         "parent": {"database_id": EXPENSES_ID},
@@ -362,8 +366,8 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
         print(f"[notify_error] failed to report error in {where}: {err}")
 
 
-# --- SCHEDULED JOB: SEND WEEKLY BUDGET RECAP --- #
-async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
+# --- SCHEDULED JOB: SEND BUDGET RECAP --- #
+async def send_budget_recap(context: ContextTypes.DEFAULT_TYPE):
     try:
         result_text = budget()
         if result_text:
@@ -371,7 +375,7 @@ async def send_weekly_budget(context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
     except Exception as e:
-        await notify_error(context, "send_weekly_budget", e)
+        await notify_error(context, "send_budget_recap", e)
 
 
 # --- SCHEDULED JOB REGISTRATION --- #
@@ -399,17 +403,16 @@ def register_jobs(application, chat_id) -> bool:
                   "(install python-telegram-bot[job-queue]).")
             return False
 
-        # Weekly budget recap — the full per-category breakdown, Sat + Sun 09:30.
+        # Budget recap — the full per-category breakdown, Sunday 09:30.
         # Distinct from the proactive one-line pace tag and the pacing warning.
         #
-        # days is (6, 0) = Saturday, Sunday. python-telegram-bot v20 changed this
-        # mapping from monday-sunday to SUNDAY-saturday, so the old (5, 6) — which
-        # carried a "0=Mon ... 6=Sun" comment — had been firing Fri + Sat.
+        # SUNDAY is a named constant on purpose: a bare integer here is exactly
+        # how this call site ran on the wrong days for months (see config.py).
         job_queue.run_daily(
-            send_weekly_budget,
+            send_budget_recap,
             time=time(hour=9, minute=30, tzinfo=pytz.timezone(PROACTIVE_TIMEZONE)),
-            days=(6, 0),                      # 0=Sun, 1=Mon ... 6=Sat
-            name="weekly_budget",
+            days=(SUNDAY,),
+            name="budget_recap",
         )
 
         # Morning briefing (07:30), evening briefing (20:00), budget pacing (13:00).
@@ -443,11 +446,19 @@ def register_handlers(application, owner_id: int):
     owner_only = build_owner_filter(owner_id)
 
     # LISTEN FOR ANY TEXT MESSAGE... (except commands)
-    application.add_handler(
-        MessageHandler(filters.TEXT & (~filters.COMMAND) & owner_only, handle_message))
+    # ~EDITED_MESSAGE: python-telegram-bot matches edited_message by default, so
+    # without it, correcting a typo in an expense re-runs the command and creates
+    # a SECOND Notion entry.
+    application.add_handler(MessageHandler(
+        filters.TEXT & (~filters.COMMAND) & owner_only
+        & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_message))
 
-    application.add_handler(
-        MessageHandler(filters.Document.ALL & owner_only, handle_document))
+    # Same for uploads: editing a file's caption would re-download the PDF and
+    # append the quote to Notion a second time.
+    application.add_handler(MessageHandler(
+        filters.Document.ALL & owner_only & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_document))
 
     # Catch-all for everyone else. Registered LAST: within a handler group PTB
     # stops at the first match, so the owner's messages are taken by the handlers

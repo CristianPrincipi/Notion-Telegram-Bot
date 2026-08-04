@@ -59,6 +59,20 @@ def priority_help() -> str:
     return " · ".join(PRIORITY_MAP.keys())
 
 
+# ─── WEEKDAYS ──────────────────────────────────────────────────────────────────
+# python-telegram-bot's JobQueue.run_daily(days=...) numbers 0-6 as
+# SUNDAY-saturday. It was monday-sunday before PTB v20, and a call site that
+# kept the old "0=Mon" comment ran the budget recap on Friday and Saturday for
+# months. Never write a bare integer at a run_daily call site — use these.
+SUNDAY    = 0
+MONDAY    = 1
+TUESDAY   = 2
+WEDNESDAY = 3
+THURSDAY  = 4
+FRIDAY    = 5
+SATURDAY  = 6
+
+
 # ─── PROACTIVE SYSTEM ──────────────────────────────────────────────────────────
 # Timezone + schedule for proactive (push) jobs. Add new schedules here as you
 # build out the features.

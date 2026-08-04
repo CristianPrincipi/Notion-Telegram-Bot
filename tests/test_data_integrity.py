@@ -9,11 +9,13 @@ Each test asserts the CORRECT behaviour, so on current main it fails. The test
 name says what should happen; the docstring says what happens instead today.
 """
 
+import inspect
+import re
 from datetime import datetime, timezone
 
 import pytest
 import responses
-from telegram import Chat, Message, Update
+from telegram import Chat, Document, Message, Update
 from telegram import User as TelegramUser
 from telegram.ext import ApplicationBuilder
 
@@ -164,8 +166,10 @@ def test_a_stray_trailing_space_still_runs_the_command():
 def midnight_in_rome(monkeypatch):
     """23:30 UTC on 10 June == 01:30 Europe/Rome on 11 June.
 
-    Patches both clocks so the test is valid before the fix (david reads its own
-    naive datetime) and after it (david reads calendar_client.now_local).
+    Patches the clock in BOTH modules: calendar_client is where the time now
+    comes from, and david only had its own `datetime` before the fix. raising=
+    False keeps the david patch from erroring once that import is gone — the
+    calendar_client patch is what makes the assertion meaningful either way.
     """
     class FrozenClock(datetime):
         @classmethod
@@ -173,7 +177,7 @@ def midnight_in_rome(monkeypatch):
             utc = cls(2025, 6, 10, 23, 30, tzinfo=timezone.utc)
             return utc.replace(tzinfo=None) if tz is None else utc.astimezone(tz)
 
-    monkeypatch.setattr(david, "datetime", FrozenClock)
+    monkeypatch.setattr(david, "datetime", FrozenClock, raising=False)
     monkeypatch.setattr(calendar_client, "datetime", FrozenClock)
 
 
@@ -211,8 +215,22 @@ def test_the_recap_job_is_not_called_weekly():
 
 
 def test_weekdays_are_named_not_bare_integers():
-    """A bare `days=(6, 0)` is exactly how the original bug survived review."""
-    assert hasattr(david, "SUNDAY") or hasattr(david.config, "SUNDAY")
+    """A bare `days=(6, 0)` is exactly how the original bug survived review.
+
+    Inspects the CALL SITE, not just whether the constant exists: SUNDAY == 0, so
+    `days=(0,)` schedules identically and no runtime assertion can tell the two
+    apart. This is deliberately a convention test — the entire value of the
+    constant is that the next reader sees a weekday name instead of an integer
+    whose meaning changed between library versions.
+    """
+    source = inspect.getsource(david.register_jobs)
+    days_args = re.findall(r"days=\(([^)]*)\)", source)
+
+    assert days_args, "no days= argument found in register_jobs"
+    for arg in days_args:
+        for token in (t.strip() for t in arg.split(",")):
+            assert not token.isdigit(), (
+                f"bare integer {token!r} in days=({arg}) — use a named weekday")
 
 
 # ─── BUG 5: PARSING ────────────────────────────────────────────────────────────
@@ -260,26 +278,37 @@ def test_an_absent_category_still_defaults(notion_writes):
 
 # ─── BUG 6: EDITED MESSAGES ────────────────────────────────────────────────────
 
-def edited_update(text):
-    """An Update carrying edited_message rather than message."""
-    message = Message(
+PDF = Document(file_id="f", file_unique_id="u", mime_type="application/pdf", file_size=10)
+
+
+def owner_message(text=None, caption=None, document=None):
+    return Message(
         message_id=1,
         date=datetime.now(timezone.utc),
         chat=Chat(id=OWNER_ID, type=Chat.PRIVATE),
         from_user=TelegramUser(id=OWNER_ID, is_bot=False, first_name="Owner"),
-        text=text,
+        text=text, caption=caption, document=document,
     )
-    return Update(update_id=1, edited_message=message)
 
 
-def registered_text_handler():
+def edited_update(text=None, caption=None, document=None):
+    """An Update carrying edited_message rather than message."""
+    return Update(update_id=1,
+                  edited_message=owner_message(text, caption, document))
+
+
+def registered_handler(callback):
     application = ApplicationBuilder().token("123456:test-token").build()
     david.register_handlers(application, OWNER_ID)
     for group in application.handlers.values():
         for handler in group:
-            if handler.callback is david.handle_message:
+            if handler.callback is callback:
                 return handler
-    raise AssertionError("text handler not registered")
+    raise AssertionError(f"{callback.__name__} not registered")
+
+
+def registered_text_handler():
+    return registered_handler(david.handle_message)
 
 
 def test_editing_a_message_does_not_re_run_the_command():
@@ -288,13 +317,22 @@ def test_editing_a_message_does_not_re_run_the_command():
     assert not registered_text_handler().check_update(edited_update("Add e Carrefour 2.20"))
 
 
+def test_editing_a_caption_does_not_re_download_the_pdf():
+    """Same bug on the upload path: editing a file's caption would re-download
+    the PDF and append the quote to Notion a second time."""
+    edit = edited_update(caption="Learn pdf", document=PDF)
+
+    assert not registered_handler(david.handle_document).check_update(edit)
+
+
 def test_a_new_message_still_reaches_the_handler():
     """Guard against over-correcting bug 6 into blocking normal traffic."""
-    message = Message(
-        message_id=1,
-        date=datetime.now(timezone.utc),
-        chat=Chat(id=OWNER_ID, type=Chat.PRIVATE),
-        from_user=TelegramUser(id=OWNER_ID, is_bot=False, first_name="Owner"),
-        text="Add e Carrefour 2.20",
-    )
-    assert registered_text_handler().check_update(Update(update_id=1, message=message))
+    fresh = Update(update_id=1, message=owner_message(text="Add e Carrefour 2.20"))
+
+    assert registered_text_handler().check_update(fresh)
+
+
+def test_a_new_upload_still_reaches_the_document_handler():
+    fresh = Update(update_id=1, message=owner_message(caption="Learn pdf", document=PDF))
+
+    assert registered_handler(david.handle_document).check_update(fresh)
