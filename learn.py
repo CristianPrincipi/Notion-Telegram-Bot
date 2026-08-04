@@ -5,9 +5,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from notion_client import (
-    NOTION_BASE, notion_request, create_page,
+    create_page,
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
-    quote as _quote, bullet as _bullet, divider as _divider, rich,
+    quote as _quote, bullet as _bullet, divider as _divider,
 )
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────

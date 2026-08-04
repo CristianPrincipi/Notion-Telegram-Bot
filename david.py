@@ -1,15 +1,12 @@
 import os
 import io
 import requests
-import json
-import logging
 import re
 import asyncio
 import pytz
 from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from telegram.ext import filters as tg_filters
 from learn import handle_learn
 from implement import handle_implement
 from reminder import handle_remind, build_today_message, build_tomorrow_message
@@ -17,8 +14,8 @@ from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 from config import (
-    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, PRIORITY_MAP, DEFAULT_CATEGORY,
-    genre_help, category_help, priority_help,
+    BUDGET_CEILING, GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
+    genre_help,
 )
 from notion_client import notion_request
 
@@ -481,7 +478,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page_id = add_New_Book(book_name, author, genre)
 
         if page_id:
-            await update.message.reply_text(f"✅ Success! Book added to your database.")
+            await update.message.reply_text("✅ Success! Book added to your database.")
         else:
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
         return
@@ -591,7 +588,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = add_Expenses(name, amount, category)
 
         if success:
-            await update.message.reply_text(f"✅ Success! Expenses added to your database.")
+            await update.message.reply_text("✅ Success! Expenses added to your database.")
         else:
             await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
     else:

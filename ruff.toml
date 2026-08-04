@@ -1,0 +1,24 @@
+# Deliberately a ruff.toml and not a pyproject.toml: adding a pyproject.toml to
+# the repo root changes how Railway's Python builder detects the project, and
+# this repo deploys straight from a push. Keep the deploy path untouched.
+#
+# The rule set is pinned explicitly rather than relying on ruff's default select,
+# which widens between releases — a floating default would turn CI red on an
+# unrelated day.
+
+target-version = "py311"
+line-length = 120
+exclude = ["tests/__snapshots__"]
+
+[lint]
+select = [
+    "E4",   # imports
+    "E7",   # statement-level mistakes
+    "E9",   # syntax / IO errors
+    "F",    # pyflakes: undefined names, unused imports, bad f-strings
+]
+
+ignore = [
+    "E701",  # aligned one-line if/else blocks are a deliberate style here
+             # (see blocks_to_text in notion_client.py)
+]

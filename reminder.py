@@ -14,7 +14,7 @@ import re
 
 from calendar_client import (
     parse_date_time, create_event, get_events_for_day, now_local,
-    find_conflicts, DEFAULT_EVENT_MINUTES, TIMEZONE,
+    find_conflicts, DEFAULT_EVENT_MINUTES,
 )
 from datetime import timedelta
 
