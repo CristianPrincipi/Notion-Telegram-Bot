@@ -18,9 +18,10 @@ import PyPDF2
 import config
 from budget import budget
 from config import (
-    GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY,
+    GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY, EXPENSE_MONTH_RELATION,
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
+from month import current_month_id, handle_month
 from notion_client import notion_request, query_database
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
@@ -40,7 +41,6 @@ OWNER_ID = os.environ.get("OWNER_ID")
 NOTION_KEY = os.environ.get("NOTION_KEY")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
-MONTH_ID = os.environ.get("MONTH_ID")
 LETTI_ID = os.environ.get("LETTI_ID")
 LITERATURE_ID = os.environ.get("LITERATURE_ID")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -269,6 +269,15 @@ def add_Expenses(name, amount, category):
     # boundary, into the wrong month's budget entirely.
     today = now_local().strftime("%Y-%m-%d")
 
+    # The month page, resolved now rather than read from MONTH_ID at import. That
+    # is what fixes the other half of the same bug: the date was already right at
+    # a month boundary, but the relation still pointed at the previous month's
+    # page until the environment variable was updated by hand. See month.py.
+    month_id = current_month_id()
+    if not month_id:
+        print("[add_Expenses] No month page resolved — send `Month`, or check `Diag`.")
+        return False
+
     data = {
         "parent": {"database_id": EXPENSES_ID},
         "properties": {
@@ -277,7 +286,7 @@ def add_Expenses(name, amount, category):
             "Amount": {"number": amount},
             "Date": {"date": {"start": today}},
             "Category":{"multi_select": [{"name": category}]},
-            "Account": {"relation": [{"id": MONTH_ID}]}
+            EXPENSE_MONTH_RELATION: {"relation": [{"id": month_id}]}
         }
     }
 
@@ -592,6 +601,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🗑️ *DELETE EXPENSE* — `D e [Name]`\n"
             "_Categories: s · f · g · o_\n\n"
             "💰 *BUDGET* — `B`\n\n"
+            "🗓️ *MONTH PAGE* — `Month`\n"
+            "_Rolls over automatically on the 1st; this forces a check_\n\n"
             "🩺 *FIND NOTION IDs* — `Diag` · `Find [name]` · `DBs`\n\n"
             "🧠 *LEARN*\n"
             "`Learn video https://youtu.be/...`\n"
@@ -623,6 +634,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- LIST DATABASES: "DBs" → every database the integration can see + its ID ---
     if re.fullmatch(r"(?i)dbs", user_text):
         await handle_dbs(update)
+        return
+
+    # --- MONTH: "Month" → force the monthly-page rollover now and report ---
+    # Idempotent, so sending it twice is harmless; the scheduled job runs the
+    # exact same call at 00:05 every night.
+    if re.fullmatch(r"(?i)month", user_text):
+        await handle_month(update)
         return
 
     # --- FIND: "Find [query]" → search pages/databases by name, return IDs ---

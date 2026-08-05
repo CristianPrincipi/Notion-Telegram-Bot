@@ -20,11 +20,11 @@ from datetime import datetime
 
 import pytz
 
-from config import BUDGET_CEILING
+from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
+from month import current_month_id
 from notion_client import query_database
 
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
-MONTH_ID    = os.environ.get("MONTH_ID")
 
 _TIMEZONE = pytz.timezone("Europe/Rome")
 
@@ -51,9 +51,14 @@ def compute_budget() -> dict | None:
     """
     # Paginated: Notion caps a query at 100 rows. This feeds the morning briefing
     # and the pacing warning, so an unpaginated query understated both.
+    #
+    # The month is resolved per call, not read once at import: on the 1st this
+    # process keeps running across the boundary, and a module-level constant
+    # would have the recap reporting last month's total all of the new month.
     results, err = query_database(
         EXPENSES_ID,
-        filter_obj={"property": "Account", "relation": {"contains": MONTH_ID}},
+        filter_obj={"property": EXPENSE_MONTH_RELATION,
+                    "relation": {"contains": current_month_id()}},
     )
     if err:
         print(f"[compute_budget] {err}")

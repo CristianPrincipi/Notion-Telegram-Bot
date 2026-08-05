@@ -33,7 +33,7 @@ fine without them and loses the feature named below.
 | `CHAT_ID` | **Required** | Telegram chat that receives scheduled briefings and error reports. |
 | `NOTION_KEY` | **Required** | Notion internal integration secret. |
 | `EXPENSES_ID` | **Required** | Notion Expenses database ID. |
-| `MONTH_ID` | **Required** | Notion page ID of the current month; expenses relate to it. **Update this each month.** |
+| `MONTH_ID` | **Required** | Notion page ID of the current month; expenses relate to it. **Seed value only** — David rolls it forward itself (see [Monthly rollover](#monthly-rollover)). |
 | `LETTI_ID` | **Required** | Notion Books ("Letti") database ID. |
 | `LITERATURE_ID` | **Required** | Notion page ID of the Literature area; books relate to it. |
 | `LEARN_ID` | **Required** | Notion Learn database ID for videos, articles, podcasts and PDFs. |
@@ -45,6 +45,8 @@ fine without them and loses the feature named below.
 | `BRAIN_ID` | Optional | Notion Brain area database ID. Needed by `Implement [Page] - Brain`. |
 | `FINANCE_ID` | Optional | Notion Finance area database ID. Needed by `Implement [Page] - Finance`. |
 | `BUDGET_CEILING` | Optional | Monthly budget ceiling in euros. Defaults to `300`. |
+| `MONTHS_DB_ID` | Optional | Notion database the month pages live in. Discovered from the Expenses `Account` relation when unset. |
+| `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
 `Implement [Page] - [Area]` resolves its target from `{AREA}_ID`
@@ -64,6 +66,7 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `U e [Name] [Amount] [Category]` | Update an expense |
 | `D e [Name]` | Delete (archive) an expense |
 | `B` | Monthly budget recap |
+| `Month` | Force the monthly page rollover now and report the page ID |
 | `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event |
 | `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database |
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
@@ -76,6 +79,7 @@ All times Europe/Rome, configured in `config.py` and attached by
 
 | Time | Job | Message |
 | --- | --- | --- |
+| 00:05 daily | `month_rollover` | The new month's expense page. Silent unless something moved |
 | 07:30 daily | `morning_briefing` | Today's calendar events + a one-line budget pace |
 | 13:00 daily | `budget_pacing` | Overspend projection — **only** when trending meaningfully over |
 | 20:00 daily | `evening_briefing` | Tomorrow's events. Silent when tomorrow is empty |
@@ -84,6 +88,45 @@ All times Europe/Rome, configured in `config.py` and attached by
 The two briefings replaced the old `send_daily_reminders` job, which sent both
 today's and tomorrow's events at 07:30. Running both would have sent today's
 events twice each morning.
+
+## Monthly rollover
+
+Every expense relates to a month page through the Expenses `Account` column.
+That page's ID used to be `MONTH_ID` in Railway, updated by hand on the 1st —
+and forgetting did not fail loudly: expenses kept being written into *last*
+month's page and `B` kept answering with last month's total.
+
+`month.py` now answers "which page do this month's expenses belong to?" from
+Notion instead. A month page is identified by its title, in one format —
+`August 2026` — and each run:
+
+1. uses the page titled `August 2026` (ignoring case and extra spaces), renaming
+   it if the spelling differs;
+2. or renames a single page titled bare `August` to `August 2026`;
+3. or creates `August 2026` if neither exists.
+
+so **running it twice cannot produce two pages for one month**. Ambiguity is
+never guessed at: two pages titled `August` with no year is reported as an error
+rather than picked from.
+
+| | |
+| --- | --- |
+| When | `month_rollover`, 00:05 Europe/Rome — daily, though it only has work on the 1st, so a missed or failed rollover retries the next night instead of a month later |
+| On demand | `Month` — the same idempotent call, and it prints the current page ID |
+| Safety net | `current_month_id()` re-resolves when the cached month is older than today, so a rollover missed while David was redeployed is fixed by the first expense of the day rather than at the next midnight |
+| Notification | Only when something moved (created, renamed, adopted) or failed — a nightly "still August" would train you to ignore it |
+
+The database the month pages live in is discovered from the Expenses `Account`
+relation, so there is no second ID to keep correct; `MONTHS_DB_ID` overrides that
+discovery. The resolved page ID is cached in `.month_state.json` so a mid-month
+restart does not fall back to the seed `MONTH_ID` — the cache can be deleted at
+any time, since Notion is the source of truth.
+
+`MONTH_ID` is still read, as the **seed**: with no cache file it is taken to be
+the current month's page, which is what it was when you set it. From the first
+rollover on it can go stale without consequence. Each rollover message includes
+the new page ID in backticks, so keeping the Railway variable current is one tap
+if you want to.
 
 ### Input rules
 
@@ -177,6 +220,12 @@ fails on any key that is not one.
 
 `Add e` is deliberately unlocked: a bare create with no preceding read cannot
 double-target a row.
+
+The month rollover is a find-then-mutate cycle too, but it is **not** in that
+table: it is reached from worker threads (an expense write resolving a stale
+month, the nightly job) rather than from coroutines, and an `asyncio.Lock`
+between two threads acquires without ever blocking. `month.py` serialises it with
+a `threading.RLock` instead — same rule, right primitive.
 
 ## Development
 

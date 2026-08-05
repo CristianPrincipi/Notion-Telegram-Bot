@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 # Monthly budget ceiling, in euros. Override on Railway with BUDGET_CEILING.
 BUDGET_CEILING = float(os.environ.get("BUDGET_CEILING", "300"))
 
+# The Expenses column that relates a row to its month page. month.py follows this
+# relation to discover WHICH database the month pages live in, so it is named
+# once here rather than spelled out at each call site (notion_ids.py checks the
+# same column when it validates the Expenses schema).
+EXPENSE_MONTH_RELATION = "Account"
+
 
 # ─── SHORTCUT MAPS ─────────────────────────────────────────────────────────────
 # Single source of truth for every command shortcut. Previously these were
@@ -119,6 +125,20 @@ BUDGET_PACING_MINUTE        = 0
 BUDGET_PACING_MIN_DAY       = 5      # skip days 1-4: total/day projections are too noisy that early
 BUDGET_PACING_THRESHOLD_PCT = 0.05   # only warn if projected to exceed the ceiling by >= 5%
 
+# Month Rollover — points the expense month at the new month's Notion page on the
+# 1st, creating or renaming that page if needed (see month.py).
+#
+# 00:05 local, and DAILY rather than monthly. The period only changes on the 1st,
+# so on every other day the job finds the state already correct and stays silent;
+# running it daily is what makes a FAILED or MISSED rollover retry tomorrow
+# instead of waiting a month for the next firing.
+#
+# 00:05 is also chosen to sit clear of Europe/Rome's DST switches (02:00→03:00 in
+# March, 03:00→02:00 in October): a job scheduled inside that hour is either
+# skipped or run twice on those two nights a year.
+MONTH_ROLLOVER_HOUR   = 0
+MONTH_ROLLOVER_MINUTE = 5
+
 
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────
 # Every environment variable David reads, in one place. The descriptions are the
@@ -131,7 +151,8 @@ REQUIRED_ENV = {
     "CHAT_ID":           "Telegram chat that receives scheduled briefings and error reports.",
     "NOTION_KEY":        "Notion internal integration secret.",
     "EXPENSES_ID":       "Notion Expenses database ID.",
-    "MONTH_ID":          "Notion page ID of the current month; expenses relate to it.",
+    "MONTH_ID":          ("Notion page ID of the current month; expenses relate to it. "
+                          "Seed value only — David rolls it forward itself on the 1st."),
     "LETTI_ID":          "Notion Books ('Letti') database ID.",
     "LITERATURE_ID":     "Notion page ID of the Literature area; books relate to it.",
     "LEARN_ID":          "Notion Learn database ID for videos, articles, podcasts and PDFs.",
@@ -146,6 +167,10 @@ OPTIONAL_ENV = {
     "BRAIN_ID":                "Notion Brain area database ID. Needed by `Implement ... - Brain`.",
     "FINANCE_ID":              "Notion Finance area database ID. Needed by `Implement ... - Finance`.",
     "BUDGET_CEILING":          "Monthly budget ceiling in euros. Defaults to 300.",
+    "MONTHS_DB_ID":            ("Notion database the month pages live in. Discovered from the "
+                                f"Expenses '{EXPENSE_MONTH_RELATION}' relation when unset."),
+    "MONTH_STATE_FILE":        ("Where the resolved month page ID is cached between restarts. "
+                                "Defaults to .month_state.json."),
 }
 
 
