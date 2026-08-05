@@ -27,11 +27,11 @@ It also runs standalone (prints to logs) if you ever prefer that route:
 """
 
 import os
-import re
 import asyncio
 
 from config import EXPENSE_MONTH_RELATION
 from month import canonical_title, current_month_id
+from telegram_text import escape_md, reply
 from notion_client import (
     NOTION_BASE, notion_request, extract_rich_text, get_database, get_page_title,
 )
@@ -56,9 +56,9 @@ def _short(obj_id: str) -> str:
     return (obj_id or "").replace("-", "")
 
 
-def _esc(text: str) -> str:
-    """Escape characters that would break Telegram legacy Markdown."""
-    return re.sub(r"([_*`\[])", r"\\\1", text or "")
+# _esc used to be defined here. It is now the shared telegram_text.escape_md —
+# same four characters, one implementation, so every module escapes identically.
+_esc = escape_md
 
 
 def db_title(db: dict) -> str:
@@ -127,7 +127,7 @@ def build_diagnostic_report() -> list:
     dbs, err = search_all(only="database")
     if err:
         return [
-            f"❌ Couldn't reach Notion at all: {err}\n\n"
+            f"❌ Couldn't reach Notion at all: {_esc(err)}\n\n"
             "This usually means NOTION_KEY is wrong, expired, or revoked."
         ]
 
@@ -166,7 +166,7 @@ def build_diagnostic_report() -> list:
         elif "401" in err:
             hint = "\n\n→ NOTION_KEY is invalid or expired."
         blocks.append(
-            f"❌ Configured *EXPENSES_ID* (`{_short(EXPENSES_ID)}`) failed:\n{err}{hint}"
+            f"❌ Configured *EXPENSES_ID* (`{_short(EXPENSES_ID)}`) failed:\n{_esc(err)}{hint}"
         )
         return blocks
 
@@ -182,12 +182,12 @@ def build_diagnostic_report() -> list:
     for name, want in EXPECTED_EXPENSE_PROPS.items():
         prop = props.get(name)
         if not prop:
-            schema.append(f"❌ {name} — MISSING (needs type: {want})")
+            schema.append(f"❌ {_esc(name)} — MISSING (needs type: {want})")
             continue
         got = prop.get("type", "?")
         ok = (got == want)
         schema.append(
-            f"{'✅' if ok else '⚠️'} {name} — {got}"
+            f"{'✅' if ok else '⚠️'} {_esc(name)} — {got}"
             + ("" if ok else f"  (code expects {want})")
         )
         if name == EXPENSE_MONTH_RELATION and got == "relation":
@@ -269,19 +269,27 @@ def build_diagnostic_report() -> list:
 # ─── TELEGRAM HANDLERS ─────────────────────────────────────────────────────────
 
 async def _send_long(update, text: str, parse_mode: str = "Markdown"):
-    """Send text, splitting on newlines to stay under Telegram's 4096-char limit."""
+    """Send text, splitting on newlines to stay under Telegram's 4096-char limit.
+
+    KNOWN LIMITATION, mitigated rather than fixed: the split point is chosen by
+    length, so a long report can be cut between an opening `*` and its closing
+    one, leaving an unbalanced entity in each half. _esc() protects the individual
+    values but cannot protect David's own formatting across a chunk boundary.
+    Going through telegram_text.reply means such a chunk degrades to plain text
+    instead of being dropped.
+    """
     LIMIT = 3800
     if len(text) <= LIMIT:
-        await update.message.reply_text(text, parse_mode=parse_mode)
+        await reply(update, text, parse_mode=parse_mode)
         return
     chunk = ""
     for line in text.split("\n"):
         if len(chunk) + len(line) + 1 > LIMIT and chunk:
-            await update.message.reply_text(chunk.rstrip("\n"), parse_mode=parse_mode)
+            await reply(update, chunk.rstrip("\n"), parse_mode=parse_mode)
             chunk = ""
         chunk += line + "\n"
     if chunk.strip():
-        await update.message.reply_text(chunk.rstrip("\n"), parse_mode=parse_mode)
+        await reply(update, chunk.rstrip("\n"), parse_mode=parse_mode)
 
 
 async def handle_diag(update):
@@ -300,10 +308,7 @@ async def handle_find(update, query: str):
     """`Find [query]` — search pages + databases by name, return their IDs."""
     query = (query or "").strip()
     if not query:
-        await update.message.reply_text(
-            "Usage: `Find [name]`\ne.g. `Find July` or `Find Expenses`",
-            parse_mode="Markdown",
-        )
+        await reply(update, "Usage: `Find [name]`\ne.g. `Find July` or `Find Expenses`")
         return
 
     await update.message.reply_text(f"🔍 Searching Notion for “{query}”…")

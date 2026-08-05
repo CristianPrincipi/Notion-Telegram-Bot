@@ -49,6 +49,7 @@ fine without them and loses the feature named below.
 | `ANTHROPIC_SPEND_FILE` | Optional | Where the running daily spend is recorded. Defaults to `.anthropic_spend.json`. |
 | `MONTHS_DB_ID` | Optional | Notion database the month pages live in. Discovered from the Expenses `Account` relation when unset. |
 | `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
+| `LOG_LEVEL` | Optional | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Defaults to `INFO`. An unrecognised value logs a warning and falls back to `INFO`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
 `Implement [Page] - [Area]` and `Get [Topic] - [Area]` both resolve their target
@@ -86,11 +87,27 @@ All times Europe/Rome, configured in `config.py` and attached by
 | 07:30 daily | `morning_briefing` | Today's calendar events + a one-line budget pace |
 | 13:00 daily | `budget_pacing` | Overspend projection — **only** when trending meaningfully over |
 | 20:00 daily | `evening_briefing` | Tomorrow's events. Silent when tomorrow is empty |
+| 20:30 Sunday | `heartbeat` | Calendar/Notion/month probes + activity counts. **Always sends** |
 | 09:30 Sunday | `budget_recap` | Full per-category budget recap |
 
 The two briefings replaced the old `send_daily_reminders` job, which sent both
 today's and tomorrow's events at 07:30. Running both would have sent today's
 events twice each morning.
+
+**A job is silent only when there is genuinely nothing to say.** When a builder
+fails it reports, rather than going quiet in a way indistinguishable from a quiet
+day. This matters most for the calendar: a rotated service-account key or a revoked
+share used to make the evening briefing stop arriving with no signal at all, while
+the morning briefing announced "nothing scheduled" on a day that was full.
+
+**The heartbeat always sends, and that is the point.** A probe that only speaks on
+failure is equally silent when the bot is dead, when the JobQueue never registered,
+and when everything is fine — none of which it can then report. Because the message
+itself is the liveness proof, a *missing* Sunday message is the alarm. It probes
+Calendar and Notion with real API calls (a rotated Google key still builds a client
+successfully — it only fails at request time), names the month page expenses are
+landing on, and reports how many commands and errors David has seen since its last
+restart.
 
 ## Monthly rollover
 

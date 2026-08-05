@@ -113,6 +113,29 @@ def get_page_title(page: dict) -> str:
     return "Untitled"
 
 
+# The excerpt length every error string in this module already uses. Named so the
+# log lines and the returned errors cannot drift apart.
+BODY_EXCERPT_CHARS = 200
+
+
+def body_excerpt(response) -> str:
+    """A bounded, always-safe excerpt of a response body, for logs and errors.
+
+    resp.text, never resp.json(). This is only ever called on a FAILURE path, and
+    Notion answers a 502 with Cloudflare's HTML — .json() raises there, so the
+    error handler would die on the error it was reporting and surface a
+    JSONDecodeError instead of the actual status. That happened in four places in
+    david.py.
+
+    Bounded because an unbounded body in the Railway log is both unreadable and a
+    way to leak far more page content than the failure warrants.
+    """
+    try:
+        return (response.text or "")[:BODY_EXCERPT_CHARS]
+    except Exception:
+        return "<unreadable response body>"
+
+
 # ─── QUERY / READ ──────────────────────────────────────────────────────────────
 
 def search_page_in_db(db_id: str, query: str, exact: bool = False):

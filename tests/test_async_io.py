@@ -332,13 +332,14 @@ PROACTIVE_JOBS = [
     ("_evening_briefing_job", "build_evening_briefing"),
     ("_budget_pacing_job",    "build_pacing_warning"),
     ("_month_rollover_job",   "build_rollover_message"),
+    ("_heartbeat_job",        "build_heartbeat"),
 ]
 
 
 @pytest.mark.parametrize("job, builder", PROACTIVE_JOBS, ids=[j for j, _ in PROACTIVE_JOBS])
 def test_proactive_jobs_build_their_text_off_the_loop(offloaded, monkeypatch, job, builder):
     """A job that blocks the loop freezes inbound commands just as hard."""
-    stubs = stub_module(monkeypatch, scheduler, {builder: lambda: "COMPOSED TEXT"})
+    stubs = stub_module(monkeypatch, scheduler, {builder: lambda: ("COMPOSED TEXT", None)})
     context = FakeContext()
     context.job = type("Job", (), {"chat_id": "-100123"})()
 
@@ -521,6 +522,7 @@ OFFLOADED_FUNCTIONS = [
     reminder.find_conflicts, reminder.create_event,
     scheduler.build_morning_briefing, scheduler.build_evening_briefing,
     scheduler.build_pacing_warning, scheduler.build_rollover_message,
+    scheduler.build_heartbeat,
     month.ensure_current_month_page,
     pkm.build_index, pkm._render,
 ]

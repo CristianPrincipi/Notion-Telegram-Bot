@@ -176,6 +176,19 @@ BUDGET_PACING_THRESHOLD_PCT = 0.05   # only warn if projected to exceed the ceil
 MONTH_ROLLOVER_HOUR   = 0
 MONTH_ROLLOVER_MINUTE = 5
 
+# Weekly Heartbeat — proof David is alive and its dependencies answer.
+#
+# It ALWAYS sends, which is the whole design: a probe that only speaks on failure
+# is equally silent when the bot is dead, the JobQueue never registered, or the
+# Telegram token was revoked — the outages most worth catching. The message is the
+# liveness proof, so a MISSING Sunday message is itself the alarm.
+#
+# Sunday 20:30: late enough to sit clear of the 20:00 daily evening briefing, and
+# on a weekday you have a weekly rhythm for, so an absence is noticeable.
+HEARTBEAT_DAY    = 0   # SUNDAY — see the weekday constants above
+HEARTBEAT_HOUR   = 20
+HEARTBEAT_MINUTE = 30
+
 
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────
 # Every environment variable David reads, in one place. The descriptions are the
@@ -212,6 +225,8 @@ OPTIONAL_ENV = {
                                    "Implement are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
                                    "Defaults to .anthropic_spend.json."),
+    "LOG_LEVEL":                  ("Logging verbosity: DEBUG, INFO, WARNING, ERROR or "
+                                   "CRITICAL. Defaults to INFO."),
 }
 
 

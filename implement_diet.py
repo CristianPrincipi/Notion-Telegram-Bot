@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
+from telegram_text import escape_md, reply
 from notion_client import (
     search_page_in_db, get_children,
     append_children, delete_block, create_page, extract_rich_text, rich,
@@ -451,22 +452,17 @@ async def handle_implement_diet(update, summary_name: str):
     summary_name = summary_name.strip()
 
     if not DIET_ID:
-        await update.message.reply_text(
-            "❌ `DIET_ID` is not set in your Railway environment variables.",
-            parse_mode="Markdown",
-        )
+        await reply(update, "❌ `DIET_ID` is not set in your Railway environment variables.")
         return
 
     # ── Step A: find the summary in Learn DB ───────────────────────────────────
-    await update.message.reply_text(
-        f"🔍 Searching for *{summary_name}* in Learn database…", parse_mode="Markdown"
-    )
+    await reply(update, f"🔍 Searching for *{escape_md(summary_name)}* in Learn database…")
     summary_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, summary_name)
     if err:
-        await update.message.reply_text(
-            f"❌ Could not find *{summary_name}* in your Learn database.\n"
+        await reply(
+            update,
+            f"❌ Could not find *{escape_md(summary_name)}* in your Learn database.\n"
             "Make sure you used `Learn` to save it and the title matches.",
-            parse_mode="Markdown",
         )
         return
 
@@ -541,7 +537,7 @@ async def handle_implement_diet(update, summary_name: str):
             updates = result.get("updates", [])
 
             # ── Send the implementation plan BEFORE applying (per spec) ────────────────
-            await update.message.reply_text(_format_plan(plan, summary_title), parse_mode="Markdown")
+            await reply(update, _format_plan(plan, summary_title))
 
             # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
             # The act of running Implement marks it processed, so the Learn-nudge job
@@ -560,8 +556,10 @@ async def handle_implement_diet(update, summary_name: str):
 
             msg = f"✅ Diet page updated — *{applied}* section(s) modified."
             if skipped:
-                msg += "\n\n⚠️ Skipped (path not found):\n" + "\n".join(f"• {s}" for s in skipped[:8])
-            await update.message.reply_text(msg, parse_mode="Markdown")
+                # skipped entries are the section paths Claude named — its text.
+                msg += ("\n\n⚠️ Skipped (path not found):\n"
+                        + "\n".join(f"• {escape_md(s)}" for s in skipped[:8]))
+            await reply(update, msg)
     except PageBusy:
         await update.message.reply_text(
             "⏳ An update to the Diet Manual is already in progress.\n"
@@ -591,13 +589,18 @@ def _content_to_text_deep(blocks: list) -> str:
 
 
 def _format_plan(plan: dict, title: str) -> str:
-    """Render Claude's implementation plan as a Telegram message."""
-    lines = [f"📋 *Implementation Plan* — _{title}_\n"]
+    """Render Claude's implementation plan as a Telegram message.
+
+    `title` is a Notion page title and every item is Claude's own text — the
+    `conflicts` list in particular is free-form prose. All escaped here so the
+    function stays safe wherever it is sent from.
+    """
+    lines = [f"📋 *Implementation Plan* — _{escape_md(title)}_\n"]
 
     def section(label, items, emoji):
         if items:
             lines.append(f"{emoji} *{label}:*")
-            lines.extend(f"  • {i}" for i in items[:10])
+            lines.extend(f"  • {escape_md(i)}" for i in items[:10])
             lines.append("")
 
     section("New sections",     plan.get("new_sections", []),     "🆕")

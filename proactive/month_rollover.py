@@ -16,12 +16,18 @@ month.py owns the work and the wording; this module owns the one thing that is a
 from month import ensure_current_month_page, format_rollover
 
 
-def build_rollover_message() -> str | None:
-    """Roll the month page forward. Returns the text to send, or None when silent."""
+def build_rollover_message() -> tuple:
+    """Roll the month page forward. Returns (message, error).
+
+    The failure text is returned as the MESSAGE, not only as the error: this is
+    the one builder that already spoke on failure, and its wording (which page,
+    which month) is more useful to read than a bare exception. The error is
+    returned alongside so the scheduler logs it at ERROR too.
+    """
     result = ensure_current_month_page()
 
     if result.error:
-        return format_rollover(result)
+        return format_rollover(result), result.error
     if not result.changed:
-        return None
-    return format_rollover(result)
+        return None, None
+    return format_rollover(result), None
