@@ -31,6 +31,9 @@ FAKE_ENV = {
     "BRAIN_ID":        "test-brain-id",
     "FINANCE_ID":      "test-finance-id",
     "BUDGET_CEILING":  "300",
+    # Set so config.validate() emits no optional-variable warning during the
+    # suite — test_config_validate asserts on an empty warning list.
+    "LOG_LEVEL":       "INFO",
     # Keep the Google client from ever building a real service.
     "GOOGLE_CREDENTIALS_JSON": "",
 }

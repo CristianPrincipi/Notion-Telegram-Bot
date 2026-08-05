@@ -10,6 +10,7 @@ from it would re-execute it under a second name).
 """
 
 import asyncio
+import logging
 from datetime import time
 
 import pytz
@@ -26,6 +27,8 @@ from proactive.briefing import build_morning_briefing, build_evening_briefing
 from proactive.budget_watch import build_pacing_warning
 from proactive.month_rollover import build_rollover_message
 from telegram_text import send
+
+logger = logging.getLogger(__name__)
 
 _TZ = pytz.timezone(PROACTIVE_TIMEZONE)
 
@@ -46,14 +49,15 @@ async def _report_error(context: ContextTypes.DEFAULT_TYPE, where: str, err):
     raised one.
     """
     detail = f"{type(err).__name__}: {err}" if isinstance(err, BaseException) else str(err)
-    print(f"[proactive:{where}] {detail}")
+    logger.error("proactive job %s failed: %s", where, detail,
+                 exc_info=err if isinstance(err, BaseException) else None)
     try:
         await context.bot.send_message(
             chat_id=context.job.chat_id,
             text=f"⚠️ David proactive error in {where}:\n{detail}",
         )
-    except Exception as e:
-        print(f"[proactive:{where}] failed to report: {e}")
+    except Exception:
+        logger.exception("proactive job %s could not report its failure.", where)
 
 
 # Every builder below reads Google Calendar and/or Notion synchronously, so all
@@ -112,8 +116,8 @@ def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
     if jq is None:
-        print("⚠️ JobQueue unavailable — proactive jobs not registered "
-              "(install python-telegram-bot[job-queue]).")
+        logger.warning("JobQueue unavailable — proactive jobs not registered "
+                       "(install python-telegram-bot[job-queue]).")
         return
 
     jq.run_daily(
@@ -147,5 +151,5 @@ def register_all(application, chat_id):
         name="month_rollover",
     )
 
-    print("✅ Proactive jobs registered: morning_briefing, evening_briefing, "
-          "budget_pacing, month_rollover.")
+    logger.info("Proactive jobs registered: morning_briefing, evening_briefing, "
+                "budget_pacing, month_rollover.")

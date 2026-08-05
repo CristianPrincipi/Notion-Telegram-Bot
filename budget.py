@@ -14,6 +14,7 @@ recap string, or None on a Notion error), so the existing call sites — the `B`
 command and send_weekly_budget — keep working unchanged.
 """
 
+import logging
 import os
 import calendar as _calendar
 from datetime import datetime
@@ -24,6 +25,8 @@ from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
 from month import current_month_id
 from notion_client import query_database
 from telegram_text import escape_md
+
+logger = logging.getLogger(__name__)
 
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
 
@@ -62,7 +65,7 @@ def compute_budget() -> dict | None:
                     "relation": {"contains": current_month_id()}},
     )
     if err:
-        print(f"[compute_budget] {err}")
+        logger.error("compute_budget could not read the expenses: %s", err)
         return None
 
     per_category: dict[str, float] = {}

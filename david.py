@@ -22,18 +22,17 @@ from config import (
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from month import current_month_id, handle_month
-from notion_client import notion_request, query_database
+from notion_client import body_excerpt, notion_request, query_database
 from pkm import handle_get
+from observability import record_command, record_error, set_correlation_id, setup_logging
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
 from telegram_text import escape_md, reply, send
 
 # Configured at import so config.validate() can still be the first statement in
-# __main__ and have somewhere to send its warnings.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+# __main__ and have somewhere to send its warnings. Level comes from LOG_LEVEL;
+# the format carries a per-update correlation ID. See observability.py.
+setup_logging()
 logger = logging.getLogger("david")
 
 
@@ -126,7 +125,8 @@ def add_New_Book(name, author, genre):
     }
     response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
     if response.status_code != 200:
-        print(f"Errore: {response.status_code}, {response.json()}")
+        logger.error("add_New_Book failed: Notion %s: %s",
+                     response.status_code, body_excerpt(response))
         return None
     return response.json()["id"]
 
@@ -139,7 +139,7 @@ def find_Book_Page(book_name):
         filter_obj={"property": "Name", "title": {"contains": book_name.strip()}},
     )
     if err:
-        print(f"Errore query Notion: {err}")
+        logger.error("find_Book_Page(%r) failed: %s", book_name, err)
         return None
     return results[0]["id"] if results else None
 
@@ -253,10 +253,8 @@ def add_Quote(page_id, quote_title, quote_text):
         )
 
         if response.status_code != 200:
-            print("\n===== NOTION ERROR =====")
-            print(f"Status: {response.status_code}")
-            print(response.text)
-            print("========================\n")
+            logger.error("add_Quote block append failed: Notion %s: %s",
+                         response.status_code, body_excerpt(response))
             return False
 
     return True
@@ -277,7 +275,7 @@ def add_Expenses(name, amount, category):
     # page until the environment variable was updated by hand. See month.py.
     month_id = current_month_id()
     if not month_id:
-        print("[add_Expenses] No month page resolved — send `Month`, or check `Diag`.")
+        logger.error("add_Expenses: no month page resolved — send `Month`, or check `Diag`.")
         return False
 
     data = {
@@ -294,10 +292,9 @@ def add_Expenses(name, amount, category):
 
     response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
 
-    # --- DEBUGGING --- #
     if response.status_code != 200:
-        print(f"Errore: {response.status_code}")
-        print(response.json())
+        logger.error("add_Expenses failed: Notion %s: %s",
+                     response.status_code, body_excerpt(response))
 
     return response.status_code == 200
 
@@ -311,11 +308,11 @@ def update_Expense(name, amount, category):
     )
 
     if err:
-        print(f"Error querying Notion for expense: {err}")
+        logger.error("update_Expense(%r): Notion query failed: %s", name, err)
         return False, None
 
     if not results:
-        print(f"No expense found with name: {name}")
+        logger.info("update_Expense(%r): no matching expense.", name)
         return False, None
 
     page_id = results[0]["id"]
@@ -331,8 +328,8 @@ def update_Expense(name, amount, category):
     update_response = notion_request("PATCH", update_url, json=update_data)
 
     if update_response.status_code != 200:
-        print(f"Error updating expense: {update_response.status_code}")
-        print(update_response.json())
+        logger.error("update_Expense(%r) failed: Notion %s: %s",
+                     name, update_response.status_code, body_excerpt(update_response))
         return False, page_id
 
     return True, page_id
@@ -347,11 +344,11 @@ def delete_Expense(name):
     )
 
     if err:
-        print(f"Error querying Notion for expense: {err}")
+        logger.error("delete_Expense(%r): Notion query failed: %s", name, err)
         return False, None
 
     if not results:
-        print(f"No expense found with name: {name}")
+        logger.info("delete_Expense(%r): no matching expense.", name)
         return False, None
 
     page_id = results[0]["id"]
@@ -361,8 +358,8 @@ def delete_Expense(name):
     update_response = notion_request("PATCH", update_url, json={"archived": True})
 
     if update_response.status_code != 200:
-        print(f"Error archiving expense: {update_response.status_code}")
-        print(update_response.json())
+        logger.error("delete_Expense(%r) failed: Notion %s: %s",
+                     name, update_response.status_code, body_excerpt(update_response))
         return False, page_id
 
     return True, page_id
@@ -426,7 +423,9 @@ async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exce
             text=f"⚠️ David error in {where}:\n{type(err).__name__}: {err}",
         )
     except Exception:
-        print(f"[notify_error] failed to report error in {where}: {err}")
+        # Last resort: the report itself could not be delivered. The log is the
+        # only remaining channel, so this must never raise.
+        logger.exception("notify_error could not report the failure in %s: %s", where, err)
 
 
 async def on_error(update, context):
@@ -436,14 +435,15 @@ async def on_error(update, context):
     the same treatment register_jobs and register_handlers already get.
     """
     err = context.error
-    print(f"[on_error] {type(err).__name__}: {err}")
+    record_error()
+    logger.error("Unhandled %s: %s", type(err).__name__, err, exc_info=err)
     try:
         await context.bot.send_message(
             chat_id=CHAT_ID,
             text=f"⚠️ David hit an error:\n{type(err).__name__}: {err}",
         )
-    except Exception as e:
-        print(f"[on_error] failed to report: {e}")
+    except Exception:
+        logger.exception("on_error could not report the failure.")
 
 
 # --- SCHEDULED JOB: SEND BUDGET RECAP --- #
@@ -479,8 +479,8 @@ def register_jobs(application, chat_id) -> bool:
     try:
         job_queue = application.job_queue
         if job_queue is None:
-            print("⚠️ JobQueue unavailable — scheduled jobs not registered "
-                  "(install python-telegram-bot[job-queue]).")
+            logger.warning("JobQueue unavailable — scheduled jobs not registered "
+                           "(install python-telegram-bot[job-queue]).")
             return False
 
         # Budget recap — the full per-category breakdown, Sunday 09:30.
@@ -498,9 +498,8 @@ def register_jobs(application, chat_id) -> bool:
         # Morning briefing (07:30), evening briefing (20:00), budget pacing (13:00).
         register_all(application, chat_id)
         return True
-    except Exception as e:
-        print(f"⚠️ Scheduled jobs not available: {e}")
-        print("Bot will still work normally — scheduling runs fine on Railway.")
+    except Exception:
+        logger.exception("Scheduled jobs not available — commands still work.")
         return False
 
 
@@ -609,10 +608,16 @@ def resolve_category(raw):
 
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Tag every log line produced while handling this update — including from the
+    # worker threads and detached tasks it spawns — with the update's ID, so one
+    # command's whole trace is greppable even when two overlap.
+    set_correlation_id(getattr(update, "update_id", None))
+    record_command()
+
     # Stripped once, here: every pattern below is a fullmatch, so stray leading
     # or trailing whitespace would otherwise miss every command.
     user_text = (update.message.text or "").strip()
-    print(f"Received: {user_text}") # So you can see it in Colab logs
+    logger.info("Received: %s", user_text)
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
@@ -1005,8 +1010,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
       Learn pdf                                          → summarise PDF, save to Learn DB
       Add q [Book] - [Title] - [Begin text] / [End text] → extract quote from attached PDF
     """
+    # Same correlation tagging as handle_message — a PDF upload is a command too,
+    # and it is the one most likely to run detached and interleave with another.
+    set_correlation_id(getattr(update, "update_id", None))
+    record_command()
+
     doc     = update.message.document
     caption = (update.message.caption or "").strip()
+    logger.info("Received document with caption: %s", caption)
 
     # ── Learn pdf ──────────────────────────────────────────────────────────────
     if re.match(r"(?i)learn\s+pdf", caption):
@@ -1085,5 +1096,5 @@ if __name__ == '__main__':
     # instead of dying silently in the Railway logs. Defined at module scope.
     application.add_error_handler(on_error)
 
-    print("🤖 David online!")
+    logger.info("🤖 David online!")
     application.run_polling()

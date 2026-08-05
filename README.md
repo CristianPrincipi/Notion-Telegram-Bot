@@ -49,6 +49,7 @@ fine without them and loses the feature named below.
 | `ANTHROPIC_SPEND_FILE` | Optional | Where the running daily spend is recorded. Defaults to `.anthropic_spend.json`. |
 | `MONTHS_DB_ID` | Optional | Notion database the month pages live in. Discovered from the Expenses `Account` relation when unset. |
 | `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
+| `LOG_LEVEL` | Optional | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Defaults to `INFO`. An unrecognised value logs a warning and falls back to `INFO`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
 `Implement [Page] - [Area]` and `Get [Topic] - [Area]` both resolve their target

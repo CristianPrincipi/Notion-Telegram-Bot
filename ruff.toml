@@ -16,9 +16,18 @@ select = [
     "E7",   # statement-level mistakes
     "E9",   # syntax / IO errors
     "F",    # pyflakes: undefined names, unused imports, bad f-strings
+    "T20",  # flake8-print: no print() — diagnostics go through logging, which
+            # has levels, timestamps and the per-update correlation ID. Every
+            # print in the codebase was migrated; this keeps them from creeping
+            # back one convenient debug line at a time.
 ]
 
 ignore = [
     "E701",  # aligned one-line if/else blocks are a deliberate style here
              # (see blocks_to_text in notion_client.py)
 ]
+
+[lint.per-file-ignores]
+# notion_ids.py has a __main__ block that exists precisely to print the
+# diagnostic report to stdout when run as a script instead of via Telegram.
+"notion_ids.py" = ["T201"]

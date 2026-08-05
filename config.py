@@ -212,6 +212,8 @@ OPTIONAL_ENV = {
                                    "Implement are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
                                    "Defaults to .anthropic_spend.json."),
+    "LOG_LEVEL":                  ("Logging verbosity: DEBUG, INFO, WARNING, ERROR or "
+                                   "CRITICAL. Defaults to INFO."),
 }
 
 
