@@ -402,17 +402,47 @@ def run_detached(context: ContextTypes.DEFAULT_TYPE, update: Update, coro, name:
     return context.application.create_task(coro, update=update, name=name)
 
 
-# --- ERROR REPORTING HELPER --- #
+# --- ERROR REPORTING HELPERS --- #
+#
+# BOTH REPORTERS BELOW SEND PLAIN TEXT. Do not add parse_mode back.
+#
+# They interpolate an exception string, and Notion 400 bodies and Python
+# tracebacks routinely carry unbalanced * _ ` and [. Under parse_mode="Markdown"
+# that made the ERROR REPORT ITSELF raise BadRequest, the bare `except` swallowed
+# it, and the error being reported was lost — the precise failure these functions
+# exist to prevent.
+#
+# escape_md() is NOT the fix here, which is why these two are the only senders in
+# the codebase exempt from telegram_text: the exception text sat inside a `code
+# span`, and Markdown v1 does not honour backslash escapes inside code spans.
+# Plain text is the only formatting that cannot fail.
+
 async def notify_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exception):
     """Send a Telegram message to the owner when something fails silently in the background."""
     try:
         await context.bot.send_message(
             chat_id=CHAT_ID,
-            text=f"⚠️ David error in *{where}*:\n`{type(err).__name__}: {err}`",
-            parse_mode="Markdown",
+            text=f"⚠️ David error in {where}:\n{type(err).__name__}: {err}",
         )
     except Exception:
         print(f"[notify_error] failed to report error in {where}: {err}")
+
+
+async def on_error(update, context):
+    """Global handler: any unhandled exception in a handler lands here.
+
+    At module scope rather than nested inside __main__ so the suite can drive it —
+    the same treatment register_jobs and register_handlers already get.
+    """
+    err = context.error
+    print(f"[on_error] {type(err).__name__}: {err}")
+    try:
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"⚠️ David hit an error:\n{type(err).__name__}: {err}",
+        )
+    except Exception as e:
+        print(f"[on_error] failed to report: {e}")
 
 
 # --- SCHEDULED JOB: SEND BUDGET RECAP --- #
@@ -1048,19 +1078,7 @@ if __name__ == '__main__':
 
     # --- GLOBAL ERROR HANDLER ---
     # Any unhandled exception in a handler lands here and is reported to you,
-    # instead of dying silently in the Railway logs.
-    async def on_error(update, context):
-        err = context.error
-        print(f"[on_error] {type(err).__name__}: {err}")
-        try:
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"⚠️ David hit an error:\n`{type(err).__name__}: {err}`",
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            print(f"[on_error] failed to report: {e}")
-
+    # instead of dying silently in the Railway logs. Defined at module scope.
     application.add_error_handler(on_error)
 
     print("🤖 David online!")

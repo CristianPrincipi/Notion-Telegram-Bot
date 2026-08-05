@@ -29,14 +29,27 @@ from proactive.month_rollover import build_rollover_message
 _TZ = pytz.timezone(PROACTIVE_TIMEZONE)
 
 
-async def _report_error(context: ContextTypes.DEFAULT_TYPE, where: str, err: Exception):
-    """Print + ping the owner when a proactive job fails."""
-    print(f"[proactive:{where}] {type(err).__name__}: {err}")
+async def _report_error(context: ContextTypes.DEFAULT_TYPE, where: str, err):
+    """Print + ping the owner when a proactive job fails.
+
+    PLAIN TEXT, DELIBERATELY — do not add parse_mode back. Same reasoning as
+    david.notify_error: this interpolates an error string, Notion 400 bodies and
+    tracebacks carry unbalanced * _ ` and [, and under parse_mode="Markdown" the
+    report itself raised BadRequest and was swallowed by the except below. The
+    text sat in a `code span`, where Markdown v1 ignores backslash escapes, so
+    escape_md() cannot rescue it either — this sender is exempt from
+    telegram_text on purpose.
+
+    `err` is an Exception or a plain error string: builders now return
+    (text, error) tuples, and a returned error deserves the same report as a
+    raised one.
+    """
+    detail = f"{type(err).__name__}: {err}" if isinstance(err, BaseException) else str(err)
+    print(f"[proactive:{where}] {detail}")
     try:
         await context.bot.send_message(
             chat_id=context.job.chat_id,
-            text=f"⚠️ David proactive error in *{where}*:\n`{type(err).__name__}: {err}`",
-            parse_mode="Markdown",
+            text=f"⚠️ David proactive error in {where}:\n{detail}",
         )
     except Exception as e:
         print(f"[proactive:{where}] failed to report: {e}")

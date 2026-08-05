@@ -127,6 +127,7 @@ class FakeBot:
     def __init__(self, file=None):
         self._file        = file or FakeFile()
         self.sent         = []      # [(chat_id, text), ...]
+        self.sent_kwargs  = []      # [kwargs, ...] — parallel to `sent`
         self.get_file_ids = []
 
     async def get_file(self, file_id):
@@ -134,7 +135,17 @@ class FakeBot:
         return self._file
 
     async def send_message(self, chat_id, text, **kwargs):
+        # `sent` keeps its (chat_id, text) shape so the existing equality
+        # assertions stay readable; kwargs go alongside it rather than into it.
+        # They used to be dropped on the floor, which made parse_mode — the thing
+        # that silently broke every error report — untestable.
         self.sent.append((chat_id, text))
+        self.sent_kwargs.append(kwargs)
+
+    @property
+    def sent_full(self):
+        """[(chat_id, text, kwargs), ...] for tests that care about parse_mode."""
+        return [(c, t, k) for (c, t), k in zip(self.sent, self.sent_kwargs)]
 
 
 class FakeApplication:
