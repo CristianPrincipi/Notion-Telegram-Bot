@@ -25,11 +25,18 @@ def _should_warn(b: dict | None) -> bool:
     return b["projected_over"] >= b["ceiling"] * BUDGET_PACING_THRESHOLD_PCT
 
 
-def build_pacing_warning() -> str | None:
-    """Return the pacing-warning text, or None when no warning is warranted."""
+def build_pacing_warning() -> tuple:
+    """Return (message, error) — the pacing warning, or (None, None) when silent.
+
+    The tuple is for one uniform scheduler contract, not because this builder has
+    an error to report yet: compute_budget() still collapses a Notion failure into
+    None, so "could not read the expenses" is indistinguishable here from "nothing
+    to warn about". That collapse is the same class of bug the briefings just had,
+    one layer down, and is noted in CLAUDE.md as the remaining one.
+    """
     b = compute_budget()
     if not _should_warn(b):
-        return None
+        return None, None
 
     msg = (
         f"📉 Day {b['day']}: €{b['total']:.0f} spent. "
@@ -39,4 +46,4 @@ def build_pacing_warning() -> str | None:
     if b["top_category"]:
         name, amount = b["top_category"]
         msg += f" {name} is the driver (€{amount:.0f})."
-    return msg
+    return msg, None

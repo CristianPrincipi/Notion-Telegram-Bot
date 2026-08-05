@@ -14,7 +14,7 @@ import asyncio
 import re
 
 from calendar_client import (
-    parse_date_time, create_event, get_events_for_day, now_local,
+    parse_date_time, create_event,
     find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
@@ -122,28 +122,14 @@ async def handle_remind(update, user_text: str):
         await update.message.reply_text(_format_conflict_warning(name, start_dt, end_dt, conflicts))
 
 
-def _format_event_line(ev: dict) -> str:
-    """One line per event for the reminder messages."""
-    if ev["all_day"]:
-        return f"•  {ev['summary']} (all day)"
-    return f"•  {ev['summary']} at {ev['start_dt'].strftime('%H:%M')}"
-
-
-def build_today_message() -> str | None:
-    """Build the 'today' reminder message, or None if there are no events / on error."""
-    today = now_local()
-    events, err = get_events_for_day(today)
-    if err or not events:
-        return None
-    lines = "\n".join(_format_event_line(e) for e in events)
-    return f"🔔 *Today's reminders*\n━━━━━━━━━━━━━━━\n{lines}"
-
-
-def build_tomorrow_message() -> str | None:
-    """Build the 'tomorrow' reminder message, or None if there are no events / on error."""
-    tomorrow = now_local() + timedelta(days=1)
-    events, err = get_events_for_day(tomorrow)
-    if err or not events:
-        return None
-    lines = "\n".join(_format_event_line(e) for e in events)
-    return f"📅 *Tomorrow's reminders*\n━━━━━━━━━━━━━━━\n{lines}"
+# build_today_message, build_tomorrow_message and _format_event_line used to live
+# here. They were deleted, not fixed.
+#
+# They had had zero callers since proactive/briefing.py took over the scheduled
+# pings — nothing imported them, no job ran them, no test covered them. They also
+# carried the `if err or not events: return None` collapse this branch set out to
+# fix, which made them look like the bug's home. They were not: the live copy of
+# that collapse was in briefing.py, and fixing these two would have changed
+# nothing about the reminders going quiet.
+#
+# Deleting them is what makes that unambiguous for the next reader.

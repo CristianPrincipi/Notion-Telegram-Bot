@@ -570,7 +570,7 @@ def test_the_job_stays_silent_when_there_was_nothing_to_do(monkeypatch):
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
                         lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", UNCHANGED))
 
-    assert build_rollover_message() is None
+    assert build_rollover_message() == (None, None)
 
 
 @pytest.mark.parametrize("action", [CREATED, RENAMED, ADOPTED])
@@ -578,7 +578,10 @@ def test_the_job_speaks_up_when_something_moved(monkeypatch, action):
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
                         lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", action))
 
-    assert AUGUST_PAGE in build_rollover_message()
+    text, err = build_rollover_message()
+
+    assert AUGUST_PAGE in text
+    assert err is None
 
 
 def test_the_job_always_reports_a_failure(monkeypatch):
@@ -588,7 +591,12 @@ def test_the_job_always_reports_a_failure(monkeypatch):
                         lambda: month_module.Rollover(JULY_PAGE, "July 2026", UNCHANGED,
                                                       "Notion 401: unauthorized"))
 
-    assert "Notion 401" in build_rollover_message()
+    text, err = build_rollover_message()
+
+    # The failure is both SAID (its wording names the month and page, which reads
+    # better than a bare exception) and RETURNED (so the scheduler logs it too).
+    assert "Notion 401" in text
+    assert err == "Notion 401: unauthorized"
 
 
 # ─── THE COMMAND ───────────────────────────────────────────────────────────────

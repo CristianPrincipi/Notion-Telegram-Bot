@@ -18,6 +18,8 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
 | `calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
+| `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
+| `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
 | `learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
@@ -26,7 +28,8 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
 | `reminder.py` | `Remind …` — parse, conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`) |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
-| `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `str \| None` |
+| `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
+| `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
 
 New features get a module. `david.py` routes to them; it does not absorb them.
 
@@ -39,6 +42,31 @@ used to discard errors below the top level (`h2_blocks, _ = get_children(...)`),
 transient read failure made a section look **empty** — which is exactly what makes Claude
 decide to populate it, and `apply_updates` then replaced real content with content merged
 against nothing. Nothing errored. See `implement_diet._children_of_many`.
+
+**An error is never the same value as an empty result.** The corollary of the rule
+above, and the one that cost the most. `proactive/briefing.py` used to write
+`if err or not events: return None`, so a revoked calendar share and a free evening
+produced identical output — the reminders stopped and nothing said so. The morning
+half was worse: on an error it set `events = []`, and an empty list renders as
+"nothing scheduled", so during an outage David stated the day was clear. A missing
+message you eventually notice; a confident wrong answer you act on. Every proactive
+builder now returns `(text, error)`, and `scheduler._run_job` is the single place
+those three states — send / stay silent / report — are told apart.
+
+**Everything sent with Markdown goes through `telegram_text`.** Legacy Markdown has
+no literal asterisk, so one stray `*` in a Notion category, a Claude-written
+heading, or a slice of an uploaded PDF made Telegram reject the whole message —
+after the Notion write had already succeeded, so it looked like David ignoring you.
+`escape_md` at the interpolation site (a sender cannot tell David's own `*bold*`
+from data), plus a retry without `parse_mode` on `BadRequest` for whatever escape
+gets forgotten. Enforced by an ast-based test.
+
+**The three error reporters are exempt from that, deliberately.**
+`david.notify_error`, `david.on_error` and `proactive.scheduler._report_error` send
+plain text unconditionally. They interpolate an exception into a `code span`, where
+Markdown v1 ignores backslash escapes — escaping cannot save them, so the reporters
+used to fail on exactly the ugly Notion errors they existed to report. Do not
+"fix" them back into Markdown; each carries a comment saying so.
 
 **Notion database IDs are `{AREA}_ID` in the environment.** `get_area_db_id` derives the
 name (`"Brain"` → `BRAIN_ID`), so adding an area means adding an env var, not code.
@@ -157,14 +185,27 @@ a PR, let CI go green, then merge. Never commit directly to `main`.
 
 Found in the code, not resolved here — do not "fix" these by guessing intent:
 
-- **Unreferenced code:** `reminder.build_today_message` / `build_tomorrow_message`
-  (superseded by `proactive/briefing.py`), `implement.clear_page_blocks` (only the `_by_id`
-  variant is called), `DATABASE_ID` in `david.py`.
+- **Unreferenced code:** `implement.clear_page_blocks` (only the `_by_id` variant is
+  called), `DATABASE_ID` in `david.py`. (`reminder.build_today_message` /
+  `build_tomorrow_message` were on this list and have been deleted — they had zero
+  callers and carried a copy of the error/empty collapse that made them look like
+  the bug's home. The live copy was in `briefing.py`.)
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
   checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
   (takeaway of the week) and Step 7 (tasks). The checkbox is written and never read.
 - **`MONTH_ID` is in `REQUIRED_ENV` but `month.py` treats it as an optional seed**, resolving
   the month from Notion without it. Required-by-contract, optional-in-practice.
-- **`(value, error)` is not universal.** `briefing.py` and `reminder.py` still collapse error
-  and empty into `None` (`if err or not events: return None`) — deliberate, since both mean
-  "nothing to send", but it is the one place the rule above is knowingly not followed.
+- **`(value, error)` is still not universal**, but the remaining gaps are narrower and
+  named:
+  - `budget.compute_budget()` returns `dict | None`, collapsing a Notion failure into
+    "nothing to report" for `briefing._budget_line` and `budget_watch._should_warn`.
+    This is the same class of bug the briefings had, one layer down. Asserted as a
+    known gap in `tests/test_briefings.py`.
+  - `calendar_client` returns `[], err` on failure — the failure value IS the
+    legitimate empty value, which is the root cause every caller has to work around
+    by checking `err` FIRST. Changing it ripples into `find_conflicts`,
+    `reminder.handle_remind` and three test files.
+  - `reminder.py:93` discards the `find_conflicts` error into `_`, so a calendar read
+    failure is indistinguishable from "the slot is clear". Deliberate (a failed check
+    degrades to no warning rather than blocking the reminder) but undocumented until
+    now.
