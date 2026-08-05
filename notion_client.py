@@ -134,6 +134,23 @@ def search_page_in_db(db_id: str, query: str, exact: bool = False):
         return None, str(e)
 
 
+def get_database(db_id: str):
+    """GET a database object by ID — its title, and the schema of every column.
+
+    Returns (db_object, error). Used to read a relation column's target database
+    (month.py) and to check the Expenses schema (notion_ids.py).
+    """
+    if not db_id:
+        return None, "No database ID provided."
+    try:
+        resp = notion_request("GET", f"{NOTION_BASE}/databases/{db_id}")
+        if resp.status_code != 200:
+            return None, f"Notion {resp.status_code}: {resp.text[:200]}"
+        return resp.json(), None
+    except Exception as e:
+        return None, str(e)
+
+
 def query_database(db_id: str, filter_obj: dict = None, sorts: list = None, page_size: int = 100):
     """Query a Notion database with an optional filter and sort, following pagination.
 

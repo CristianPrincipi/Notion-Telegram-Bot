@@ -15,10 +15,11 @@ from telegram.ext import ApplicationBuilder
 import david
 from conftest import FakeContext, run
 
-MORNING = "morning_briefing"
-EVENING = "evening_briefing"
-PACING  = "budget_pacing"
-WEEKLY  = "budget_recap"
+MORNING  = "morning_briefing"
+EVENING  = "evening_briefing"
+PACING   = "budget_pacing"
+WEEKLY   = "budget_recap"
+ROLLOVER = "month_rollover"
 
 CHAT_ID = "-1001234567"
 
@@ -43,12 +44,13 @@ def trigger_fields(job):
 
 # ─── EVERY JOB IS ATTACHED ─────────────────────────────────────────────────────
 
-def test_all_four_jobs_are_registered(scheduled):
+def test_every_job_is_registered(scheduled):
     """The regression this fixes: three of these were previously never attached."""
-    assert set(jobs_by_name(scheduled)) == {MORNING, EVENING, PACING, WEEKLY}
+    assert set(jobs_by_name(scheduled)) == {MORNING, EVENING, PACING, WEEKLY, ROLLOVER}
 
 
 @pytest.mark.parametrize("name, hour, minute", [
+    (ROLLOVER, 0, 5),
     (MORNING, 7, 30),
     (PACING, 13, 0),
     (EVENING, 20, 0),
@@ -79,8 +81,11 @@ def test_the_budget_recap_runs_on_sunday_only(scheduled):
     assert set(days.split(",")) == {"sun"}, f"budget recap fires on {days}"
 
 
-def test_the_briefings_run_every_day(scheduled):
-    for name in (MORNING, EVENING, PACING):
+def test_the_daily_jobs_run_every_day(scheduled):
+    """month_rollover included: it only has work to do on the 1st, but it is
+    scheduled daily so a missed or failed rollover retries the next night rather
+    than a month later."""
+    for name in (MORNING, EVENING, PACING, ROLLOVER):
         days = str(jobs_by_name(scheduled)[name].job.trigger.fields[4])
         assert "mon" in days and "sun" in days, f"{name} does not run daily"
 
@@ -142,6 +147,7 @@ def job_context():
     (MORNING, "build_morning_briefing", "proactive.scheduler"),
     (EVENING, "build_evening_briefing", "proactive.scheduler"),
     (PACING, "build_pacing_warning", "proactive.scheduler"),
+    (ROLLOVER, "build_rollover_message", "proactive.scheduler"),
 ])
 def test_job_sends_the_text_it_composed(scheduled, job_context, monkeypatch,
                                         job_name, builder, module):
@@ -157,6 +163,7 @@ def test_job_sends_the_text_it_composed(scheduled, job_context, monkeypatch,
     (MORNING, "build_morning_briefing"),
     (EVENING, "build_evening_briefing"),
     (PACING, "build_pacing_warning"),
+    (ROLLOVER, "build_rollover_message"),
 ])
 def test_job_stays_silent_when_there_is_nothing_to_say(scheduled, job_context,
                                                        monkeypatch, job_name, builder):

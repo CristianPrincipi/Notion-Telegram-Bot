@@ -20,9 +20,11 @@ from config import (
     MORNING_BRIEFING_HOUR, MORNING_BRIEFING_MINUTE,
     EVENING_BRIEFING_HOUR, EVENING_BRIEFING_MINUTE,
     BUDGET_PACING_HOUR, BUDGET_PACING_MINUTE,
+    MONTH_ROLLOVER_HOUR, MONTH_ROLLOVER_MINUTE,
 )
 from proactive.briefing import build_morning_briefing, build_evening_briefing
 from proactive.budget_watch import build_pacing_warning
+from proactive.month_rollover import build_rollover_message
 
 _TZ = pytz.timezone(PROACTIVE_TIMEZONE)
 
@@ -75,6 +77,19 @@ async def _budget_pacing_job(context: ContextTypes.DEFAULT_TYPE):
         await _report_error(context, "budget_pacing", e)
 
 
+async def _month_rollover_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = await asyncio.to_thread(build_rollover_message)
+        if text:  # only on the night the month actually turns, or on a failure
+            # Markdown, unlike the briefings: the message carries a Notion page
+            # ID and backticks make it one tap to copy. Nothing user-written is
+            # interpolated into it, so there are no stray _ * ` to break parsing.
+            await context.bot.send_message(
+                chat_id=context.job.chat_id, text=text, parse_mode="Markdown")
+    except Exception as e:
+        await _report_error(context, "month_rollover", e)
+
+
 def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
@@ -104,4 +119,15 @@ def register_all(application, chat_id):
         name="budget_pacing",
     )
 
-    print("✅ Proactive jobs registered: morning_briefing, evening_briefing, budget_pacing.")
+    # Daily, not monthly, though it only ever has something to do on the 1st —
+    # see the note in config.py. A missed or failed rollover retries tomorrow
+    # rather than in a month's time, and the run is a no-op on the other 30 days.
+    jq.run_daily(
+        _month_rollover_job,
+        time=time(hour=MONTH_ROLLOVER_HOUR, minute=MONTH_ROLLOVER_MINUTE, tzinfo=_TZ),
+        chat_id=chat_id,
+        name="month_rollover",
+    )
+
+    print("✅ Proactive jobs registered: morning_briefing, evening_briefing, "
+          "budget_pacing, month_rollover.")

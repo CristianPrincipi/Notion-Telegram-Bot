@@ -5,9 +5,10 @@ WHY THIS EXISTS
 ---------------
 When `Add e …` or `B` fail with "Could not connect to Notion", the cause is
 almost always one of:
-  • EXPENSES_ID or MONTH_ID is wrong / malformed in Railway
+  • EXPENSES_ID is wrong / malformed in Railway
   • the database isn't shared with your Notion integration
   • a column was renamed (e.g. "Account" → "Conto"), so the API rejects the write
+  • the month page can't be resolved (see month.py and the `Month` command)
 
 None of these are visible from the generic error message. This module asks
 Notion directly and reports the real IDs + schema back to Telegram, so you can
@@ -15,7 +16,7 @@ copy the correct values straight into Railway's environment variables.
 
 COMMANDS (wired in david.py)
 ----------------------------
-  Diag           full diagnostic: EXPENSES_ID, its schema, and MONTH_ID
+  Diag           full diagnostic: EXPENSES_ID, its schema, and the month page
   Find [query]   search every page/database the integration can see → return IDs
   DBs            list every database the integration can access → name + ID
 
@@ -29,21 +30,22 @@ import os
 import re
 import asyncio
 
+from config import EXPENSE_MONTH_RELATION
+from month import canonical_title, current_month_id
 from notion_client import (
-    NOTION_BASE, notion_request, extract_rich_text, get_page_title,
+    NOTION_BASE, notion_request, extract_rich_text, get_database, get_page_title,
 )
 
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
-MONTH_ID    = os.environ.get("MONTH_ID")
 NOTION_KEY  = os.environ.get("NOTION_KEY")
 
 # The columns the expense + budget code depends on, and the type each MUST be.
 EXPECTED_EXPENSE_PROPS = {
-    "Name":     "title",
-    "Amount":   "number",
-    "Date":     "date",
-    "Category": "multi_select",
-    "Account":  "relation",
+    "Name":                   "title",
+    "Amount":                 "number",
+    "Date":                   "date",
+    "Category":               "multi_select",
+    EXPENSE_MONTH_RELATION:   "relation",
 }
 
 
@@ -95,19 +97,6 @@ def search_all(query: str = "", only: str | None = None):
         return results, None
     except Exception as e:
         return [], str(e)
-
-
-def get_database(db_id: str):
-    """GET a database object by ID. Returns (db_object, error)."""
-    if not db_id:
-        return None, "No database ID provided."
-    try:
-        resp = notion_request("GET", f"{NOTION_BASE}/databases/{db_id}")
-        if resp.status_code != 200:
-            return None, f"Notion {resp.status_code}: {resp.text[:200]}"
-        return resp.json(), None
-    except Exception as e:
-        return None, str(e)
 
 
 def list_db_pages(db_id: str, limit: int = 40):
@@ -201,7 +190,7 @@ def build_diagnostic_report() -> list:
             f"{'✅' if ok else '⚠️'} {name} — {got}"
             + ("" if ok else f"  (code expects {want})")
         )
-        if name == "Account" and got == "relation":
+        if name == EXPENSE_MONTH_RELATION and got == "relation":
             account_rel_db = prop.get("relation", {}).get("database_id")
 
     extras = [n for n in props if n not in EXPECTED_EXPENSE_PROPS]
@@ -214,11 +203,12 @@ def build_diagnostic_report() -> list:
         )
     blocks.append("\n".join(schema))
 
-    # 3) MONTH_ID — list the pages the Account relation points to ────────────────
+    # 3) The month page — list the pages the Account relation points to ──────────
     if not account_rel_db:
         blocks.append(
-            "⚠️ No working *Account* relation found, so I can't auto-list month pages.\n"
-            "Once Account is a relation column, re-run `Diag`."
+            f"⚠️ No working *{_esc(EXPENSE_MONTH_RELATION)}* relation found, so I can't "
+            f"auto-list month pages.\nOnce {_esc(EXPENSE_MONTH_RELATION)} is a relation "
+            "column, re-run `Diag`."
         )
         return blocks
 
@@ -227,33 +217,44 @@ def build_diagnostic_report() -> list:
         blocks.append(f"⚠️ Couldn't list the month/account pages: {err}")
         return blocks
 
+    # The page David is ACTUALLY using, which since the rollover was automated is
+    # no longer necessarily the MONTH_ID sitting in Railway — that is only the
+    # seed value now. Reporting the environment variable here would send you off
+    # to "fix" a page ID that nothing reads.
+    in_use = current_month_id()
+    expected_title = canonical_title()
+
     month = [
-        "🗓️ *MONTH_ID must point to one of these pages*",
-        f"_(the Account relation targets database_ `{_short(account_rel_db)}`_)_",
+        f"🗓️ *This month's page should be “{_esc(expected_title)}”*",
+        f"_(the {_esc(EXPENSE_MONTH_RELATION)} relation targets database_ "
+        f"`{_short(account_rel_db)}`_)_",
         "",
     ]
     matched = False
     for pg in pages:
         pid = _short(pg.get("id", ""))
         title = _esc(get_page_title(pg))
-        here = bool(MONTH_ID and _short(MONTH_ID) == pid)
+        here = bool(in_use and _short(in_use) == pid)
         matched = matched or here
         month.append(f"{'👉' if here else '•'} {title}")
         month.append(f"  `{pid}`")
 
     month.append("")
-    if not MONTH_ID:
-        month.append("❌ *MONTH_ID* is not set. Copy the CURRENT month's ID above into Railway.")
-    elif matched:
-        month.append("✅ Your MONTH_ID matches the page marked 👉.")
+    if not in_use:
         month.append(
-            "If that isn't the *current* month, update it — this is a manual monthly "
-            "step for now (I can automate it if you want)."
+            "❌ No month page resolved yet. Send `Month` to create or adopt "
+            f"“{_esc(expected_title)}”."
+        )
+    elif matched:
+        month.append("✅ Expenses are being written against the page marked 👉.")
+        month.append(
+            f"It rolls over to “{_esc(expected_title)}” automatically at 00:05 on the 1st. "
+            "Send `Month` to force a check now."
         )
     else:
         month.append(
-            f"⚠️ Your MONTH_ID (`{_short(MONTH_ID)}`) matches none of these pages — "
-            "that alone breaks expenses. Set it to the current month's ID above."
+            f"⚠️ The page David is using (`{_short(in_use)}`) matches none of these — "
+            "that alone breaks expenses. Send `Month` to re-resolve it."
         )
     blocks.append("\n".join(month))
 

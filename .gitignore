@@ -8,3 +8,6 @@ __pycache__/
 venv/
 
 .env
+
+# The resolved month page, cached between restarts (see month.py).
+.month_state.json

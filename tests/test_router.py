@@ -52,6 +52,7 @@ SPY_TARGETS = [
     ("budget",           (),                                        BUDGET_TEXT,          False),
     ("handle_diag",      ("_update",),                              None,                 True),
     ("handle_dbs",       ("_update",),                              None,                 True),
+    ("handle_month",     ("_update",),                              None,                 True),
     ("handle_find",      ("_update", "query"),                      None,                 True),
     ("handle_remind",    ("_update", "user_text"),                  None,                 True),
     ("handle_learn",     ("_update", "user_text", "file_bytes"),    None,                 True),
@@ -161,6 +162,12 @@ ROUTES = [
     Route("dbs",  "handle_dbs",  {}, "list databases, lowercase"),
     Route("Find July",         "handle_find", {"query": "July"},         "find by name"),
     Route("Find Expenses 2025", "handle_find", {"query": "Expenses 2025"}, "find keeps spaces in query"),
+
+    # ── MONTH PAGE ─────────────────────────────────────────────────────────────
+    Route("Month", "handle_month", {}, "force the monthly-page rollover"),
+    Route("month", "handle_month", {}, "month rollover, lowercase"),
+    Route("Month 8", NO_HANDLER, reply("I didn't get that"),
+          "Month takes no argument"),
 
     # ── REMINDER ───────────────────────────────────────────────────────────────
     Route("Remind Dentist 12.06 - 14.30", "handle_remind",

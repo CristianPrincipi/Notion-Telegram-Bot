@@ -33,6 +33,7 @@ import david
 import implement
 import implement_diet
 import learn
+import month
 import page_lock
 import proactive.scheduler as scheduler
 import reminder
@@ -296,6 +297,7 @@ PROACTIVE_JOBS = [
     ("_morning_briefing_job", "build_morning_briefing"),
     ("_evening_briefing_job", "build_evening_briefing"),
     ("_budget_pacing_job",    "build_pacing_warning"),
+    ("_month_rollover_job",   "build_rollover_message"),
 ]
 
 
@@ -482,7 +484,8 @@ OFFLOADED_FUNCTIONS = [
     implement_diet.apply_updates, implement_diet.find_or_create_diet_page,
     reminder.find_conflicts, reminder.create_event,
     scheduler.build_morning_briefing, scheduler.build_evening_briefing,
-    scheduler.build_pacing_warning,
+    scheduler.build_pacing_warning, scheduler.build_rollover_message,
+    month.ensure_current_month_page,
 ]
 
 
