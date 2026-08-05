@@ -22,6 +22,7 @@ subtree. Works for both manual layouts:
 No Claude / Anthropic API call is ever made here.
 """
 
+import asyncio
 import re
 from difflib import SequenceMatcher
 
@@ -95,6 +96,12 @@ def _clean_title(title: str) -> str:
 # Depth-first walk → ordered list of sections in document order:
 #   {"level", "title", "norm", "content": [blocks]}
 # "content" is the heading's OWN direct content only (sub-headings excluded).
+#
+# BLOCKING, and not by a little: Notion has no recursive block read, so a toggle
+# manual costs one request per heading that has children — the Diet page is ~67.
+# handle_get runs it via asyncio.to_thread. Like read_diet_tree it takes no outer
+# wait_for: every individual request is already bounded by notion_request's
+# timeout and its bounded retries.
 
 def build_index(page_id: str):
     top, err = get_children(page_id)
@@ -258,8 +265,10 @@ async def handle_get(update, user_text: str):
         return
 
     # Locate the manual page inside that database
+    # Every Notion call below runs on a worker thread — see build_index. On the
+    # event loop they would freeze every other command for the whole walk.
     page_title = _manual_title_for(area)
-    page, perr = search_page_in_db(db_id, page_title, exact=True)
+    page, perr = await asyncio.to_thread(search_page_in_db, db_id, page_title, True)
     if not page:
         await update.message.reply_text(
             f"❌ No *{page_title}* page found in the *{area}* database."
@@ -270,7 +279,7 @@ async def handle_get(update, user_text: str):
 
     await update.message.reply_text(f"🔎 Searching the *{area}* manual…", parse_mode="Markdown")
 
-    index, err = build_index(page["id"])
+    index, err = await asyncio.to_thread(build_index, page["id"])
     if err:
         await update.message.reply_text(f"❌ Could not read the manual: {err}")
         return
@@ -325,7 +334,9 @@ async def _deliver(update, entry: dict, index: list, area: str):
     """Render and send a resolved section, or suggest subsections if it has no own content."""
     pos = next((i for i, e in enumerate(index)
                 if e["title"] == entry["title"] and e["level"] == entry["level"]), None)
-    body = _render(entry["content"])
+    # _render recurses into nested children, so it can issue Notion reads of its
+    # own — blocking, and off the loop like the rest.
+    body = await asyncio.to_thread(_render, entry["content"])
 
     kind = "Section" if entry["level"] <= 2 else "Subsection"
     header = f"📖 {_clean_title(entry['title'])}  —  {area} ({kind})\n" + "\u2500" * 24

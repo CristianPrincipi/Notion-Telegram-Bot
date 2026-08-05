@@ -57,6 +57,7 @@ SPY_TARGETS = [
     ("handle_remind",    ("_update", "user_text"),                  None,                 True),
     ("handle_learn",     ("_update", "user_text", "file_bytes"),    None,                 True),
     ("handle_implement", ("_update", "user_text"),                  None,                 True),
+    ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
     ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  True,                 False),
@@ -232,6 +233,22 @@ ROUTES = [
           {"user_text": "Implement Protein Basics - Diet"}, "implement into Diet"),
     Route("Implement Memory Techniques", NO_HANDLER, reply("I didn't get that"),
           "implement without a target area is not a command"),
+
+    # ── GET (PKM retrieval) ────────────────────────────────────────────────────
+    Route("Get Perfect Process - Brain", "handle_get",
+          {"user_text": "Get Perfect Process - Brain"}, "get a topic"),
+    Route("get active recall - brain", "handle_get",
+          {"user_text": "get active recall - brain"}, "get, lowercase"),
+    Route("Get ? - Brain", "handle_get", {"user_text": "Get ? - Brain"},
+          "'?' is discovery mode, not a topic"),
+    # The separator is a SPACE-hyphen-SPACE precisely so this keeps working.
+    Route("Get Step-by-Step Breakdown - Brain", "handle_get",
+          {"user_text": "Get Step-by-Step Breakdown - Brain"},
+          "a hyphen inside the topic is not the separator"),
+    Route("Get Perfect Process", NO_HANDLER, reply("I didn't get that"),
+          "get without an area is not a command"),
+    Route("Get Perfect Process-Brain", NO_HANDLER, reply("I didn't get that"),
+          "the separator needs its spaces"),
 
     # ── UPDATE EXPENSE ─────────────────────────────────────────────────────────
     Route("U e Carrefour 12.50 s", "update_Expense",

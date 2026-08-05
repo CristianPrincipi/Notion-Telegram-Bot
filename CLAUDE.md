@@ -22,6 +22,7 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
 | `implement.py` | `Implement [Page] - [Area]` — merge a Learn page into an area Manual. Owns `get_area_db_id` | Diet (delegates to `implement_diet`) |
 | `implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
+| `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
 | `reminder.py` | `Remind …` — parse, conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`) |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `str \| None` |
@@ -138,10 +139,7 @@ a PR, let CI go green, then merge. Never commit directly to `main`.
 
 Found in the code, not resolved here — do not "fix" these by guessing intent:
 
-- **`pkm.py` is entirely unwired.** It implements `Get [Topic] - [Area]` (index build, fuzzy
-  resolve, discovery mode) but nothing imports it: no route, no help entry, no test. Dead
-  code, or pending wiring?
-- **Other unreferenced code:** `reminder.build_today_message` / `build_tomorrow_message`
+- **Unreferenced code:** `reminder.build_today_message` / `build_tomorrow_message`
   (superseded by `proactive/briefing.py`), `implement.clear_page_blocks` (only the `_by_id`
   variant is called), `DATABASE_ID` in `david.py`.
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
