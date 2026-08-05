@@ -49,9 +49,9 @@ fine without them and loses the feature named below.
 | `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
-`Implement [Page] - [Area]` resolves its target from `{AREA}_ID`
-(see `get_area_db_id` in `implement.py`), so adding a new area means adding the
-matching environment variable.
+`Implement [Page] - [Area]` and `Get [Topic] - [Area]` both resolve their target
+from `{AREA}_ID` (see `get_area_db_id` in `implement.py`), so adding a new area
+means adding the matching environment variable.
 
 ## Commands
 
@@ -70,6 +70,7 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event |
 | `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database |
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
+| `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
 | `Diag` / `Find [name]` / `DBs` | Notion ID diagnostics |
 
 ## Scheduled messages

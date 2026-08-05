@@ -35,6 +35,7 @@ import implement_diet
 import learn
 import month
 import page_lock
+import pkm
 import proactive.scheduler as scheduler
 import reminder
 from conftest import FakeContext, FakeDocument, FakeUpdate, run
@@ -293,6 +294,31 @@ def test_remind_calls_google_calendar_off_the_loop(offloaded, monkeypatch):
     assert update.message.replied_with("Reminder set")
 
 
+# ─── 4c. PKM.PY ────────────────────────────────────────────────────────────────
+
+def test_get_walks_the_manual_off_the_loop(offloaded, monkeypatch):
+    """build_index issues one Notion request per heading that has children — ~67
+    on the Diet toggle tree, sequentially. Run on the event loop, that walk
+    freezes every other command and every scheduled job for its whole duration.
+
+    pkm.py shipped calling all three of these directly from the coroutine; it was
+    only harmless because nothing imported it.
+    """
+    stubs = stub_module(monkeypatch, pkm, {
+        "search_page_in_db": lambda db, name, exact=False: ({"id": "manual-1"}, None),
+        "build_index":       lambda page_id: ([{"level": 2, "title": "Perfect Process",
+                                                "norm": "perfect process",
+                                                "content": []}], None),
+        "_render":           lambda blocks: "rendered body",
+    })
+    update = FakeUpdate(text="Get Perfect Process - Brain")
+
+    run(pkm.handle_get(update, update.message.text))
+
+    assert offloaded == expect(stubs, "search_page_in_db", "build_index", "_render")
+    assert update.message.replied_with("rendered body")
+
+
 PROACTIVE_JOBS = [
     ("_morning_briefing_job", "build_morning_briefing"),
     ("_evening_briefing_job", "build_evening_briefing"),
@@ -486,6 +512,7 @@ OFFLOADED_FUNCTIONS = [
     scheduler.build_morning_briefing, scheduler.build_evening_briefing,
     scheduler.build_pacing_warning, scheduler.build_rollover_message,
     month.ensure_current_month_page,
+    pkm.build_index, pkm._render,
 ]
 
 

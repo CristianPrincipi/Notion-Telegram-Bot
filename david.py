@@ -23,6 +23,7 @@ from config import (
 )
 from month import current_month_id, handle_month
 from notion_client import notion_request, query_database
+from pkm import handle_get
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
 
@@ -612,7 +613,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`Learn pdf`  _(attach PDF as caption)_\n\n"
             "🔧 *IMPLEMENT*\n"
             "`Implement [Page Name] - [Area]`\n"
-            "_Merges a Learn page into an Area Manual_",
+            "_Merges a Learn page into an Area Manual_\n\n"
+            "🔎 *GET*\n"
+            "`Get [Topic] - [Area]`\n"
+            "`Get ? - [Area]`  _(list every topic)_",
             parse_mode="Markdown",
         )
         return
@@ -647,6 +651,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     find_match = re.fullmatch(r"(?i)find\s+(.+)", user_text)
     if find_match:
         await handle_find(update, find_match.group(1))
+        return
+
+    # --- RETRIEVE: "Get [Topic] - [Area]" → read a section back out of a Manual ---
+    # The separator is a SPACE-hyphen-SPACE, matching pkm.GET_PATTERN, so a topic
+    # containing a hyphen ("Step-by-Step Breakdown") is not split at it. Without
+    # the " - [Area]" it is not a command, exactly like `Implement`.
+    #
+    # Runs INLINE, not detached: it is read-only, so it cannot reorder against a
+    # write the way a detached command could. The slow case is a toggle manual
+    # (Diet), where build_index walks the tree one request per heading.
+    if re.fullmatch(r"(?i)get\s+.+\s+-\s+.+", user_text):
+        await handle_get(update, user_text)
         return
 
     # --- REGEX FOR REMINDER: "Remind [Name] [Date] - [Time]" ---
