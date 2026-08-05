@@ -7,6 +7,11 @@
 # article extraction, so nothing is lost for normal use.
 
 python-telegram-bot[job-queue]>=21.0
+# The official SDK, not hand-rolled requests calls: it owns the retry/backoff on
+# 429/5xx/529 that the three copied Anthropic calls never had, and it reads the
+# `retry-after` header, which a hand-written `2 ** attempt` cannot. Pure Python
+# over httpx — nothing to compile, so it is safe for Railway's build image.
+anthropic>=0.69
 requests>=2.31
 pytz>=2024.1
 PyPDF2>=3.0

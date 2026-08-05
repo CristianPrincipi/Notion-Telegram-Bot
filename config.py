@@ -82,10 +82,47 @@ def priority_help() -> str:
 # notion_request's per-request timeout and its bounded retries, so they are
 # offloaded to a thread but not wrapped in wait_for.
 
-ANTHROPIC_READ_TIMEOUT = 300   # handed to requests — a 2-hour transcript is slow to summarise
+ANTHROPIC_READ_TIMEOUT = 300   # per request — a 2-hour transcript is slow to summarise
 ANTHROPIC_TIMEOUT      = 330   # outer cap; must stay above ANTHROPIC_READ_TIMEOUT
 SOURCE_FETCH_TIMEOUT   = 90    # YouTube transcript or article scrape
 PDF_PARSE_TIMEOUT      = 120   # PyPDF2 text extraction: CPU-bound and unbounded by itself
+
+
+# ─── ANTHROPIC ─────────────────────────────────────────────────────────────────
+# One model name for the whole bot. It was hard-coded three times — in learn.py,
+# implement.py and implement_diet.py — so an upgrade meant finding all three.
+ANTHROPIC_MODEL = "claude-sonnet-4-5"
+
+ANTHROPIC_MAX_TOKENS = 8192    # output cap. Stays well under the ~16k above which
+                               # the SDK refuses a non-streaming request outright.
+
+# Retries on 429 / 5xx / 529 and network errors, with exponential backoff. The
+# Notion client has had this for ages; the Anthropic calls did not, so a single
+# rate-limit response after two minutes of transcript fetching threw the whole
+# job away and the re-run paid for the tokens a second time.
+#
+# NOTE the interaction with ANTHROPIC_TIMEOUT: worst case is
+# ANTHROPIC_READ_TIMEOUT × (ANTHROPIC_MAX_RETRIES + 1), which is longer than the
+# outer wait_for. That is accepted rather than tuned away — retries are triggered
+# by 429/529, which fail in milliseconds, so the worst case needs three
+# separately-stalled generations. If wait_for does fire first the user is told it
+# gave up, and nothing has been written to Notion at that point either way.
+ANTHROPIC_MAX_RETRIES = 3
+
+# ─── DAILY SPEND GUARD ─────────────────────────────────────────────────────────
+# A runaway loop or a habit of re-running `Learn` on long videos is invisible
+# until the invoice arrives. The guard refuses new calls once the day's estimated
+# spend passes the threshold, and the refusal reaches Telegram as the command's
+# error — every Anthropic call in David is user-initiated, so there is always
+# someone at the keyboard to read it.
+#
+# Rates are per MILLION tokens and MUST be updated alongside ANTHROPIC_MODEL —
+# they are the published Sonnet-tier rates, not a per-model lookup. The guard
+# fails toward refusing, so a stale rate over-counts rather than under-counts.
+ANTHROPIC_INPUT_COST_PER_MTOK  = 3.00
+ANTHROPIC_OUTPUT_COST_PER_MTOK = 15.00
+
+ANTHROPIC_DAILY_BUDGET_USD = float(os.environ.get("ANTHROPIC_DAILY_BUDGET_USD", "5"))
 
 
 # ─── WEEKDAYS ──────────────────────────────────────────────────────────────────
@@ -171,6 +208,10 @@ OPTIONAL_ENV = {
                                 f"Expenses '{EXPENSE_MONTH_RELATION}' relation when unset."),
     "MONTH_STATE_FILE":        ("Where the resolved month page ID is cached between restarts. "
                                 "Defaults to .month_state.json."),
+    "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn and "
+                                   "Implement are refused. Defaults to 5."),
+    "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
+                                   "Defaults to .anthropic_spend.json."),
 }
 
 

@@ -1,12 +1,12 @@
 import asyncio
 import os
 import re
-import json
 import requests
 from bs4 import BeautifulSoup
 
+from anthropic_client import complete_json
 from config import (
-    ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT,
+    ANTHROPIC_TIMEOUT,
     PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
 )
 from notion_client import (
@@ -16,7 +16,6 @@ from notion_client import (
 )
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID = os.environ.get("LEARN_ID")                  # videos, articles, podcasts
 LETTI_ID = os.environ.get("LETTI_ID")                  # books  (already exists in David)
 
@@ -108,73 +107,52 @@ def extract_pdf(file_bytes: bytes) -> tuple[str | None, str | None]:
 
 _SYSTEM = """You are an expert summarizer building a personal knowledge base in Notion.
 
-Return ONLY a valid JSON object — no markdown, no preamble — with this exact structure:
-{
-  "title":         "Note title (infer from content if not obvious)",
-  "author":        "Author or creator name, or empty string",
-  "tldr":          "2-4 sentence overview: what it is, who made it, core message",
-  "sections": [
-    {
-      "heading": "Section title",
-      "content": "2-4 paragraphs summarising this theme",
-      "quotes":  ["Optional verbatim quote worth preserving"]
-    }
-  ],
-  "key_takeaways": ["Actionable insight 1", "Actionable insight 2", "Actionable insight 3"],
-  "tags":          ["tag1", "tag2"]
-}
-
 Rules:
 - Depth is proportional to content length: short article → 2-3 sections, long video → 5-7 sections.
 - Key takeaways must be specific and actionable, not vague ("Apply X by doing Y", not "X is important").
-- Sections should each cover a distinct theme — no redundancy.
-- Do NOT wrap in markdown code fences. Return raw JSON only."""
+- Sections should each cover a distinct theme — no redundancy."""
+
+# The shape _SYSTEM used to describe in prose. Declaring it as a schema means the
+# model fills in fields rather than writing JSON we then have to find and parse.
+_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title":  {"type": "string", "description": "Note title; infer from content if not obvious."},
+        "author": {"type": "string", "description": "Author or creator name, or empty string."},
+        "tldr":   {"type": "string",
+                   "description": "2-4 sentence overview: what it is, who made it, core message."},
+        "sections": {
+            "type": "array",
+            "description": "One entry per distinct theme.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "heading": {"type": "string"},
+                    "content": {"type": "string",
+                                "description": "2-4 paragraphs summarising this theme."},
+                    "quotes":  {"type": "array", "items": {"type": "string"},
+                                "description": "Verbatim quotes worth preserving."},
+                },
+                "required": ["heading", "content"],
+            },
+        },
+        "key_takeaways": {"type": "array", "items": {"type": "string"},
+                          "description": "Specific, actionable insights."},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "tldr"],
+}
 
 
 def summarize_with_claude(content_type: str, text: str, title: str = "", source: str = "") -> tuple[dict | None, str | None]:
-    """Call Claude API, return (summary_dict, error)."""
-    if not ANTHROPIC_KEY:
-        return None, "ANTHROPIC_API_KEY is not set in environment."
-
+    """Summarise a source into the Learn page structure. Returns (summary, error)."""
     user_msg = (
         f"Content type: {content_type}\n"
         f"Title (if known): {title}\n"
         f"Source: {source}\n\n"
         f"Content:\n{text[:100000]}"  # 100k chars ≈ covers a 2-hour video in one API call
     )
-
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json",
-            },
-            json={
-                "model":      "claude-sonnet-4-5",
-                "max_tokens": 4096,
-                "system":     _SYSTEM,
-                "messages":   [{"role": "user", "content": user_msg}],
-            },
-            # (connect, read). The read timeout is per socket read, so it cannot
-            # bound the whole call on its own — handle_learn adds an outer
-            # ANTHROPIC_TIMEOUT via asyncio.wait_for.
-            timeout=(10, ANTHROPIC_READ_TIMEOUT),
-        )
-        resp.raise_for_status()
-        raw = resp.json()["content"][0]["text"].strip()
-
-        # Strip accidental ```json fences
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-
-        return json.loads(raw), None
-
-    except json.JSONDecodeError as e:
-        return None, f"JSON parse error: {e}"
-    except Exception as e:
-        return None, str(e)
+    return complete_json(_SYSTEM, user_msg, _SUMMARY_SCHEMA, max_tokens=4096)
 
 
 # ─── 3. NOTION BLOCK BUILDER ───────────────────────────────────────────────────

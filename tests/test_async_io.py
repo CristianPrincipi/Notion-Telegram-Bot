@@ -198,25 +198,34 @@ def fresh_locks():
     page_lock._locks.clear()
 
 
+def _fake_section(path="Perfect Process"):
+    """A real implement.Section, so _sectioned_run can read .path/.style/.text."""
+    section = implement.Section(path, 2, "heading-1")
+    section.content_ids = ["old-1"]
+    section.content_blocks = [{"id": "old-1", "type": "numbered_list_item",
+                               "numbered_list_item": {"rich_text": [{"plain_text": "step"}]}}]
+    return section
+
+
 @pytest.fixture
 def implement_stubs(monkeypatch):
     monkeypatch.setattr(implement, "get_area_db_id", lambda area: "area-db-1")
     monkeypatch.setattr(implement, "blocks_to_text", lambda blocks: "content")
-    monkeypatch.setattr(implement, "build_manual_blocks",
-                        lambda merged, title: [{"new": "block"}])
     return stub_module(monkeypatch, implement, {
         "search_page_in_db":     lambda db, name, exact=False: ({"id": "page-1", "properties": {}}, None),
         "get_all_blocks":        lambda page_id: ([{"id": "old-1"}], None),
-        "merge_with_claude":     lambda **kw: ({"title": "Manual", "routine": [],
-                                                "improvements": []}, None),
-        "append_blocks_to_page": lambda page_id, blocks: None,
-        "clear_page_blocks_by_id": lambda block_ids: None,
+        "read_manual_sections":  lambda page_id: ([_fake_section()], None),
+        "route_sections":        lambda paths, text, title: (
+            {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None),
+        "merge_sections":        lambda targets, text, title: (
+            {"updates": [{"path": "Perfect Process", "lines": ["merged"]}]}, None),
+        "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (1, []),
         "update_page":           lambda page_id, props: (True, None),
     })
 
 
 def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, implement_stubs):
-    """The full read-merge-write cycle, in order, all on worker threads.
+    """The full route-merge-write cycle, in order, all on worker threads.
 
     Asserted as an exact sequence rather than a membership check: a single call
     left on the event loop still freezes the bot, so "most of them are offloaded"
@@ -231,11 +240,10 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
         "search_page_in_db",       # find the Learn source page
         "get_all_blocks",          # read its content
         "search_page_in_db",       # find the area's Manual
-        "get_all_blocks",          # read the Manual
-        "merge_with_claude",       # the slow one
-        "get_all_blocks",          # snapshot the stale blocks
-        "append_blocks_to_page",   # write the replacement first
-        "clear_page_blocks_by_id",  # only then drop the old
+        "read_manual_sections",    # index it by heading
+        "route_sections",          # cheap: section names only
+        "merge_sections",          # the slow one, affected sections only
+        "apply_section_updates",   # append-then-delete, per section
         "update_page",             # tick 'Implemented'
     )
     assert update.message.replied_with("Manual updated")
@@ -403,10 +411,10 @@ def test_a_slow_pdf_parse_times_out(learn_stubs, monkeypatch):
 def test_a_slow_merge_times_out_and_says_nothing_was_written(implement_stubs, monkeypatch):
     """The timeout fires BEFORE any write, so the Manual is provably untouched."""
     monkeypatch.setattr(implement, "ANTHROPIC_TIMEOUT", CAP)
-    monkeypatch.setattr(implement, "merge_with_claude", stalls)
+    monkeypatch.setattr(implement, "merge_sections", stalls)
     written = []
-    monkeypatch.setattr(implement, "append_blocks_to_page",
-                        lambda page_id, blocks: written.append(blocks))
+    monkeypatch.setattr(implement, "apply_section_updates",
+                        lambda page_id, updates, sections, new_paths=None: written.append(updates))
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
 
     run(implement.handle_implement(update, update.message.text))
@@ -434,7 +442,7 @@ def test_a_slow_diet_analysis_times_out_and_says_nothing_was_written(diet_stubs,
 def test_the_merge_timeout_releases_the_page_lock(implement_stubs, monkeypatch):
     """A timeout inside the lock must not wedge the Manual until the next restart."""
     monkeypatch.setattr(implement, "ANTHROPIC_TIMEOUT", CAP)
-    monkeypatch.setattr(implement, "merge_with_claude", stalls)
+    monkeypatch.setattr(implement, "merge_sections", stalls)
 
     async def main():
         update = FakeUpdate(text="Implement Memory Techniques - Brain")
@@ -503,7 +511,9 @@ OFFLOADED_FUNCTIONS = [
     david.extract_quote_from_pdf,
     learn.extract_youtube, learn.extract_article, learn.extract_pdf,
     learn.summarize_with_claude, learn.create_learn_page,
-    implement.search_page_in_db, implement.get_all_blocks, implement.merge_with_claude,
+    implement.search_page_in_db, implement.get_all_blocks,
+    implement.read_manual_sections, implement.route_sections, implement.merge_sections,
+    implement.apply_section_updates, implement.build_manual,
     implement.create_manual_page, implement.append_blocks_to_page,
     implement.clear_page_blocks_by_id, implement.update_page,
     implement_diet.read_diet_tree, implement_diet.decide_updates,
