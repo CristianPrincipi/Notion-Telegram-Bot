@@ -1,12 +1,10 @@
 import asyncio
 import os
-import re
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
-
-from config import ANTHROPIC_READ_TIMEOUT, ANTHROPIC_TIMEOUT
+from anthropic_client import complete_json
+from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from notion_client import (
     search_page_in_db, get_children,
@@ -16,7 +14,6 @@ from notion_client import (
 )
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 LEARN_ID      = os.environ.get("LEARN_ID")
 DIET_ID       = os.environ.get("DIET_ID")
 
@@ -252,23 +249,6 @@ You receive:
 Your job: decide which H3 attribute sections (or H2 leaf sections) the SUMMARY actually
 affects, and return their FULL merged content. Touch ONLY sections the summary informs.
 
-Return ONLY valid JSON — no markdown fences, no preamble:
-{
-  "plan": {
-    "new_sections":      ["path > of > section newly populated"],
-    "updated_sections":  ["path > of > section merged with existing"],
-    "evidence_added":    ["path > of > Evidence section"],
-    "conflicts":         ["short description of any contradiction found and how resolved"]
-  },
-  "updates": [
-    {
-      "path": "H1 > H2 > H3",
-      "mode": "merge" | "replace",
-      "bullets": ["actionable line 1", "actionable line 2"]
-    }
-  ]
-}
-
 Rules:
 - "path" MUST exactly match an existing section path from CURRENT_TREE (same names, same '>' format).
 - Only output sections the SUMMARY genuinely informs. If the summary says nothing about a section, omit it.
@@ -277,48 +257,48 @@ Rules:
 - mode "replace": existing content is outdated/wrong and the summary supersedes it.
 - For Evidence sections, structure bullets as "Question: …", "Result: …", "Limits: …", "Practical Conclusion: …" when the summary provides them.
 - Do NOT invent content. Do NOT infer beyond the summary.
-- If the summary affects nothing in the structure, return empty "updates": [].
-- Return raw JSON only."""
+- If the summary affects nothing in the structure, return an empty "updates" list."""
+
+_DIET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "plan": {
+            "type": "object",
+            "description": "What you are about to change, for the user to read before it happens.",
+            "properties": {
+                "new_sections":     {"type": "array", "items": {"type": "string"}},
+                "updated_sections": {"type": "array", "items": {"type": "string"}},
+                "evidence_added":   {"type": "array", "items": {"type": "string"}},
+                "conflicts":        {"type": "array", "items": {"type": "string"},
+                                     "description": "Contradictions found, and how resolved."},
+            },
+        },
+        "updates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path":    {"type": "string",
+                                "description": "Exactly matching a section path from CURRENT_TREE."},
+                    "mode":    {"type": "string", "enum": ["merge", "replace"]},
+                    "bullets": {"type": "array", "items": {"type": "string"},
+                                "description": "The FULL merged content for this section."},
+                },
+                "required": ["path", "mode", "bullets"],
+            },
+        },
+    },
+    "required": ["updates"],
+}
 
 
 def decide_updates(tree: dict, summary_text: str, summary_title: str):
     """Ask Claude which sections to update. Returns (result_dict, error)."""
-    if not ANTHROPIC_KEY:
-        return None, "ANTHROPIC_API_KEY not set."
-
     user_msg = (
         f"CURRENT_TREE:\n{json.dumps(tree, ensure_ascii=False, indent=1)[:30000]}\n\n"
         f"=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
     )
-
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json",
-            },
-            json={
-                "model":      "claude-sonnet-4-5",
-                "max_tokens": 8192,
-                "system":     _DIET_SYSTEM,
-                "messages":   [{"role": "user", "content": user_msg}],
-            },
-            # (connect, read) — per socket read, so handle_implement_diet adds an
-            # outer ANTHROPIC_TIMEOUT via wait_for.
-            timeout=(10, ANTHROPIC_READ_TIMEOUT),
-        )
-        resp.raise_for_status()
-        raw = resp.json()["content"][0]["text"].strip()
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not json_match:
-            return None, f"No JSON in Claude response: {raw[:300]}"
-        return json.loads(json_match.group(0)), None
-    except json.JSONDecodeError as e:
-        return None, f"JSON parse error: {e}"
-    except Exception as e:
-        return None, str(e)
+    return complete_json(_DIET_SYSTEM, user_msg, _DIET_SCHEMA)
 
 
 # ─── 4. APPLY UPDATES SURGICALLY ───────────────────────────────────────────────

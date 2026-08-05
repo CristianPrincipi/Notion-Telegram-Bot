@@ -212,22 +212,38 @@ def get_children(block_id: str):
 
 # ─── WRITE ─────────────────────────────────────────────────────────────────────
 
-def append_children(block_id: str, blocks: list):
-    """Append children to a block in batches of 100. Returns (created_blocks, error)."""
+def append_children(block_id: str, blocks: list, after: str | None = None):
+    """Append children to a block in batches of 100. Returns (created_blocks, error).
+
+    `after` inserts the new blocks immediately after an existing sibling instead
+    of at the end of the parent. That is what makes a section rewrite possible on
+    a flat page: the replacement lands directly under its heading, so the page
+    keeps its order once the stale blocks are deleted.
+
+    Each batch after the first is anchored to the LAST block the previous batch
+    created — anchoring every batch to the same `after` would insert them in
+    reverse.
+    """
     created = []
     try:
-        remaining = blocks
+        remaining, anchor = blocks, after
         while remaining:
             batch, remaining = remaining[:100], remaining[100:]
+            body = {"children": batch}
+            if anchor:
+                body["after"] = anchor
             resp = notion_request(
                 "PATCH",
                 f"{NOTION_BASE}/blocks/{block_id}/children",
-                json={"children": batch},
+                json=body,
                 timeout=20,
             )
             if resp.status_code != 200:
                 return created, f"Notion {resp.status_code}: {resp.text[:200]}"
-            created.extend(resp.json().get("results", []))
+            batch_created = resp.json().get("results", [])
+            created.extend(batch_created)
+            if anchor and batch_created:
+                anchor = batch_created[-1].get("id") or anchor
         return created, None
     except Exception as e:
         return created, str(e)

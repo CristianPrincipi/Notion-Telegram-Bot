@@ -15,12 +15,13 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `david.py` | Entry point (`__main__`), the `handle_message`/`handle_document` regex routers, owner filter, job registration, expense + book + quote writes, PDF download | Feature logic, budget maths, month resolution, raw Notion HTTP |
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
+| `anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
 | `calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
 | `learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
-| `implement.py` | `Implement [Page] - [Area]` — merge a Learn page into an area Manual. Owns `get_area_db_id` | Diet (delegates to `implement_diet`) |
+| `implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `implement_diet`) |
 | `implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
 | `reminder.py` | `Remind …` — parse, conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`) |
@@ -46,6 +47,11 @@ name (`"Brain"` → `BRAIN_ID`), so adding an area means adding an env var, not 
 `__main__` and raises `SystemExit` listing *every* problem at once — a misconfigured deploy
 costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIONAL_ENV`
 and the README table when you introduce one.
+
+**One model name, one client.** `config.ANTHROPIC_MODEL` is the only place the model
+is named, and `anthropic_client.complete_json` is the only way to reach the API. A
+feature module owns its system prompt and its JSON Schema; it does not own retry,
+truncation handling, or token accounting.
 
 **Async discipline.** Every synchronous call — `requests`, Notion, Anthropic, PyPDF2,
 Google Calendar — runs via `asyncio.to_thread`. PTB runs updates on one event loop, so a
@@ -76,13 +82,25 @@ pattern, in this order, every time:
 4. only on success, delete the snapshotted IDs — from the *snapshot*, never from a re-read
    after appending, which would delete the new content too
 
-Reference implementations: `implement.handle_implement` (the Manual) and
+Reference implementations: `implement.apply_section_updates` (Manual sections) and
 `implement_diet.apply_updates` (Diet sections). Clear-then-append meant a 502 or a Railway
 restart between the two left the page **permanently empty**, with no transaction to roll
 back and no second copy anywhere. The page briefly showing old-then-new content is the
 accepted cost of never showing neither. Locked down by `tests/test_safe_writes.py`.
 
-### 3. Concurrency is deliberately narrow
+### 3. Never send a section the source did not touch
+
+Everything sent to the model can come back reworded. `handle_implement` used to send
+the **whole** Manual and rebuild the page from the reply, so untouched sections drifted
+a paraphrase at a time, and a Manual over 40k characters had its tail silently dropped
+from the prompt (`manual_text[:40000]`) and therefore from the rebuilt page.
+
+So both Implement paths are sectioned: index by heading, a cheap routing call over
+section NAMES, a merge over only the affected sections, and a write back to only those.
+**The only guarantee that a section is unchanged is that it was never sent.** Locked
+down by `tests/test_implement_sections.py`.
+
+### 4. Concurrency is deliberately narrow
 
 `concurrent_updates` is **off**. Do not enable it; `tests/test_async_io.py` fails if you do.
 Responsiveness is bought per-command instead: only the long commands (`Learn`, `Implement`,

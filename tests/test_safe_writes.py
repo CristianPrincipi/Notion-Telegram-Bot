@@ -50,7 +50,7 @@ class NotionSpy:
     def get_children(self, block_id):
         return list(self.existing), None
 
-    def append_children(self, block_id, blocks):
+    def append_children(self, block_id, blocks, after=None):
         self.calls.append(("append", block_id))
         if self.append_error:
             return [], self.append_error
@@ -62,9 +62,25 @@ class NotionSpy:
 
 # ─── 1. MANUAL: APPEND BEFORE DELETE ───────────────────────────────────────────
 
+def heading(block_id, text, level=2):
+    btype = f"heading_{level}"
+    return {"id": block_id, "type": btype, btype: {"rich_text": [{"plain_text": text}]}}
+
+
 @pytest.fixture
 def manual_spy(monkeypatch):
-    spy = NotionSpy()
+    """A Manual with one section: a heading, then the two content blocks it owns.
+
+    read_manual_sections indexes by heading, so a spy that returns bare leaf
+    blocks would produce no sections and the handler would never reach a write.
+    """
+    spy = NotionSpy(existing=[
+        heading("h-1", "⚙️ Perfect Process"),
+        {"id": "old-1", "type": "numbered_list_item",
+         "numbered_list_item": {"rich_text": [{"plain_text": "old step one"}]}},
+        {"id": "old-2", "type": "numbered_list_item",
+         "numbered_list_item": {"rich_text": [{"plain_text": "old step two"}]}},
+    ])
     monkeypatch.setattr(implement, "get_all_blocks", spy.get_children)
     monkeypatch.setattr(implement, "delete_block", spy.delete_block)
     monkeypatch.setattr(implement, "append_children", spy.append_children)
@@ -87,11 +103,13 @@ def wired_manual(manual_spy, monkeypatch):
             {"id": "manual-1" if db == "area-db-1" else "source-1", "properties": {}},
             None))
     monkeypatch.setattr(implement, "blocks_to_text", lambda blocks: "content")
-    monkeypatch.setattr(implement, "merge_with_claude",
-                        lambda **kw: ({"title": "Manual", "routine": [],
-                                       "improvements": []}, None))
-    monkeypatch.setattr(implement, "build_manual_blocks",
-                        lambda merged, title: [{"new": "block"}])
+    monkeypatch.setattr(implement, "route_sections",
+                        lambda paths, text, title: (
+                            {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None))
+    monkeypatch.setattr(implement, "merge_sections",
+                        lambda targets, text, title: (
+                            {"updates": [{"path": "Perfect Process",
+                                          "lines": ["merged step"]}]}, None))
     monkeypatch.setattr(implement, "update_page", lambda *a, **k: (True, None))
     return manual_spy
 
@@ -103,11 +121,15 @@ def run_implement():
 
 
 def test_manual_deletes_nothing_when_the_append_fails(wired_manual):
-    """THE test. A failed append must leave the old Manual completely intact.
+    """THE test. A failed append must leave the old content completely intact.
 
     Before this fix the order was clear-then-append, so a 502 or a Railway
     restart between the two left the Manual permanently empty, with no
     transaction to roll back and no second copy of the content anywhere.
+
+    Now that writes are per-section, the report is per-section too: the failed
+    section is listed as skipped AND explicitly called unchanged, which is the
+    truthful claim — its append failed, so its delete never ran.
     """
     wired_manual.append_error = "Notion 502: bad gateway"
 
@@ -116,6 +138,7 @@ def test_manual_deletes_nothing_when_the_append_fails(wired_manual):
     assert wired_manual.appends, "never even attempted the append"
     assert wired_manual.deletes == [], "old Manual deleted despite a failed append"
     assert update_obj.message.replied_with("unchanged")
+    assert update_obj.message.replied_with("502")
 
 
 def test_manual_deletes_the_old_content_once_the_append_succeeds(wired_manual):

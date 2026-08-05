@@ -45,6 +45,8 @@ fine without them and loses the feature named below.
 | `BRAIN_ID` | Optional | Notion Brain area database ID. Needed by `Implement [Page] - Brain`. |
 | `FINANCE_ID` | Optional | Notion Finance area database ID. Needed by `Implement [Page] - Finance`. |
 | `BUDGET_CEILING` | Optional | Monthly budget ceiling in euros. Defaults to `300`. |
+| `ANTHROPIC_DAILY_BUDGET_USD` | Optional | Estimated Anthropic spend allowed per day before `Learn` and `Implement` are refused. Defaults to `5`. |
+| `ANTHROPIC_SPEND_FILE` | Optional | Where the running daily spend is recorded. Defaults to `.anthropic_spend.json`. |
 | `MONTHS_DB_ID` | Optional | Notion database the month pages live in. Discovered from the Expenses `Account` relation when unset. |
 | `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
