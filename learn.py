@@ -14,6 +14,7 @@ from notion_client import (
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
     quote as _quote, bullet as _bullet, divider as _divider,
 )
+from telegram_text import escape_md, reply
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
 LEARN_ID = os.environ.get("LEARN_ID")                  # videos, articles, podcasts
@@ -257,14 +258,14 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     # ── Parse command ──────────────────────────────────────────────────────────
     match = re.match(r"(?i)learn\s+(\w+)(?:\s+(.+))?", user_text.strip())
     if not match:
-        await update.message.reply_text(
+        await reply(
+            update,
             "📚 *Learn command usage:*\n"
             "• `Learn video https://youtu.be/...`\n"
             "• `Learn article https://...`\n"
             "• `Learn podcast https://...`\n"
             "• `Learn book Atomic Habits`\n"
             "• `Learn pdf` _(attach a PDF file as caption)_",
-            parse_mode="Markdown",
         )
         return
 
@@ -272,9 +273,11 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     source       = (match.group(2) or "").strip()
 
     if content_type not in SUPPORTED_TYPES:
-        await update.message.reply_text(
+        # content_type comes from a \w+ group, so it cannot contain a backtick and
+        # is safe inside the code span.
+        await reply(
+            update,
             f"❌ Unknown type `{content_type}`. Supported: {', '.join(SUPPORTED_TYPES)}",
-            parse_mode="Markdown",
         )
         return
 
@@ -331,7 +334,7 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
 
     elif content_type == "book":
         if not source:
-            await update.message.reply_text("❌ Provide the book title: `Learn book Atomic Habits`", parse_mode="Markdown")
+            await reply(update, "❌ Provide the book title: `Learn book Atomic Habits`")
             return
         # No scraping needed — Claude summarises from its own knowledge
         text  = f"Please summarise the book: {source}"
@@ -340,10 +343,7 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
 
     elif content_type == "pdf":
         if file_bytes is None:
-            await update.message.reply_text(
-                "❌ Attach a PDF file and use `Learn pdf` as the *caption*.",
-                parse_mode="Markdown",
-            )
+            await reply(update, "❌ Attach a PDF file and use `Learn pdf` as the *caption*.")
             return
         # PyPDF2 walks every page; on a long book that is seconds to minutes of
         # pure CPU, which would pin the event loop just as hard as a network call.
@@ -407,12 +407,15 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     )
 
     if ok:
+        # Both values are Claude's prose (final_title falls back to a raw URL), so
+        # both are escaped — a title with an underscore used to lose the whole
+        # confirmation even though the page had been written.
         tldr_preview = summary.get("tldr", "")[:220]
-        await update.message.reply_text(
+        await reply(
+            update,
             f"✅ Saved to Notion!\n\n"
-            f"{TYPE_EMOJI.get(content_type, '📖')} *{final_title}*\n\n"
-            f"💡 {tldr_preview}",
-            parse_mode="Markdown",
+            f"{TYPE_EMOJI.get(content_type, '📖')} *{escape_md(final_title)}*\n\n"
+            f"💡 {escape_md(tldr_preview)}",
         )
     else:
         await update.message.reply_text(f"❌ Could not save to Notion: {result}")

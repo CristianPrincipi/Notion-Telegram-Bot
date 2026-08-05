@@ -18,6 +18,7 @@ from calendar_client import (
     find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
+from telegram_text import escape_md, reply
 from datetime import timedelta
 
 # Remind [Name] [DD.MM] - [HH.MM]
@@ -53,12 +54,12 @@ async def handle_remind(update, user_text: str):
     """Parse a Remind command, create the calendar event, confirm, and flag conflicts."""
     match = re.match(REMIND_PATTERN, user_text.strip())
     if not match:
-        await update.message.reply_text(
+        await reply(
+            update,
             "📅 *Reminder usage:*\n"
             "`Remind [Name] [Date] - [Time]`\n\n"
             "Example: `Remind Dentist 12.06 - 14.30`\n"
             "_Date is DD.MM, time is HH.MM in 24-hour format._",
-            parse_mode="Markdown",
         )
         return
 
@@ -72,7 +73,7 @@ async def handle_remind(update, user_text: str):
         await update.message.reply_text(f"❌ {err}")
         return
 
-    await update.message.reply_text(f"⏳ Adding *{name}* to your calendar…", parse_mode="Markdown")
+    await reply(update, f"⏳ Adding *{escape_md(name)}* to your calendar…")
 
     # Detect overlaps against the proposed slot BEFORE creating the event, so the
     # new event itself can't show up in the results. A failed check degrades
@@ -106,7 +107,7 @@ async def handle_remind(update, user_text: str):
     when = start_dt.strftime("%d.%m.%Y at %H:%M")
     msg = (
         f"✅ Reminder set!\n\n"
-        f"📅 *{name}*\n"
+        f"📅 *{escape_md(name)}*\n"
         f"🕐 {when}\n\n"
         f"You'll get a Telegram ping the day before and on the day, "
         f"plus Google's own alerts (1 day + 1 hour before)."
@@ -114,7 +115,7 @@ async def handle_remind(update, user_text: str):
     if start_dt.hour < 8:
         msg += "\n\n⚠️ This is before 08:00 — the morning ping arrives at 07:30, so for very early events rely on Google's 1-hour alert."
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await reply(update, msg)
 
     # Conflict heads-up — separate, plain text, only when there's a real overlap.
     if conflicts:

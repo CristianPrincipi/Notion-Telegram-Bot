@@ -23,6 +23,7 @@ import pytz
 from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
 from month import current_month_id
 from notion_client import query_database
+from telegram_text import escape_md
 
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
 
@@ -102,10 +103,15 @@ def compute_budget() -> dict | None:
 
 
 def format_budget(b: dict) -> str:
-    """Render the full monthly-budget recap — identical to the old `B` output."""
+    """Render the full monthly-budget recap — identical to the old `B` output.
+
+    Sent with parse_mode="Markdown" by both callers. The category names are
+    Notion multi_select values, so renaming one to "Food_2024" in Notion used to
+    break the entire recap — every command reporting a total, not just that row.
+    """
     lines = ["💰 **Monthly Budget**", "━━━━━━━━━━━━━━━"]
     for cat in sorted(b["per_category"], key=lambda c: b["per_category"][c], reverse=True):
-        lines.append(f"**{cat}: €{b['per_category'][cat]:.2f}**")
+        lines.append(f"**{escape_md(cat)}: €{b['per_category'][cat]:.2f}**")
     lines.append("━━━━━━━━━━━━━━━")
     lines.append(f"**Spent: €{b['total']:.2f}**")
     lines.append(f"**Remaining: €{b['remaining']:.2f}** (of €{b['ceiling']:.0f})")

@@ -25,6 +25,7 @@ from config import (
 from proactive.briefing import build_morning_briefing, build_evening_briefing
 from proactive.budget_watch import build_pacing_warning
 from proactive.month_rollover import build_rollover_message
+from telegram_text import send
 
 _TZ = pytz.timezone(PROACTIVE_TIMEZONE)
 
@@ -95,10 +96,14 @@ async def _month_rollover_job(context: ContextTypes.DEFAULT_TYPE):
         text = await asyncio.to_thread(build_rollover_message)
         if text:  # only on the night the month actually turns, or on a failure
             # Markdown, unlike the briefings: the message carries a Notion page
-            # ID and backticks make it one tap to copy. Nothing user-written is
-            # interpolated into it, so there are no stray _ * ` to break parsing.
-            await context.bot.send_message(
-                chat_id=context.job.chat_id, text=text, parse_mode="Markdown")
+            # ID and backticks make it one tap to copy.
+            #
+            # The old comment here claimed nothing user-written is interpolated.
+            # That held only for the success path — format_rollover's ERROR branch
+            # interpolates a raw Notion error string, so the rollover failure
+            # notice was the message most likely to be rejected. month.py escapes
+            # it now, and send() retries plain if anything still slips through.
+            await send(context.bot, context.job.chat_id, text)
     except Exception as e:
         await _report_error(context, "month_rollover", e)
 

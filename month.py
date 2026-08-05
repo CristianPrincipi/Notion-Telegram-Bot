@@ -68,6 +68,7 @@ from config import EXPENSE_MONTH_RELATION
 from notion_client import (
     create_page, get_database, get_page_title, query_database, rich, update_page,
 )
+from telegram_text import escape_md, reply
 
 logger = logging.getLogger(__name__)
 
@@ -421,13 +422,20 @@ def current_month_id() -> str | None:
 def format_rollover(result: Rollover) -> str:
     """The Telegram message for a run — used by the job and the `Month` command.
 
-    Markdown is safe here: the only interpolated values are a month name, a year,
-    a Notion UUID and David's own wording. The page ID is in backticks so it is
-    one tap to copy into Railway.
+    Sent with parse_mode="Markdown" by both callers.
+
+    On the SUCCESS path the interpolated values are David's own: a month name, a
+    year and a Notion UUID. The page ID is in backticks so it is one tap to copy
+    into Railway.
+
+    The ERROR path is a different matter, and this docstring used to claim it was
+    safe when it was not: result.error is a raw Notion string like
+    "Notion 400: body.properties.rich_text should be defined", whose underscores
+    made the whole failure notice unsendable. It is escaped.
     """
     if result.error:
         return (f"⚠️ Could not update the monthly expenses page ({canonical_title()}):\n"
-                f"{result.error}")
+                f"{escape_md(result.error)}")
 
     detail = {
         CREATED:   "Created it — new expenses relate to it from now on.",
@@ -453,4 +461,4 @@ async def handle_month(update):
     """
     await update.message.reply_text("🗓️ Checking the monthly expenses page…")
     result = await asyncio.to_thread(ensure_current_month_page)
-    await update.message.reply_text(format_rollover(result), parse_mode="Markdown")
+    await reply(update, format_rollover(result))

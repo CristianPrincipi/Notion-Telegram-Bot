@@ -45,6 +45,7 @@ import re
 from anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
+from telegram_text import escape_md, reply
 from notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
     delete_block, create_page, get_page_title, update_page, extract_rich_text,
@@ -584,13 +585,13 @@ async def handle_implement(update, user_text: str):
 
     match = re.match(r"(?i)implement\s+(.+?)\s*-\s*(.+)", user_text.strip())
     if not match:
-        await update.message.reply_text(
+        await reply(
+            update,
             "🔧 *Implement command usage:*\n"
             "`Implement [Page Name] - [Target Area]`\n\n"
             "Example: `Implement Memory Techniques - Brain`\n\n"
             "The page must exist in your Learn database.\n"
             "The target area must have `AREA_[NAME]_ID` set on Railway.",
-            parse_mode="Markdown",
         )
         return
 
@@ -606,25 +607,23 @@ async def handle_implement(update, user_text: str):
     area_db_id = get_area_db_id(area_name)
     if not area_db_id:
         env_key = f"{area_name.upper().replace(' ', '_')}_ID"
-        await update.message.reply_text(
-            f"❌ Area *{area_name}* is not configured.\n"
+        await reply(
+            update,
+            f"❌ Area *{escape_md(area_name)}* is not configured.\n"
             f"Add `{env_key}` to your Railway environment variables,\n"
             f"pointing to the Notion database ID for that area.",
-            parse_mode="Markdown",
         )
         return
 
     # ── Step A: Retrieve source page from Learn DB ─────────────────────────────
-    await update.message.reply_text(
-        f"🔍 Searching for *{page_name}* in Learn database…", parse_mode="Markdown"
-    )
+    await reply(update, f"🔍 Searching for *{escape_md(page_name)}* in Learn database…")
 
     source_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, page_name)
     if err:
-        await update.message.reply_text(
-            f"❌ Could not find *{page_name}* in your Learn database.\n\n"
+        await reply(
+            update,
+            f"❌ Could not find *{escape_md(page_name)}* in your Learn database.\n\n"
             f"Make sure you used `Learn` to save it first, and that the title matches.",
-            parse_mode="Markdown",
         )
         return
 
@@ -646,9 +645,7 @@ async def handle_implement(update, user_text: str):
     # if it was computed from a Manual nobody else is mutating.
     try:
         async with page_lock(area_db_id):
-            await update.message.reply_text(
-                f"📂 Looking for Manual in *{area_name}*…", parse_mode="Markdown"
-            )
+            await reply(update, f"📂 Looking for Manual in *{escape_md(area_name)}*…")
             manual_page, _ = await asyncio.to_thread(
                 search_page_in_db, area_db_id, "Manual", exact=True)
 
@@ -661,10 +658,10 @@ async def handle_implement(update, user_text: str):
             if not done:
                 return
     except PageBusy:
-        await update.message.reply_text(
-            f"⏳ An update to the *{area_name}* Manual is already in progress.\n"
+        await reply(
+            update,
+            f"⏳ An update to the *{escape_md(area_name)}* Manual is already in progress.\n"
             "Wait for it to finish, then try again.",
-            parse_mode="Markdown",
         )
         return
 
@@ -698,14 +695,15 @@ async def _first_run(update, area_db_id, area_name, page_name, source_text, sour
         await update.message.reply_text(f"❌ Could not create Manual page: {err}")
         return False
 
-    await update.message.reply_text(
+    # manual['title'] is Claude's, source_title is Notion's — both escaped.
+    await reply(
+        update,
         f"✅ Manual created ✨\n\n"
-        f"📋 *{manual.get('title', 'Manual')}*\n"
-        f"📍 Area: {area_name}\n\n"
+        f"📋 *{escape_md(manual.get('title', 'Manual'))}*\n"
+        f"📍 Area: {escape_md(area_name)}\n\n"
         f"⚙️ {len(manual.get('routine', []))} process steps\n"
         f"🚀 {len(manual.get('improvements', []))} improvements\n\n"
-        f"_Source used: {source_title}_",
-        parse_mode="Markdown",
+        f"_Source used: {escape_md(source_title)}_",
     )
     return True
 
@@ -747,10 +745,10 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
     new_steps = [s for s in routing.get("new_steps", []) if s.get("name")]
 
     if not affected and not new_steps:
-        await update.message.reply_text(
-            f"ℹ️ *{page_name}* doesn't map to anything in the *{area_name}* Manual — "
-            "nothing was changed.",
-            parse_mode="Markdown",
+        await reply(
+            update,
+            f"ℹ️ *{escape_md(page_name)}* doesn't map to anything in the "
+            f"*{escape_md(area_name)}* Manual — nothing was changed.",
         )
         return True
 
@@ -768,8 +766,7 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
         )
         return True
 
-    await update.message.reply_text(_format_plan(affected, new_steps, len(sections)),
-                                    parse_mode="Markdown")
+    await reply(update, _format_plan(affected, new_steps, len(sections)))
 
     # ── Merge: only the affected sections ──────────────────────────────────────
     try:
@@ -792,26 +789,34 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
         apply_section_updates, manual_page_id, merged.get("updates", []), sections, new_paths)
 
     msg = (f"✅ Manual updated 🔄\n\n"
-           f"📍 Area: {area_name}\n"
+           f"📍 Area: {escape_md(area_name)}\n"
            f"✏️ *{applied}* of {len(sections)} section(s) rewritten — the rest were never "
            f"sent to Claude, so they are untouched.\n\n"
-           f"_Source used: {source_title}_")
+           f"_Source used: {escape_md(source_title)}_")
     if skipped:
         # A skipped section is genuinely unchanged: its append failed, so the
-        # delete never ran and its previous content is still there.
+        # delete never ran and its previous content is still there. Each entry is
+        # "path (notion error)", so both halves need escaping.
         msg += ("\n\n⚠️ Skipped — these are unchanged:\n"
-                + "\n".join(f"• {s}" for s in skipped[:8]))
-    await update.message.reply_text(msg, parse_mode="Markdown")
+                + "\n".join(f"• {escape_md(s)}" for s in skipped[:8]))
+    await reply(update, msg)
     return True
 
 
 def _format_plan(affected: list, new_steps: list, total: int) -> str:
-    """What is about to change, sent before anything is written."""
+    """What is about to change, sent before anything is written.
+
+    Every interpolated value is Claude's: the section paths it chose and the free-
+    form `why` it wrote for each. Escaped here rather than at the send site so the
+    function stays safe wherever it is sent from.
+    """
     lines = [f"📋 *Plan* — {len(affected) + len(new_steps)} of {total} sections\n"]
     for item in affected:
         why = item.get("why", "")
-        lines.append(f"♻️ {item['path']}" + (f" — _{why}_" if why else ""))
+        lines.append(f"♻️ {escape_md(item['path'])}"
+                     + (f" — _{escape_md(why)}_" if why else ""))
     for step in new_steps:
         why = step.get("why", "")
-        lines.append(f"🆕 {STEPS_SECTION} > {step['name']}" + (f" — _{why}_" if why else ""))
+        lines.append(f"🆕 {STEPS_SECTION} > {escape_md(step['name'])}"
+                     + (f" — _{escape_md(why)}_" if why else ""))
     return "\n".join(lines)

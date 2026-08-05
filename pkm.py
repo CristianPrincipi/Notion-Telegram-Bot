@@ -28,6 +28,7 @@ from difflib import SequenceMatcher
 
 from notion_client import get_children, search_page_in_db, extract_rich_text
 from implement import get_area_db_id
+from telegram_text import escape_md, reply
 
 
 # ─── COMMAND PARSING ───────────────────────────────────────────────────────────
@@ -239,14 +240,14 @@ async def handle_get(update, user_text: str):
     """Entry point from david.py for:  Get [Argument] - [Area]"""
     m = re.match(GET_PATTERN, user_text.strip())
     if not m:
-        await update.message.reply_text(
+        await reply(
+            update,
             "🔎 *Get usage:*\n"
             "`Get [Topic] - [Area]`\n\n"
             "Examples:\n"
             "`Get Perfect Process - Brain`\n"
             "`Get Active Recall - Brain`\n"
             "`Get ? - Brain`  _(list all topics)_",
-            parse_mode="Markdown",
         )
         return
 
@@ -257,10 +258,10 @@ async def handle_get(update, user_text: str):
     db_id = get_area_db_id(area)
     if not db_id:
         env_key = f"{area.upper().replace(' ', '_')}_ID"
-        await update.message.reply_text(
-            f"❌ Area *{area}* isn't configured.\n"
+        await reply(
+            update,
+            f"❌ Area *{escape_md(area)}* isn't configured.\n"
             f"Set `{env_key}` on Railway to that area's Notion database ID.",
-            parse_mode="Markdown",
         )
         return
 
@@ -270,21 +271,25 @@ async def handle_get(update, user_text: str):
     page_title = _manual_title_for(area)
     page, perr = await asyncio.to_thread(search_page_in_db, db_id, page_title, True)
     if not page:
-        await update.message.reply_text(
-            f"❌ No *{page_title}* page found in the *{area}* database."
-            + (f"\n`{perr}`" if perr and "No page found" not in perr else ""),
-            parse_mode="Markdown",
+        await reply(
+            update,
+            f"❌ No *{escape_md(page_title)}* page found in the *{escape_md(area)}* database.",
         )
+        # The Notion detail goes out as a SEPARATE plain message: it used to sit in
+        # a `code span`, where Markdown v1 ignores backslash escapes, so escaping
+        # cannot make it safe — only sending it unformatted can.
+        if perr and "No page found" not in perr:
+            await update.message.reply_text(perr)
         return
 
-    await update.message.reply_text(f"🔎 Searching the *{area}* manual…", parse_mode="Markdown")
+    await reply(update, f"🔎 Searching the *{escape_md(area)}* manual…")
 
     index, err = await asyncio.to_thread(build_index, page["id"])
     if err:
         await update.message.reply_text(f"❌ Could not read the manual: {err}")
         return
     if not index:
-        await update.message.reply_text(f"ℹ️ The *{area}* manual has no sections yet.", parse_mode="Markdown")
+        await reply(update, f"ℹ️ The *{escape_md(area)}* manual has no sections yet.")
         return
 
     # Discovery mode
@@ -309,13 +314,13 @@ async def handle_get(update, user_text: str):
     # Multiple confident hits, or several moderate → disambiguation list
     candidates = strong or moderate
     if len(candidates) > 1:
-        lines = [f"🤔 Multiple matches for *{argument}* in *{area}*:", ""]
+        lines = [f"🤔 Multiple matches for *{escape_md(argument)}* in *{escape_md(area)}*:", ""]
         for e in candidates[:8]:
             kind = "Section" if e["level"] <= 2 else "Subsection"
-            lines.append(f"• {_clean_title(e['title'])}  ({kind})")
+            lines.append(f"• {escape_md(_clean_title(e['title']))}  ({kind})")
         lines += ["", "Repeat with the exact name, e.g.:",
                   f"`Get {_clean_title(candidates[0]['title'])} - {area}`"]
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await reply(update, "\n".join(lines))
         return
 
     # A single moderate match → return it
@@ -324,9 +329,7 @@ async def handle_get(update, user_text: str):
         return
 
     # Nothing close → not found + the full topic tree to help
-    await update.message.reply_text(
-        f"❌ No topic matching *{argument}* in the *{area}* manual.", parse_mode="Markdown"
-    )
+    await reply(update, f"❌ No topic matching *{escape_md(argument)}* in the *{escape_md(area)}* manual.")
     await _send_long(update, _build_topic_tree(index, area))
 
 

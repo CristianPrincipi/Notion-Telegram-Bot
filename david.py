@@ -26,6 +26,7 @@ from notion_client import notion_request, query_database
 from pkm import handle_get
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from proactive.scheduler import register_all
+from telegram_text import escape_md, reply, send
 
 # Configured at import so config.validate() can still be the first statement in
 # __main__ and have somewhere to send its warnings.
@@ -450,7 +451,7 @@ async def send_budget_recap(context: ContextTypes.DEFAULT_TYPE):
     try:
         result_text = await asyncio.to_thread(budget)
         if result_text:
-            await context.bot.send_message(chat_id=CHAT_ID, text=result_text, parse_mode='Markdown')
+            await send(context.bot, CHAT_ID, result_text)
         else:
             await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
     except Exception as e:
@@ -615,7 +616,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
-        await update.message.reply_text(
+        await reply(
+            update,
             "📖 *ADD BOOK*\n"
             "`Add b [Name] - [Author] - [Genre]`\n"
             "_Genres: s · h · m · p · a · ph_\n\n"
@@ -647,7 +649,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔎 *GET*\n"
             "`Get [Topic] - [Area]`\n"
             "`Get ? - [Area]`  _(list every topic)_",
-            parse_mode="Markdown",
         )
         return
 
@@ -655,7 +656,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if re.fullmatch(r"(?i)B", user_text):
         result_text = await asyncio.to_thread(budget)
         if result_text:
-            await update.message.reply_text(result_text, parse_mode='Markdown')
+            # format_budget escapes the Notion category names it interpolates.
+            await reply(update, result_text)
         else:
             await update.message.reply_text("❌ Error: Could not calculate budget.")
         return
@@ -747,10 +749,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- PDF EXTRACTION MODE: attach PDF with this caption instead ---
         if " / " in quote_content:
-            await update.message.reply_text(
+            await reply(
+                update,
                 "📎 To extract a quote from a PDF, *attach the PDF file* and use it as the caption:\n\n"
                 "`Add q [Book] - [Title] - [Begin text] / [End text]`",
-                parse_mode="Markdown",
             )
             return
 
@@ -979,11 +981,13 @@ async def _quote_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(f"❌ {err}")
         return
 
-    # Preview
+    # Preview. This is raw text sliced out of an uploaded PDF at an arbitrary
+    # 300-character boundary and dropped inside italic markers — the single most
+    # likely value in the whole bot to contain a stray _ * ` or [.
     preview = quote_content[:300] + ("..." if len(quote_content) > 300 else "")
-    await update.message.reply_text(
-        f"📖 *Extracted* ({len(quote_content)} chars):\n\n_{preview}_",
-        parse_mode="Markdown",
+    await reply(
+        update,
+        f"📖 *Extracted* ({len(quote_content)} chars):\n\n_{escape_md(preview)}_",
     )
 
     # Save to Notion
@@ -1039,11 +1043,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Unknown caption ────────────────────────────────────────────────────────
-    await update.message.reply_text(
+    await reply(
+        update,
         "📎 File received. Supported captions:\n\n"
         "`Learn pdf` — summarise and save to Learn DB\n"
         "`Add q [Book] - [Title] - [Begin] / [End]` — extract quote from this PDF",
-        parse_mode="Markdown",
     )
 
 
