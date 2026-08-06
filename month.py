@@ -102,17 +102,52 @@ UNCHANGED = "unchanged"   # already pointing at it — nothing was written
 
 
 class Rollover(NamedTuple):
-    """The outcome of one `ensure_current_month_page()` run."""
+    """The outcome of one `ensure_current_month_page()` run.
+
+    `period` is the month this run resolved ("2026-08"); `from_period` is the
+    month David was pointing at when the run started, or None if it did not know
+    yet. The pair is what separates a real rollover from a re-resolution of the
+    month David is already on — see `rolled_over`.
+    """
 
     page_id: str | None
     title: str
     action: str
     error: str | None = None
+    period: str | None = None
+    from_period: str | None = None
 
     @property
     def changed(self) -> bool:
-        """True when this run actually moved something (so it is worth a ping)."""
+        """True when this run WROTE something — created, renamed, or repointed.
+
+        The headline predicate, not the notification one. A restart re-resolves
+        the same month from Notion and lands on ADOPTED, which is `changed`
+        (the pointer did move, from the seed to the resolved page) but is not a
+        rollover.
+        """
         return self.error is None and self.action != UNCHANGED
+
+    @property
+    def rolled_over(self) -> bool:
+        """True when this run moved David onto a month it was not already on.
+
+        THE PREDICATE THE NIGHTLY JOB NOTIFIES ON, and the reason `changed` is not.
+        `changed` is true of any run that wrote to Notion, including the ADOPTED
+        every fresh container produces: Railway's filesystem is ephemeral, so
+        `.month_state.json` dies with each deploy and the next run re-resolves the
+        current month from Notion and adopts the page it finds. That is correct
+        behaviour and worth logging — it is not worth a Telegram message, and
+        sending one meant a "✅ Monthly expenses page updated" on days David had
+        simply been restarted.
+
+        Comparing PERIODS instead of pages makes the message say what it claims:
+        the month moved. In a healthy deploy that is the 1st and only the 1st. If
+        David was down over the 1st, it is the first day it came back — which is
+        precisely the run you want to hear about, and is why this is a period
+        comparison rather than a `now_local().day == 1` check.
+        """
+        return self.error is None and self.period != self.from_period
 
 
 # ─── NAMING ────────────────────────────────────────────────────────────────────
@@ -336,9 +371,21 @@ def ensure_current_month_page(when=None) -> Rollover:
     period = period_key(when)
 
     with _lock:
+        # Read BEFORE anything resolves or _remember() overwrites it: this is the
+        # month David was on when the run started, and the only way a later reader
+        # can tell "the month moved" from "the same month was re-resolved after a
+        # restart". See Rollover.rolled_over.
+        from_period = _state["period"]
+
+        def outcome(page_id, action, error=None) -> Rollover:
+            return Rollover(page_id, title, action, error, period, from_period)
+
         def failed(error: str) -> Rollover:
             logger.error("Month rollover to %s failed: %s", title, error)
-            return Rollover(_state["page_id"], _state["title"], UNCHANGED, error)
+            # from_period on both sides: a failed run moved nothing, so it must
+            # not read as a rollover even if the clock says the month turned.
+            return Rollover(_state["page_id"], _state["title"], UNCHANGED, error,
+                            from_period, from_period)
 
         db_id, title_prop, err = _months_database()
         if err:
@@ -359,7 +406,7 @@ def ensure_current_month_page(when=None) -> Rollover:
                 return failed(f"Could not create the '{title}' page: {err}")
             logger.info("Created the month page '%s' (%s).", title, page_id)
             _remember(period, page_id, title)
-            return Rollover(page_id, title, CREATED)
+            return outcome(page_id, CREATED)
 
         page_id  = page["id"]
         existing = get_page_title(page)
@@ -373,16 +420,16 @@ def ensure_current_month_page(when=None) -> Rollover:
                 return failed(f"Could not rename '{existing}' to '{title}': {err}")
             logger.info("Renamed the month page '%s' to '%s' (%s).", existing, title, page_id)
             _remember(period, page_id, title)
-            return Rollover(page_id, title, RENAMED)
+            return outcome(page_id, RENAMED)
 
         # ── Already correct ────────────────────────────────────────────────────
         if _state["period"] == period and _state["page_id"] == page_id:
             logger.info("Month page '%s' (%s) is already current.", title, page_id)
-            return Rollover(page_id, title, UNCHANGED)
+            return outcome(page_id, UNCHANGED)
 
         logger.info("Month page '%s' (%s) adopted.", title, page_id)
         _remember(period, page_id, title)
-        return Rollover(page_id, title, ADOPTED)
+        return outcome(page_id, ADOPTED)
 
 
 def current_month_id() -> str | None:

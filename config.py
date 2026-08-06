@@ -165,10 +165,10 @@ BUDGET_PACING_THRESHOLD_PCT = 0.05   # only warn if projected to exceed the ceil
 # Month Rollover — points the expense month at the new month's Notion page on the
 # 1st, creating or renaming that page if needed (see month.py).
 #
-# 00:05 local, and DAILY rather than monthly. The period only changes on the 1st,
-# so on every other day the job finds the state already correct and stays silent;
-# running it daily is what makes a FAILED or MISSED rollover retry tomorrow
-# instead of waiting a month for the next firing.
+# 00:05 local, and DAILY rather than monthly: running it daily is what makes a
+# FAILED or MISSED rollover retry tomorrow instead of waiting a month for the next
+# firing. The job RUNS every night; it only SPEAKS when the run lands on a month
+# David was not already on — see Rollover.rolled_over in month.py.
 #
 # 00:05 is also chosen to sit clear of Europe/Rome's DST switches (02:00→03:00 in
 # March, 03:00→02:00 in October): a job scheduled inside that hour is either
@@ -185,7 +185,7 @@ MONTH_ROLLOVER_MINUTE = 5
 #
 # Sunday 20:30: late enough to sit clear of the 20:00 daily evening briefing, and
 # on a weekday you have a weekly rhythm for, so an absence is noticeable.
-HEARTBEAT_DAY    = 0   # SUNDAY — see the weekday constants above
+HEARTBEAT_DAY    = SUNDAY
 HEARTBEAT_HOUR   = 20
 HEARTBEAT_MINUTE = 30
 

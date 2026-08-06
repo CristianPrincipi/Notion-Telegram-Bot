@@ -9,7 +9,7 @@ Each test asserts the CORRECT behaviour, so on current main it fails. The test
 name says what should happen; the docstring says what happens instead today.
 """
 
-import inspect
+import pathlib
 import re
 from datetime import datetime, timezone
 
@@ -21,6 +21,7 @@ from telegram.ext import ApplicationBuilder
 
 import budget as budget_module
 import calendar_client
+import config
 import david
 from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run
 
@@ -214,6 +215,22 @@ def test_the_recap_job_is_not_called_weekly():
     assert hasattr(david, "send_budget_recap")
 
 
+def _bare_weekday_integers(path):
+    """Every `days=(...)` in a file that spells a weekday as a literal integer.
+
+    Returns [(line, arg)]. Textual on purpose: the whole point of the convention
+    is what the next reader SEES, and both spellings are the same object at
+    runtime.
+    """
+    source = path.read_text(encoding="utf-8")
+    offenders = []
+    for match in re.finditer(r"days=\(([^)]*)\)", source):
+        arg = match.group(1)
+        if any(token.strip().isdigit() for token in arg.split(",")):
+            offenders.append((source[:match.start()].count("\n") + 1, arg))
+    return offenders
+
+
 def test_weekdays_are_named_not_bare_integers():
     """A bare `days=(6, 0)` is exactly how the original bug survived review.
 
@@ -222,15 +239,71 @@ def test_weekdays_are_named_not_bare_integers():
     apart. This is deliberately a convention test — the entire value of the
     constant is that the next reader sees a weekday name instead of an integer
     whose meaning changed between library versions.
-    """
-    source = inspect.getsource(david.register_jobs)
-    days_args = re.findall(r"days=\(([^)]*)\)", source)
 
-    assert days_args, "no days= argument found in register_jobs"
-    for arg in days_args:
-        for token in (t.strip() for t in arg.split(",")):
-            assert not token.isdigit(), (
-                f"bare integer {token!r} in days=({arg}) — use a named weekday")
+    SCANS THE WHOLE REPO, not just david.register_jobs. It used to inspect that
+    one function, so when scheduling moved into proactive/scheduler.py the guard
+    kept passing over a call site it could not see, and `HEARTBEAT_DAY = 0` shipped
+    with a comment naming the day the constant should have. Same blind spot
+    test_concurrency.test_every_locking_module_is_actually_checked exists to close
+    for page_lock: a guard that only looks where the bug WAS is not a guard.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    sources = list(root.glob("*.py")) + list((root / "proactive").glob("*.py"))
+
+    offenders = [f"{path.name}:{line}: days=({arg})"
+                 for path in sources for line, arg in _bare_weekday_integers(path)]
+
+    assert offenders == [], (
+        "bare weekday integers — use config.SUNDAY … config.SATURDAY:\n"
+        + "\n".join(offenders))
+
+    assert any("days=(" in path.read_text(encoding="utf-8") for path in sources), (
+        "no days= argument anywhere — the guard is scanning the wrong files")
+
+
+def test_the_weekday_guard_can_actually_detect_an_offender(tmp_path):
+    """A guard that cannot fail is not a guard — and this one silently could not
+    for as long as it inspected a single function."""
+    offender = tmp_path / "bad.py"
+    offender.write_text("jq.run_daily(job, time=t, days=(0,))\n", encoding="utf-8")
+
+    assert _bare_weekday_integers(offender) == [(1, "0,")]
+
+
+WEEKDAY_NAMES = ("SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY",
+                 "THURSDAY", "FRIDAY", "SATURDAY")
+
+
+def test_every_constant_that_reaches_days_is_a_named_weekday():
+    """The scan above cannot see a bare integer hidden behind a constant.
+
+    `days=(HEARTBEAT_DAY,)` reads as a name at the call site while
+    `HEARTBEAT_DAY = 0` sat in config.py — which is how it shipped: the integer
+    moved one file away instead of going away, carrying a `# SUNDAY` comment, the
+    same kind of comment that made the recap fire on the wrong days for months.
+
+    Follows the names FROM the call sites rather than matching on a `_DAY`
+    suffix: BUDGET_PACING_MIN_DAY is a day of the MONTH and has nothing to do
+    with this, and a guard that cannot tell those apart gets loosened until it
+    stops guarding.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    sources = list(root.glob("*.py")) + list((root / "proactive").glob("*.py"))
+
+    names = set()
+    for path in sources:
+        for arg in re.findall(r"days=\(([^)]*)\)", path.read_text(encoding="utf-8")):
+            names.update(t.strip() for t in arg.split(",") if t.strip().isidentifier())
+
+    assert names, "no names reach days= — is the guard scanning the right files?"
+
+    config_source = pathlib.Path(config.__file__).read_text(encoding="utf-8")
+    for name in sorted(names - set(WEEKDAY_NAMES)):
+        value = re.search(rf"^{name}\s*=\s*([^#\n]+)", config_source, re.MULTILINE)
+        assert value, f"{name} reaches days= but is not defined in config.py"
+        assert value.group(1).strip() in WEEKDAY_NAMES, (
+            f"config.{name} = {value.group(1).strip()} — use a named weekday, "
+            "not a literal")
 
 
 # ─── BUG 5: PARSING ────────────────────────────────────────────────────────────
