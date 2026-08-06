@@ -84,9 +84,18 @@ class FakeExpenses:
 
 @pytest.fixture
 def expenses(monkeypatch):
-    fake = FakeExpenses(["exp-1", "exp-2"])
+    """ONE matching row, which is what leaves the race reachable.
+
+    Two identically-named rows no longer race: `D e Carrefour` refuses to guess
+    between them and waits for a number, so no write happens concurrently at all
+    (tests/test_expense_safety.py drives that path). With a single match the
+    command still runs find-then-mutate end to end, which is exactly the span
+    the lock has to cover.
+    """
+    fake = FakeExpenses(["exp-1"])
     monkeypatch.setattr(david, "query_database", fake.query_database)
     monkeypatch.setattr(david, "notion_request", fake.notion_request)
+    monkeypatch.setattr(david, "current_month_id", lambda: "month-page-id")
     return fake
 
 
@@ -95,16 +104,19 @@ def send(text):
     return david.handle_message(update, FakeContext()), update
 
 
-def test_two_overlapping_deletes_remove_two_different_rows(expenses):
-    """THE expense race.
+def test_the_second_of_two_overlapping_deletes_sees_the_first(expenses):
+    """THE expense race, in the shape it now takes.
 
-    `D e Carrefour` is find-then-mutate: query by name, take results[0], archive
-    it. Overlap two of them and both queries run before either archive, so both
-    resolve to the SAME page and both archive it. You are told "deleted
-    successfully" twice and the second row is still sitting there.
+    `D e Carrefour` is still find-then-mutate: query the month for the name,
+    then archive what came back. Overlap two of them and both queries run before
+    either archive, so both resolve to the SAME row, both archive it, and you are
+    told "Deleted" twice for one expense — the second reporting a deletion it did
+    not perform.
 
-    Run one after the other, two deletes remove two rows. That is the outcome
-    the lock has to reproduce.
+    Run one after the other and the second query no longer sees the archived row,
+    so it correctly reports nothing to delete. That is the outcome the lock has to
+    reproduce, and it is only reproducible because the LOOKUP is inside the lock
+    too: covering the write alone leaves both queries free to overlap.
     """
     async def main():
         first, u1 = send("D e Carrefour")
@@ -114,10 +126,16 @@ def test_two_overlapping_deletes_remove_two_different_rows(expenses):
 
     u1, u2 = run(main())
 
-    assert expenses.archived == ["exp-1", "exp-2"], (
-        f"archived {expenses.archived} — the same row was deleted twice")
-    assert u1.message.replied_with("deleted successfully")
-    assert u2.message.replied_with("deleted successfully")
+    assert expenses.archived == ["exp-1"], (
+        f"archived {expenses.archived} — the one row was deleted twice")
+
+    outcomes = sorted(
+        "deleted" if u.message.replied_with("🗑️ Deleted") else
+        "not-found" if u.message.replied_with("no expense matching") else "other"
+        for u in (u1, u2)
+    )
+    assert outcomes == ["deleted", "not-found"], (
+        f"got {outcomes} — both runs claimed the same row")
 
 
 @pytest.mark.parametrize("commands", [
@@ -125,13 +143,14 @@ def test_two_overlapping_deletes_remove_two_different_rows(expenses):
     ("U e Carrefour 5", "U e Carrefour 9"),
     ("U e Carrefour 5", "D e Carrefour"),
 ], ids=["delete+delete", "update+update", "update+delete"])
-def test_no_two_expense_writes_are_ever_in_flight_together(expenses, monkeypatch, commands):
+def test_no_two_expense_cycles_are_ever_in_flight_together(expenses, monkeypatch, commands):
     """The invariant the lock exists to hold, asserted directly.
 
-    Each of these is a find-then-mutate spanning two round trips. What makes
-    them safe is that no second one may be anywhere inside that span, whichever
-    pair overlaps — so this counts occupancy rather than checking one specific
-    corrupted outcome.
+    Counts occupancy across the WHOLE cycle — the lookup and the write — rather
+    than the write alone. Splitting find-then-mutate into two functions made it
+    possible to lock only the second half, which reads as safe (no two writes
+    overlap) while leaving the two queries free to resolve to the same row. That
+    is the bug this now catches.
     """
     state = {"inside": 0, "peak": 0}
 
@@ -145,6 +164,9 @@ def test_no_two_expense_writes_are_ever_in_flight_together(expenses, monkeypatch
                 state["inside"] -= 1
         return wrapper
 
+    # find_expense_matches is tracked too: it is the "find" half of the cycle,
+    # and a second one starting before the first's write is the whole race.
+    monkeypatch.setattr(david, "find_expense_matches", tracked(david.find_expense_matches))
     monkeypatch.setattr(david, "update_Expense", tracked(david.update_Expense))
     monkeypatch.setattr(david, "delete_Expense", tracked(david.delete_Expense))
 
@@ -156,7 +178,7 @@ def test_no_two_expense_writes_are_ever_in_flight_together(expenses, monkeypatch
     run(main())
 
     assert state["peak"] == 1, (
-        f"{state['peak']} expense writes were inside their find-then-mutate at once")
+        f"{state['peak']} expense operations were inside their find-then-mutate at once")
 
 
 def test_adding_an_expense_is_not_blocked_by_an_update(expenses):
@@ -275,8 +297,10 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(david, "add_Quote", lambda *a: True)
     monkeypatch.setattr(david, "budget", lambda: "TOTAL")
     monkeypatch.setattr(david, "add_Expenses", lambda *a: True)
-    monkeypatch.setattr(david, "update_Expense", lambda *a: (True, "exp-1"))
-    monkeypatch.setattr(david, "delete_Expense", lambda *a: (True, "exp-1"))
+    monkeypatch.setattr(david, "find_expense_matches",
+                        lambda name: ([{"id": "exp-1", "properties": {}}], None))
+    monkeypatch.setattr(david, "update_Expense", lambda *a: (True, None))
+    monkeypatch.setattr(david, "delete_Expense", lambda *a: (True, None))
     monkeypatch.setattr(david, "add_New_Book", lambda *a: "book-1")
 
 

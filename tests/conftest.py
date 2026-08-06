@@ -177,3 +177,8 @@ class FakeContext:
     def __init__(self, file=None):
         self.bot = FakeBot(file=file)
         self.application = FakeApplication()
+        # A plain dict, exactly as python-telegram-bot provides it. The pending
+        # expense choice and the undo record live here, so a test that drives
+        # two messages of one conversation must pass the SAME context to both —
+        # a fresh FakeContext per message is a different user's memory.
+        self.user_data = {}

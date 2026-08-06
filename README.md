@@ -33,11 +33,11 @@ fine without them and loses the feature named below.
 | `CHAT_ID` | **Required** | Telegram chat that receives scheduled briefings and error reports. |
 | `NOTION_KEY` | **Required** | Notion internal integration secret. |
 | `EXPENSES_ID` | **Required** | Notion Expenses database ID. |
-| `MONTH_ID` | **Required** | Notion page ID of the current month; expenses relate to it. **Seed value only** — David rolls it forward itself (see [Monthly rollover](#monthly-rollover)). |
 | `LETTI_ID` | **Required** | Notion Books ("Letti") database ID. |
 | `LITERATURE_ID` | **Required** | Notion page ID of the Literature area; books relate to it. |
 | `LEARN_ID` | **Required** | Notion Learn database ID for videos, articles, podcasts and PDFs. |
 | `ANTHROPIC_API_KEY` | **Required** | Anthropic API key used to summarise Learn and Implement content. |
+| `MONTH_ID` | Optional | Notion page ID of the current month; expenses relate to it. **Seed value only** — David resolves and rolls it forward itself (see [Monthly rollover](#monthly-rollover)). Unset, the first run of a fresh container resolves it from Notion instead. |
 | `SUPADATA_KEY` | Optional | Supadata API key for YouTube transcripts. Without it, `Learn video` fails. |
 | `GOOGLE_CREDENTIALS_JSON` | Optional | Service-account JSON for Google Calendar. Without it, reminders fail. |
 | `GOOGLE_CALENDAR_ID` | Optional | Target calendar. Defaults to `primary`. |
@@ -66,8 +66,9 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Add q [Book] - [Title] - [Quote]` | Add a quote to a book |
 | `Add q [Book] - [Title] - [Begin] / [End]` | Extract a quote from an attached PDF (send as the file's caption) |
 | `Add e [Name] [Amount] [Category]` | Add an expense. Categories: `s` `f` `g` `o` (default `f`) |
-| `U e [Name] [Amount] [Category]` | Update an expense |
-| `D e [Name]` | Delete (archive) an expense |
+| `U e [Name] [Amount] [Category]` | Update an expense. **This month only**; several matches → numbered list, reply with a number |
+| `D e [Name]` | Delete (archive) an expense. Same disambiguation as `U e` |
+| `undo` | Reverse the last delete or update |
 | `B` | Monthly budget recap |
 | `Month` | Force the monthly page rollover now and report the page ID |
 | `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event |
@@ -75,6 +76,37 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
 | `Diag` / `Find [name]` / `DBs` | Notion ID diagnostics |
+
+### Deleting and updating an expense
+
+`U e` and `D e` find a row by name and then change it, and both used to act on
+whichever match Notion returned first. Notion documents no ordering for query
+results, so with two Coffees on the page the row that changed was arbitrary —
+and the reply said "deleted successfully" either way. Three things now stand
+between a command and the wrong row:
+
+| | |
+| --- | --- |
+| Ordering | Every lookup sorts `created_time` **descending**, so "the first match" means the most recent one, the same way on every call |
+| Scope | The search covers **this month only** — `D e Coffee` cannot reach a coffee from last December, and the row you mean is one of this month's anyway |
+| Disambiguation | More than one match writes **nothing**. David lists the matches with their amount, date and category, and waits for you to reply with a number |
+
+The list lapses after **2 minutes**, after which the number goes back to being an
+unrecognised message — a `2` typed an hour later must not archive a row you have
+forgotten was offered. An out-of-range number leaves the list answerable, so a
+mistyped `5` costs a keystroke rather than the whole command.
+
+Every delete and update then records how to reverse itself, and **`undo`**
+applies it. A delete is un-archived; an update is put back to the amount and
+category it had, snapshotted from the row as it was found — Notion keeps no
+property history an integration can read, so a snapshot taken after the write
+would restore the new value over itself. `undo` is consumed when used, so it
+cannot run twice.
+
+If David cannot work out which month page to search, the lookup is **refused**
+rather than widened. Falling back to an unscoped search would restore the exact
+reach the month filter exists to remove, at the moment David is least sure of
+its own state.
 
 ## Scheduled messages
 
@@ -147,6 +179,12 @@ the current month's page, which is what it was when you set it. From the first
 rollover on it can go stale without consequence. Each rollover message includes
 the new page ID in backticks, so keeping the Railway variable current is one tap
 if you want to.
+
+It is **optional**, and used to be required — which was the contract
+contradicting the code that reads it. Unset, the first run of a fresh container
+resolves the month from Notion by title instead, one query later. Requiring it
+meant a deploy died over a value nothing needs, and the obvious way to make that
+error go away is to paste a stale page ID back in.
 
 ### Input rules
 

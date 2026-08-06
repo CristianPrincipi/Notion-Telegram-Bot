@@ -16,13 +16,16 @@ from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
 import config
+import expense_safety
 from budget import budget
 from config import (
     GENRE_MAP, CATEGORY_MAP, DEFAULT_CATEGORY, EXPENSE_MONTH_RELATION,
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from month import current_month_id, handle_month
-from notion_client import body_excerpt, notion_request, query_database
+from notion_client import (
+    CREATED_DESC, body_excerpt, notion_request, query_database, set_archived, update_page,
+)
 from pkm import handle_get
 from observability import record_command, record_error, set_correlation_id, setup_logging
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
@@ -133,10 +136,16 @@ def add_New_Book(name, author, genre):
 
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
-    """Search LETTI database for a book by name. Returns page_id or None."""
+    """Search LETTI database for a book by name. Returns page_id or None.
+
+    Sorted newest-first, so with two editions of the same title in the library
+    the quote lands on the same one every time instead of on whichever row
+    Notion happened to return first. See notion_client.CREATED_DESC.
+    """
     results, err = query_database(
         LETTI_ID,
         filter_obj={"property": "Name", "title": {"contains": book_name.strip()}},
+        sorts=CREATED_DESC,
     )
     if err:
         logger.error("find_Book_Page(%r) failed: %s", book_name, err)
@@ -299,70 +308,232 @@ def add_Expenses(name, amount, category):
     return response.status_code == 200
 
 
-# --- UPDATE EXPENSES FUNCTION ---
-def update_Expense(name, amount, category):
-    # 1. Find the expense page ID by name
-    results, err = query_database(
+# --- FINDING THE EXPENSE A DESTRUCTIVE COMMAND MEANS ---
+#
+# SPLIT OUT OF THE WRITES ON PURPOSE. `update_Expense` and `delete_Expense` used
+# to do their own lookup and act on results[0], which made "which row did that
+# hit?" unanswerable from outside them — there was no point between finding and
+# mutating at which anything could be shown to you or counted. Both writes now
+# take a page ID that something else chose, which is what lets the caller stop
+# and ask when the choice is not obvious.
+#
+# TWO NARROWINGS, both closing a way to hit the wrong row:
+#
+#   sorts=CREATED_DESC   — "the first match" now means the most recent one, the
+#                          same way on every call. See notion_client.
+#   the month filter     — the search covers THIS month only, so `D e Coffee`
+#                          cannot reach into last December for a coffee you have
+#                          long since forgotten. It also matches how you think
+#                          about expenses: the budget is monthly, so the row you
+#                          mean is one of this month's.
+
+def find_expense_matches(name):
+    """Expenses in the CURRENT month whose Name contains `name`, newest first.
+
+    Returns (pages, error) — full page objects, not IDs, because the caller
+    needs their Amount, Date and Category both to tell two matches apart in the
+    prompt and to snapshot the old values for `undo`. Those properties come back
+    with the query, so carrying them costs no extra request.
+    """
+    month_id = current_month_id()
+    if not month_id:
+        # REFUSING BEATS WIDENING. Falling back to an unscoped search here would
+        # silently restore the exact reach this filter exists to remove, and it
+        # would do it precisely when David is least sure of its own state.
+        return [], ("I could not work out which month page to search — "
+                    "send `Month` to re-resolve it, or `Diag` to see why.")
+
+    return query_database(
         EXPENSES_ID,
-        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+        filter_obj={"and": [
+            {"property": "Name", "title": {"contains": name.strip()}},
+            {"property": EXPENSE_MONTH_RELATION, "relation": {"contains": month_id}},
+        ]},
+        sorts=CREATED_DESC,
     )
 
-    if err:
-        logger.error("update_Expense(%r): Notion query failed: %s", name, err)
-        return False, None
 
-    if not results:
-        logger.info("update_Expense(%r): no matching expense.", name)
-        return False, None
-
-    page_id = results[0]["id"]
-
-    # 2. Patch the page with the new amount and category
-    update_url = f"https://api.notion.com/v1/pages/{page_id}"
-    update_data = {
-        "properties": {
+# --- UPDATE EXPENSES FUNCTION ---
+def update_Expense(page_id, amount, category):
+    """Overwrite one expense's amount and category. Returns (ok, error)."""
+    update_response = notion_request(
+        "PATCH",
+        f"https://api.notion.com/v1/pages/{page_id}",
+        json={"properties": {
             "Amount": {"number": amount},
-            "Category": {"multi_select": [{"name": category}]}
-        }
-    }
-    update_response = notion_request("PATCH", update_url, json=update_data)
+            "Category": {"multi_select": [{"name": category}]},
+        }},
+    )
 
     if update_response.status_code != 200:
-        logger.error("update_Expense(%r) failed: Notion %s: %s",
-                     name, update_response.status_code, body_excerpt(update_response))
-        return False, page_id
+        logger.error("update_Expense(%s) failed: Notion %s: %s",
+                     page_id, update_response.status_code, body_excerpt(update_response))
+        return False, f"Notion {update_response.status_code}: {body_excerpt(update_response)}"
 
-    return True, page_id
+    return True, None
 
 
 # --- DELETE EXPENSES FUNCTION ---
-def delete_Expense(name):
-    # 1. Find the expense page ID by name
-    results, err = query_database(
-        EXPENSES_ID,
-        filter_obj={"property": "Name", "title": {"contains": name.strip()}},
+def delete_Expense(page_id):
+    """Archive one expense. Returns (ok, error).
+
+    Notion has no hard delete for an integration, which is what makes this
+    reversible — `undo` sends the same page back with archived=False.
+    """
+    update_response = notion_request(
+        "PATCH",
+        f"https://api.notion.com/v1/pages/{page_id}",
+        json={"archived": True},
     )
 
-    if err:
-        logger.error("delete_Expense(%r): Notion query failed: %s", name, err)
-        return False, None
-
-    if not results:
-        logger.info("delete_Expense(%r): no matching expense.", name)
-        return False, None
-
-    page_id = results[0]["id"]
-
-    # 2. Archive the page (Notion API does not support hard delete)
-    update_url = f"https://api.notion.com/v1/pages/{page_id}"
-    update_response = notion_request("PATCH", update_url, json={"archived": True})
-
     if update_response.status_code != 200:
-        logger.error("delete_Expense(%r) failed: Notion %s: %s",
-                     name, update_response.status_code, body_excerpt(update_response))
-        return False, page_id
+        logger.error("delete_Expense(%s) failed: Notion %s: %s",
+                     page_id, update_response.status_code, body_excerpt(update_response))
+        return False, f"Notion {update_response.status_code}: {body_excerpt(update_response)}"
 
-    return True, page_id
+    return True, None
+
+
+# --- DESTRUCTIVE EXPENSE COMMANDS (`U e`, `D e`, `undo`) --- #
+#
+# Both destructive commands run the same three steps — find, choose, write —
+# and differ only in which write they end at, so they share the pair below
+# rather than each carrying its own copy of the ambiguity and undo handling.
+# The state machine and every message live in expense_safety.py; what stays here
+# is the Notion I/O and the locking, which is what david.py owns.
+
+async def _start_destructive_expense(update, context, action, name,
+                                     amount=None, category=None):
+    """Resolve which expense `name` means, then either write or ask.
+
+    THE ONE RULE: more than one match means NOTHING is written. A destructive
+    command whose target is ambiguous is not a command yet, and guessing at it
+    is the failure this whole path exists to remove — the write is cheap to
+    repeat and the wrong write is expensive to notice.
+
+    THE LOOKUP IS INSIDE THE LOCK, and has to be. This is a find-then-mutate
+    spanning two round trips, so a second expense write slipping between them
+    would let both resolve to the same row and archive it twice — the exact race
+    page_lock.py's docstring names as the reason its keys are database ids.
+    Only the single-match path writes here; the ambiguous one releases the lock
+    and waits for a number, because holding it across a reply from you would
+    stall every other expense command for as long as you took to answer.
+    """
+    try:
+        async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+            matches, err = await asyncio.to_thread(find_expense_matches, name)
+
+            if err is None and len(matches) == 1:
+                await _apply_destructive_expense(
+                    update, context, action, matches[0], amount, category)
+                return
+    except PageBusy:
+        await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+        return
+
+    if err:
+        # An error is NOT an empty result: "Notion is down" and "you have no
+        # Coffee this month" need opposite reactions, and reporting the first as
+        # the second is how a failed lookup turns into "it wasn't there anyway".
+        await reply(update, f"❌ Could not look up '{escape_md(name)}':\n{escape_md(err)}")
+        return
+
+    if not matches:
+        await update.message.reply_text(
+            f"❌ Error: no expense matching '{name}' this month.")
+        return
+
+    pending = expense_safety.remember_pending(
+        context, action, name, matches, amount=amount, category=category)
+    await reply(update, expense_safety.format_choices(pending))
+
+
+async def _apply_destructive_expense(update, context, action, page, amount, category):
+    """Make the write, and record how to reverse it. CALL UNDER THE EXPENSE LOCK.
+
+    The undo snapshot is taken from `page` — the row as the lookup found it —
+    and is therefore the state BEFORE this write, even though it is stored
+    after. Re-reading the page afterwards would faithfully record the new amount
+    as the old one, which is worse than having no undo at all.
+    """
+    choice   = expense_safety.choice_from_page(page)
+    previous = (expense_safety.previous_properties(page)
+                if action == expense_safety.UPDATE else None)
+
+    if action == expense_safety.DELETE:
+        success, err = await asyncio.to_thread(delete_Expense, choice.page_id)
+    else:
+        success, err = await asyncio.to_thread(
+            update_Expense, choice.page_id, amount, category)
+
+    if not success:
+        verb = "delete" if action == expense_safety.DELETE else "update"
+        await reply(update, f"❌ Could not {verb} '{escape_md(choice.name)}':\n{escape_md(err)}")
+        return
+
+    # Only now. An undo record for a write that failed would offer to reverse
+    # something that never happened.
+    expense_safety.remember_undo(context, action, choice.page_id, choice.name, previous)
+
+    headline = (f"🗑️ Deleted *{escape_md(choice.name)}*"
+                if action == expense_safety.DELETE else
+                f"✅ Updated *{escape_md(choice.name)}* to €{amount:.2f} [{escape_md(category)}]")
+    await reply(update, f"{headline}\n{expense_safety.format_undo_offer(action, choice.name)}")
+
+
+async def handle_expense_selection(update, context, selection: int):
+    """A bare number answering the numbered list of matches.
+
+    No lookup runs here: the page was chosen from a list David printed, so this
+    is a write against a known ID rather than a find-then-mutate. The lock is
+    still taken, to keep it ordered against the other expense writes.
+    """
+    pending, page, err = expense_safety.take_pending(context, selection)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+        return
+
+    try:
+        async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+            await _apply_destructive_expense(update, context, pending.action, page,
+                                             pending.amount, pending.category)
+    except PageBusy:
+        await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+
+
+async def handle_undo(update, context):
+    """`undo` — reverse the last destructive expense write.
+
+    Both branches are ordinary writes against a page ID David already holds, so
+    neither re-runs a lookup: an undo that had to find its own target could pick
+    a different row than the one it is undoing, which would make the recovery
+    command a third way to hit the wrong expense.
+    """
+    undo, err = expense_safety.take_undo(context)
+    if err:
+        await update.message.reply_text(f"❌ {err}")
+        return
+
+    try:
+        async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
+            if undo.action == expense_safety.DELETE:
+                success, err = await asyncio.to_thread(set_archived, undo.page_id, False)
+            else:
+                success, err = await asyncio.to_thread(update_page, undo.page_id, undo.properties)
+    except PageBusy:
+        # Put it back: the reversal has not happened, so it must stay available.
+        expense_safety.remember_undo(context, undo.action, undo.page_id,
+                                     undo.name, undo.properties)
+        await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
+        return
+
+    if not success:
+        expense_safety.remember_undo(context, undo.action, undo.page_id,
+                                     undo.name, undo.properties)
+        await reply(update, f"❌ Could not undo '{escape_md(undo.name)}':\n{escape_md(err)}")
+        return
+
+    await reply(update, expense_safety.format_undone(undo))
 
 
 # --- DETACHED (BACKGROUND) COMMANDS --- #
@@ -619,6 +790,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = (update.message.text or "").strip()
     logger.info("Received: %s", user_text)
 
+    # --- PENDING CHOICE: a bare number answering a printed list of matches ---
+    # FIRST, because while a list is live the reply to it is a plain integer,
+    # which every pattern below rejects — it would fall through to "I didn't get
+    # that" while the list sat there unanswered. Guarded on there BEING a live
+    # list, so a stray "2" with nothing pending is still an unrecognised message
+    # rather than a command with no visible effect. See expense_safety.py.
+    if expense_safety.has_pending(context):
+        selection = expense_safety.parse_selection(user_text)
+        if selection is not None:
+            await handle_expense_selection(update, context, selection)
+            return
+
+    # --- UNDO: reverse the last destructive expense write ---
+    if re.fullmatch(r"(?i)undo", user_text):
+        await handle_undo(update, context)
+        return
+
     # --- REGEX FOR HELP COMMAND: Look for "h"
     if re.fullmatch(r"(?i)h|help|aiuto", user_text):
         await reply(
@@ -637,7 +825,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💵 *ADD EXPENSE* — `Add e [Name] [Amount] [Category]`\n"
             "✏️ *UPDATE EXPENSE* — `U e [Name] [Amount] [Category]`\n"
             "🗑️ *DELETE EXPENSE* — `D e [Name]`\n"
-            "_Categories: s · f · g · o_\n\n"
+            "_Categories: s · f · g · o_\n"
+            "_Both search this month only. Several matches → I list them and wait "
+            "for a number._\n\n"
+            "↩️ *UNDO* — `undo`\n"
+            "_Reverses the last delete or update_\n\n"
             "💰 *BUDGET* — `B`\n\n"
             "🗓️ *MONTH PAGE* — `Month`\n"
             "_Rolls over automatically on the 1st; this forces a check_\n\n"
@@ -795,22 +987,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(err)
             return
 
-        await update.message.reply_text(f"⏳ Updating '{name}' to €{amount} [{category}]...")
-
-        try:
-            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
-                success, page_id = await asyncio.to_thread(update_Expense, name, amount, category)
-        except PageBusy:
-            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
-            return
-
-        if success:
-            await update.message.reply_text(f"✅ Expense '{name}' updated successfully!")
-        else:
-            if page_id is None:
-                await update.message.reply_text(f"❌ Error: Expense '{name}' not found.")
-            else:
-                await update.message.reply_text(f"❌ Error: Could not update '{name}'. Check your API keys.")
+        await update.message.reply_text(f"🔍 Finding '{name}' to update to €{amount} [{category}]...")
+        await _start_destructive_expense(update, context, expense_safety.UPDATE,
+                                         name, amount=amount, category=category)
         return
 
     # --- REGEX FOR DELETE EXPENSE: Look for "D e [Name]"
@@ -818,22 +997,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if delete_expense_match:
         name = delete_expense_match.group(1).strip()
 
-        await update.message.reply_text(f"⏳ Deleting expense '{name}'...")
-
-        try:
-            async with page_lock(EXPENSES_ID, timeout=WRITE_LOCK_TIMEOUT_SECONDS):
-                success, page_id = await asyncio.to_thread(delete_Expense, name)
-        except PageBusy:
-            await update.message.reply_text(BUSY_EXPENSE_MESSAGE)
-            return
-
-        if success:
-            await update.message.reply_text(f"🗑️ Expense '{name}' deleted successfully!")
-        else:
-            if page_id is None:
-                await update.message.reply_text(f"❌ Error: Expense '{name}' not found.")
-            else:
-                await update.message.reply_text(f"❌ Error: Could not delete '{name}'. Check your API keys.")
+        await update.message.reply_text(f"🔍 Finding '{name}' to delete...")
+        await _start_destructive_expense(update, context, expense_safety.DELETE, name)
         return
 
     # REGEX FOR EXPENSES: Look for "Add e [Name] [Amount] [Category]"

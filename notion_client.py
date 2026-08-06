@@ -138,14 +138,30 @@ def body_excerpt(response) -> str:
 
 # ─── QUERY / READ ──────────────────────────────────────────────────────────────
 
+# The sort every "take the first match" lookup uses.
+#
+# Notion does not guarantee an order for query results, so a caller that reads
+# results[0] out of an UNSORTED response is picking an arbitrary row and calling
+# it "the first one". That is invisible while a search matches once and silently
+# wrong the moment it matches twice — `D e Coffee` archived whichever Coffee the
+# API felt like returning. Sorting newest-first gives "first" a definition that
+# holds between two identical calls, and makes it the useful one: the row you
+# most likely just created.
+CREATED_DESC = [{"timestamp": "created_time", "direction": "descending"}]
+
+
 def search_page_in_db(db_id: str, query: str, exact: bool = False):
-    """Search a Notion database for a page by title. Returns (page_object, error)."""
+    """Search a Notion database for a page by title. Returns (page_object, error).
+
+    Returns the most recently created match — see CREATED_DESC.
+    """
     try:
         filter_type = "equals" if exact else "contains"
         resp = notion_request(
             "POST",
             f"{NOTION_BASE}/databases/{db_id}/query",
-            json={"filter": {"property": "Name", "title": {filter_type: query}}},
+            json={"filter": {"property": "Name", "title": {filter_type: query}},
+                  "sorts": CREATED_DESC},
         )
         if resp.status_code != 200:
             return None, f"Notion {resp.status_code}: {resp.text[:200]}"
@@ -303,6 +319,27 @@ def create_page(parent_db_id: str, properties: dict, children: list = None, icon
         return page_id, None
     except Exception as e:
         return None, str(e)
+
+
+def set_archived(page_id: str, archived: bool):
+    """Archive or restore a page. Returns (ok, error).
+
+    Notion has no hard delete for an integration — `D e` archives, which is what
+    makes it reversible. Restoring is the same call with `False`, and it is a
+    separate function from update_page because `archived` is a sibling of
+    `properties` in the PATCH body, not one of them.
+    """
+    try:
+        resp = notion_request(
+            "PATCH",
+            f"{NOTION_BASE}/pages/{page_id}",
+            json={"archived": archived},
+        )
+        if resp.status_code != 200:
+            return False, f"Notion {resp.status_code}: {body_excerpt(resp)}"
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def update_page(page_id: str, properties: dict):

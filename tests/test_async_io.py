@@ -89,8 +89,11 @@ def david_stubs(monkeypatch):
         "find_Book_Page": lambda book_name: "book-page-id",
         "add_Quote":      lambda page_id, quote_title, quote_text: True,
         "add_Expenses":   lambda name, amount, category: True,
-        "update_Expense": lambda name, amount, category: (True, "exp-page-id"),
-        "delete_Expense": lambda name: (True, "exp-page-id"),
+        # The destructive pair is find-then-write, and BOTH halves are blocking
+        # Notion calls — the lookup is a database query, not a local decision.
+        "find_expense_matches": lambda name: ([{"id": "exp-page-id", "properties": {}}], None),
+        "update_Expense": lambda page_id, amount, category: (True, None),
+        "delete_Expense": lambda page_id: (True, None),
     })
 
 
@@ -98,8 +101,8 @@ DAVID_COMMANDS = [
     ("B",                          ("budget",)),
     ("Add b Dune - Herbert - s",   ("add_New_Book",)),
     ("Add e Carrefour 2.20",       ("add_Expenses",)),
-    ("U e Carrefour 12.50",        ("update_Expense",)),
-    ("D e Carrefour",              ("delete_Expense",)),
+    ("U e Carrefour 12.50",        ("find_expense_matches", "update_Expense")),
+    ("D e Carrefour",              ("find_expense_matches", "delete_Expense")),
     ("Add q Dune - On Fear - Fear is the mind-killer.",
      ("find_Book_Page", "add_Quote")),
 ]
@@ -508,7 +511,7 @@ def test_a_slow_command_no_longer_freezes_the_bot():
 
 OFFLOADED_FUNCTIONS = [
     david.budget, david.add_Expenses, david.add_New_Book, david.find_Book_Page,
-    david.add_Quote, david.update_Expense, david.delete_Expense,
+    david.add_Quote, david.find_expense_matches, david.update_Expense, david.delete_Expense,
     david.extract_quote_from_pdf,
     learn.extract_youtube, learn.extract_article, learn.extract_pdf,
     learn.summarize_with_claude, learn.create_learn_page,

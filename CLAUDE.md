@@ -20,6 +20,7 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
+| `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `context.user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `david.py` acts |
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
 | `learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
@@ -128,7 +129,41 @@ section NAMES, a merge over only the affected sections, and a write back to only
 **The only guarantee that a section is unchanged is that it was never sent.** Locked
 down by `tests/test_implement_sections.py`.
 
-### 4. Concurrency is deliberately narrow
+### 4. A destructive command never guesses which row it meant
+
+`U e` and `D e` are find-then-mutate over a `contains` filter, and they used to act
+on `results[0]`. **Notion documents no ordering for query results**, so with two
+Coffees on the page the row that was archived was arbitrary — and the reply said
+"deleted successfully" either way. No exception, a 200 from Notion, a confident
+confirmation, and a missing row discoverable only by opening Notion.
+
+Three independent guards, and they are independent on purpose — each one alone
+still leaves a way to hit the wrong row:
+
+1. **`sorts=CREATED_DESC` on every lookup that reads `results[0]`**
+   (`notion_client.CREATED_DESC`). This does not make "first" *correct*, it makes
+   it *defined* — the same row on two identical calls. Applies to
+   `find_expense_matches`, `find_Book_Page` and `search_page_in_db`.
+2. **Expense lookups are scoped to the current month.** If the month cannot be
+   resolved the lookup is REFUSED, never widened: falling back to an unscoped
+   search restores exactly the reach the filter removes, at the moment David is
+   least sure of its own state.
+3. **More than one match writes nothing** and asks, via `expense_safety`. The
+   pending list lives in `context.user_data` and expires after 2 minutes, so a
+   stray `2` cannot answer a prompt from an hour ago.
+
+Then **every destructive write records its own reversal** before reporting success,
+and `undo` applies it. The update snapshot must come from the page object the
+LOOKUP returned — re-reading after the PATCH records the new amount as the old one,
+producing an undo that changes nothing and says it worked.
+
+The lookup runs **inside** the expense lock, not just the write. Splitting
+find-from-mutate into two functions made it possible to lock only the second half,
+which reads as safe — no two writes overlap — while leaving both queries free to
+resolve to the same row. Locked down by `tests/test_expense_safety.py` and
+`tests/test_concurrency.py::test_no_two_expense_cycles_are_ever_in_flight_together`.
+
+### 5. Concurrency is deliberately narrow
 
 `concurrent_updates` is **off**. Do not enable it; `tests/test_async_io.py` fails if you do.
 Responsiveness is bought per-command instead: only the long commands (`Learn`, `Implement`,
@@ -146,8 +181,13 @@ until the lookup the lock has to cover:
 | --- | --- | --- |
 | Implement → area Manual | `area_db_id` | refused |
 | Implement → Diet page | `DIET_ID` | refused |
-| `U e` / `D e` | `EXPENSES_ID` | queues |
+| `U e` / `D e` (lookup **and** write) | `EXPENSES_ID` | queues |
+| A number answering an ambiguous `U e` / `D e` | `EXPENSES_ID` | queues |
 | `Remind` | `CALENDAR_ID` | queues |
+
+The ambiguous path releases the lock while it waits for your number — holding it
+across a reply would stall every expense write for as long as you took to answer,
+and the selection writes by page ID, so it has no lookup left to protect.
 
 `month.py` uses a `threading.RLock`, not `page_lock`: its cycle is reached from worker
 threads, and an `asyncio.Lock` between two threads acquires without ever blocking.
@@ -193,8 +233,9 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
   checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
   (takeaway of the week) and Step 7 (tasks). The checkbox is written and never read.
-- **`MONTH_ID` is in `REQUIRED_ENV` but `month.py` treats it as an optional seed**, resolving
-  the month from Notion without it. Required-by-contract, optional-in-practice.
+- ~~**`MONTH_ID` is in `REQUIRED_ENV` but `month.py` treats it as an optional seed.**~~
+  Resolved: it is in `OPTIONAL_ENV` now, which is what the module reading it always
+  meant. Unset, the first run resolves the month from Notion by title.
 - **`(value, error)` is still not universal**, but the remaining gaps are narrower and
   named:
   - `budget.compute_budget()` returns `dict | None`, collapsing a Notion failure into
