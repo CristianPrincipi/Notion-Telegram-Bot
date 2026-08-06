@@ -39,8 +39,22 @@ NO_HANDLER   = "(no handler)"      # command answered with a reply only
 BOOK_PAGE_ID = "book-page-id"      # what the stubbed find_Book_Page returns
 BUDGET_TEXT  = "MOCK BUDGET RECAP"
 
+# What the stubbed find_expense_matches returns: EXACTLY ONE match, so the
+# destructive commands run straight through to their write. Ambiguity is a
+# behaviour, not a route — it is driven end to end in test_expense_safety.py.
+ONE_MATCH = [{
+    "id": "exp-page-id",
+    "properties": {
+        "Name":     {"type": "title", "title": [{"plain_text": "Carrefour"}]},
+        "Amount":   {"number": 12.5},
+        "Date":     {"date": {"start": "2026-08-06"}},
+        "Category": {"multi_select": [{"name": "Food"}]},
+    },
+}]
+
 # Plumbing values that are not parsed out of the user's text, so they are not
-# part of what a route test is asserting.
+# part of what a route test is asserting. `page_id` is one: the destructive
+# commands are routed by NAME and the ID is whatever the lookup resolved it to.
 UNINTERESTING_ARGS = {"_update", "page_id"}
 
 
@@ -62,8 +76,11 @@ SPY_TARGETS = [
     ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  True,                 False),
     ("add_Expenses",     ("name", "amount", "category"),            True,                 False),
-    ("update_Expense",   ("name", "amount", "category"),            (True, "exp-page-id"), False),
-    ("delete_Expense",   ("name",),                                 (True, "exp-page-id"), False),
+    # The destructive pair is find-then-write, so both halves are spied: the
+    # finder carries the parsed NAME, the writer the parsed amount/category.
+    ("find_expense_matches", ("name",),                             (ONE_MATCH, None),    False),
+    ("update_Expense",   ("page_id", "amount", "category"),         (True, None),         False),
+    ("delete_Expense",   ("page_id",),                              (True, None),         False),
 ]
 
 
@@ -251,15 +268,17 @@ ROUTES = [
           "the separator needs its spaces"),
 
     # ── UPDATE EXPENSE ─────────────────────────────────────────────────────────
-    Route("U e Carrefour 12.50 s", "update_Expense",
+    # The chain is find-then-write: the lookup is a separate call precisely so a
+    # multi-match can stop between the two. These rows all resolve to one match.
+    Route("U e Carrefour 12.50 s", "find_expense_matches → update_Expense",
           {"name": "Carrefour", "amount": 12.50, "category": "Shopping"}, "update expense"),
-    Route("U e Carrefour 12.50", "update_Expense",
+    Route("U e Carrefour 12.50", "find_expense_matches → update_Expense",
           {"name": "Carrefour", "amount": 12.50, "category": "Food"},
           "update expense defaults to Food"),
-    Route("u e Carrefour 12.50 G", "update_Expense",
+    Route("u e Carrefour 12.50 G", "find_expense_matches → update_Expense",
           {"name": "Carrefour", "amount": 12.50, "category": "Gift"},
           "update expense, lowercase command + uppercase category"),
-    Route("U e Carrefour 12", "update_Expense",
+    Route("U e Carrefour 12", "find_expense_matches → update_Expense",
           {"name": "Carrefour", "amount": 12.0, "category": "Food"},
           "amount without decimals"),
     # `U e` uses re.fullmatch while `Add e` uses re.search, so trailing junk that
@@ -268,11 +287,14 @@ ROUTES = [
           "U e is anchored: trailing words make the whole command miss"),
 
     # ── DELETE EXPENSE ─────────────────────────────────────────────────────────
-    Route("D e Carrefour", "delete_Expense", {"name": "Carrefour"}, "delete expense"),
-    Route("d e Carrefour", "delete_Expense", {"name": "Carrefour"}, "delete expense, lowercase"),
+    Route("D e Carrefour", "find_expense_matches → delete_Expense",
+          {"name": "Carrefour"}, "delete expense"),
+    Route("d e Carrefour", "find_expense_matches → delete_Expense",
+          {"name": "Carrefour"}, "delete expense, lowercase"),
     # `D e (.+)` is greedy and unvalidated, so anything after the name is taken
     # as part of the name — and then simply won't be found in Notion.
-    Route("D e Carrefour 5", "delete_Expense", {"name": "Carrefour 5"},
+    Route("D e Carrefour 5", "find_expense_matches → delete_Expense",
+          {"name": "Carrefour 5"},
           "trailing text is swallowed into the expense name"),
 
     # ── ADD EXPENSE ────────────────────────────────────────────────────────────
@@ -324,7 +346,19 @@ ROUTES = [
           NO_HANDLER, reply("I didn't get that"),
           "'Add q' no longer fires mid-sentence"),
 
+    # ── UNDO ───────────────────────────────────────────────────────────────────
+    # Reached with an empty user_data, so it reports having nothing to reverse.
+    # The reversal itself is driven in test_expense_safety.py.
+    Route("undo", NO_HANDLER, reply("Nothing to undo"), "undo with nothing recorded"),
+    Route("UNDO", NO_HANDLER, reply("Nothing to undo"), "undo is case-insensitive"),
+    Route("undo that", NO_HANDLER, reply("I didn't get that"), "undo takes no argument"),
+
     # ── UNRECOGNISED ───────────────────────────────────────────────────────────
+    # A bare number is a selection ONLY while a list of matches is live. With
+    # nothing pending it must stay unrecognised, or every stray digit becomes a
+    # command with no visible effect.
+    Route("2", NO_HANDLER, reply("I didn't get that"),
+          "a bare number with nothing pending is not a selection"),
     Route("hello", NO_HANDLER, reply("I didn't get that"), "plain chatter"),
     Route("", NO_HANDLER, reply("I didn't get that"), "empty message"),
     Route("   ", NO_HANDLER, reply("I didn't get that"), "whitespace-only message"),
@@ -412,28 +446,52 @@ def test_expense_reports_a_failed_notion_write(router, monkeypatch):
     assert update.message.replied_with("Could not connect to Notion")
 
 
-def test_update_expense_distinguishes_not_found_from_api_failure(router, monkeypatch):
-    monkeypatch.setattr(david, "update_Expense", lambda name, amount, category: (False, None))
+def test_update_expense_distinguishes_the_three_lookup_outcomes(router, monkeypatch):
+    """Not found, lookup failed, and write failed are three different answers.
+
+    The middle one is the one worth having: a Notion outage reported as "not
+    found" reads as "there was nothing there anyway", which is the collapse of
+    error into empty that this codebase keeps paying for.
+    """
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], None))
     update = FakeUpdate(text="U e Ghost 1.00")
     run(david.handle_message(update, FakeContext()))
-    assert update.message.replied_with("Expense 'Ghost' not found")
+    assert update.message.replied_with("no expense matching 'Ghost'")
 
-    monkeypatch.setattr(david, "update_Expense", lambda name, amount, category: (False, "page-1"))
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
     update = FakeUpdate(text="U e Ghost 1.00")
     run(david.handle_message(update, FakeContext()))
-    assert update.message.replied_with("Could not update 'Ghost'")
+    assert update.message.replied_with("Could not look up")
+    assert not update.message.replied_with("no expense matching")
+
+    # Lookup restored to one match, so the failure under test is the WRITE.
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: (ONE_MATCH, None))
+    monkeypatch.setattr(david, "update_Expense",
+                        lambda page_id, amount, category: (False, "Notion 400: bad request"))
+    update = FakeUpdate(text="U e Ghost 1.00")
+    run(david.handle_message(update, FakeContext()))
+    assert update.message.replied_with("Could not update")
 
 
-def test_delete_expense_distinguishes_not_found_from_api_failure(router, monkeypatch):
-    monkeypatch.setattr(david, "delete_Expense", lambda name: (False, None))
+def test_delete_expense_distinguishes_the_three_lookup_outcomes(router, monkeypatch):
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], None))
     update = FakeUpdate(text="D e Ghost")
     run(david.handle_message(update, FakeContext()))
-    assert update.message.replied_with("Expense 'Ghost' not found")
+    assert update.message.replied_with("no expense matching 'Ghost'")
 
-    monkeypatch.setattr(david, "delete_Expense", lambda name: (False, "page-1"))
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
     update = FakeUpdate(text="D e Ghost")
     run(david.handle_message(update, FakeContext()))
-    assert update.message.replied_with("Could not delete 'Ghost'")
+    assert update.message.replied_with("Could not look up")
+    assert not update.message.replied_with("no expense matching")
+
+    # Lookup restored to one match, so the failure under test is the WRITE.
+    monkeypatch.setattr(david, "find_expense_matches", lambda name: (ONE_MATCH, None))
+    monkeypatch.setattr(david, "delete_Expense",
+                        lambda page_id: (False, "Notion 400: bad request"))
+    update = FakeUpdate(text="D e Ghost")
+    run(david.handle_message(update, FakeContext()))
+    assert update.message.replied_with("Could not delete")
 
 
 def test_budget_reports_a_notion_failure(router, monkeypatch):

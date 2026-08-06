@@ -201,8 +201,6 @@ REQUIRED_ENV = {
     "CHAT_ID":           "Telegram chat that receives scheduled briefings and error reports.",
     "NOTION_KEY":        "Notion internal integration secret.",
     "EXPENSES_ID":       "Notion Expenses database ID.",
-    "MONTH_ID":          ("Notion page ID of the current month; expenses relate to it. "
-                          "Seed value only — David rolls it forward itself on the 1st."),
     "LETTI_ID":          "Notion Books ('Letti') database ID.",
     "LITERATURE_ID":     "Notion page ID of the Literature area; books relate to it.",
     "LEARN_ID":          "Notion Learn database ID for videos, articles, podcasts and PDFs.",
@@ -210,6 +208,15 @@ REQUIRED_ENV = {
 }
 
 OPTIONAL_ENV = {
+    # OPTIONAL SINCE month.py STOPPED DEPENDING ON IT. It used to be required,
+    # and was contradicted by the module that reads it: month.py treats it as a
+    # first-boot SEED and resolves the real page from Notion by title, so David
+    # starts and runs correctly with it unset. Leaving it in REQUIRED_ENV meant a
+    # deploy without it died at startup over a value nothing needs — required by
+    # contract, optional in practice, which is the kind of gap that gets
+    # "resolved" by pasting a stale page ID back in to make the error go away.
+    "MONTH_ID":                ("Notion page ID of the current month; expenses relate to it. "
+                                "Seed value only — David resolves and rolls it forward itself."),
     "SUPADATA_KEY":            "Supadata API key for YouTube transcripts. Without it, `Learn video` fails.",
     "GOOGLE_CREDENTIALS_JSON": "Service-account JSON for Google Calendar. Without it, reminders fail.",
     "GOOGLE_CALENDAR_ID":      "Target calendar. Defaults to 'primary'.",
