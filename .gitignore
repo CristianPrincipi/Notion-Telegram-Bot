@@ -9,8 +9,5 @@ venv/
 
 .env
 
-# The resolved month page, cached between restarts (see month.py).
-.month_state.json
-
 # Running daily Anthropic spend (see anthropic_client.py).
 .anthropic_spend.json

@@ -17,15 +17,17 @@ WHY THE TEST IS `rolled_over` AND NOT `changed`
 -----------------------------------------------
 It was `changed`, and that is why the message arrived every day rather than
 monthly. `changed` means the run WROTE something, and a run writes something
-every time David boots without its cache: Railway's filesystem is ephemeral, so
-`.month_state.json` dies with each deploy and the next run re-resolves the current
-month and lands on ADOPTED. Correct behaviour, correctly logged — but "✅ Monthly
-expenses page updated" on a day nothing about the month changed is a false claim,
-and a claim that arrives daily is one you stop reading, which costs you the one on
-the 1st.
+every time a fresh process resolves the month for the first time — which is every
+deploy, since the resolved page is cached in memory only. Correct behaviour,
+correctly logged, but "✅ Monthly expenses page updated" on a day nothing about
+the month changed is a false claim, and a claim that arrives that often is one you
+stop reading, which costs you the one on the 1st.
 
-`rolled_over` compares the period David was on to the period it resolved, so the
-message fires on the month turning over rather than on the process restarting.
+`rolled_over` fires on the month turning over. A run that started not knowing
+which month it was on — which every fresh process does — cannot claim the month
+moved, so it stays quiet unless it actually CREATED the page, which is news
+whoever asked for it and can only happen once a month. See
+month.Rollover.rolled_over.
 """
 
 from month import ensure_current_month_page, format_rollover

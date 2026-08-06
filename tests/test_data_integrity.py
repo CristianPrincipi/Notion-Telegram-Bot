@@ -183,10 +183,14 @@ def midnight_in_rome(monkeypatch):
 
 
 @responses.activate
-def test_expense_is_dated_in_rome_not_utc(midnight_in_rome):
+def test_expense_is_dated_in_rome_not_utc(midnight_in_rome, monkeypatch):
     """Today: Railway runs UTC and add_Expenses uses a naive datetime.now(), so
     anything logged after local midnight is filed under YESTERDAY — and at a
     month boundary, into the wrong month's budget entirely."""
+    # Pinned so the assertion is about the DATE. The month page is cached in
+    # memory only, so an unpinned first call would resolve it from Notion and put
+    # a schema request in front of the page create inspected below.
+    monkeypatch.setattr(david, "current_month_id", lambda: "test-month-id")
     responses.add(responses.POST, PAGES_URL, status=200, json={"id": "new-page"})
 
     david.add_Expenses("Late night kebab", 8.50, "Food")

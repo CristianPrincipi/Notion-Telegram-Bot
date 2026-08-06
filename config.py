@@ -215,8 +215,8 @@ OPTIONAL_ENV = {
     # deploy without it died at startup over a value nothing needs — required by
     # contract, optional in practice, which is the kind of gap that gets
     # "resolved" by pasting a stale page ID back in to make the error go away.
-    "MONTH_ID":                ("Notion page ID of the current month; expenses relate to it. "
-                                "Seed value only — David resolves and rolls it forward itself."),
+    "MONTH_ID":                ("Fallback Notion page ID for the current month, used only if "
+                                "Notion cannot be reached. David resolves the real page itself."),
     "SUPADATA_KEY":            "Supadata API key for YouTube transcripts. Without it, `Learn video` fails.",
     "GOOGLE_CREDENTIALS_JSON": "Service-account JSON for Google Calendar. Without it, reminders fail.",
     "GOOGLE_CALENDAR_ID":      "Target calendar. Defaults to 'primary'.",
@@ -226,8 +226,6 @@ OPTIONAL_ENV = {
     "BUDGET_CEILING":          "Monthly budget ceiling in euros. Defaults to 300.",
     "MONTHS_DB_ID":            ("Notion database the month pages live in. Discovered from the "
                                 f"Expenses '{EXPENSE_MONTH_RELATION}' relation when unset."),
-    "MONTH_STATE_FILE":        ("Where the resolved month page ID is cached between restarts. "
-                                "Defaults to .month_state.json."),
     "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn and "
                                    "Implement are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
