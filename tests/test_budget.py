@@ -26,6 +26,19 @@ from conftest import EXPENSES_ID, NOTION_BASE
 
 QUERY_URL = f"{NOTION_BASE}/databases/{EXPENSES_ID}/query"
 
+MONTH_PAGE = "test-month-id"
+
+
+@pytest.fixture(autouse=True)
+def pinned_month(monkeypatch):
+    """Pin the month page so these tests are about budget maths, not resolution.
+
+    The resolved month page is cached in memory only, so the first
+    current_month_id() call in a process asks Notion — which would otherwise put
+    an unrelated schema request in front of every query these tests inspect.
+    """
+    monkeypatch.setattr(budget_module, "current_month_id", lambda: MONTH_PAGE)
+
 
 # ─── FIXTURE BUILDERS ──────────────────────────────────────────────────────────
 
@@ -115,7 +128,7 @@ def test_budget_queries_the_current_month_only():
     sent = responses.calls[0].request.body
     body = sent.decode() if isinstance(sent, bytes) else sent
     assert "Account" in body
-    assert "test-month-id" in body
+    assert MONTH_PAGE in body
 
 
 @responses.activate

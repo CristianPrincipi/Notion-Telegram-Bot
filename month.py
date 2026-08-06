@@ -37,16 +37,30 @@ one thing worse than a stale MONTH_ID is expenses split across two August pages.
 
 WHERE THE ANSWER LIVES
 ----------------------
-In memory, and in a small JSON file so a restart does not have to ask Notion
-again. Neither is authoritative: Notion is. The file is a cache that can be
-deleted at any time, which matters on Railway where the filesystem does not
-survive a deploy.
+In memory, for the life of the process, and nowhere else. Notion is
+authoritative; this is a cache, and a fresh process simply asks again.
 
-`MONTH_ID` is still read — as the SEED. At first boot, with no cache file, it is
-taken to be the current month's page (which is what it was when you set it), so
-David starts working immediately, exactly as before. From the first rollover on,
-this module's answer supersedes it, and the environment variable can be left to
-go stale without consequence.
+THERE USED TO BE A JSON FILE TOO, and dropping it is why the seed below reads
+the way it does. `.month_state.json` existed to save a restart one resolve — two
+API calls, once per container — which is not worth a persistence story on a
+platform whose filesystem dies with every deploy. But it had quietly acquired a
+second job: while the file existed it held a CORRECTLY RESOLVED page, so the
+seed path below was never reached. The file was load-bearing by accident, for a
+hazard that should not have existed.
+
+`MONTH_ID` is read as a LAST-RESORT FALLBACK, not as an answer. It used to be
+adopted at boot as "the current month's page" — labelled with today's period, so
+`current_month_id()` saw a fresh-looking cache and handed it straight back
+without ever asking Notion. When the variable had gone stale (which is its whole
+documented lifecycle: it is a value you paste in once) every expense written
+between a deploy and that night's 00:05 rollover was filed against LAST month's
+page, and the budget answered for the wrong month. Both look completely normal.
+
+So a fresh process now starts with `period = None`, which reads as "older than
+any real month" and forces the first caller to resolve from Notion. The seed is
+kept only for where it is genuinely useful: if that resolve FAILS, David falls
+back to it rather than to nothing. A stale page beats no page during a Notion
+outage — but only after Notion has been asked and could not answer.
 
 BLOCKING, LIKE EVERY OTHER NOTION CALL
 --------------------------------------
@@ -57,7 +71,6 @@ provide no mutual exclusion at all between two worker threads.
 """
 
 import asyncio
-import json
 import logging
 import os
 import threading
@@ -79,11 +92,9 @@ EXPENSES_ID = os.environ.get("EXPENSES_ID")
 # ID to keep correct in Railway. Set it only to override that discovery.
 MONTHS_DB_ID = os.environ.get("MONTHS_DB_ID")
 
-# The seed described in the module docstring, not a live value. Read once.
+# The outage fallback described in the module docstring, not a live value and not
+# an answer. Read once.
 BOOTSTRAP_MONTH_ID = os.environ.get("MONTH_ID")
-
-# Cache file. Best-effort: every read and write failure degrades to "ask Notion".
-STATE_FILE = os.environ.get("MONTH_STATE_FILE", ".month_state.json")
 
 # NOT strftime("%B"). That is locale-dependent, so the page title would silently
 # become "agosto 2026" on a host with an Italian locale and stop matching the
@@ -121,33 +132,49 @@ class Rollover(NamedTuple):
     def changed(self) -> bool:
         """True when this run WROTE something — created, renamed, or repointed.
 
-        The headline predicate, not the notification one. A restart re-resolves
-        the same month from Notion and lands on ADOPTED, which is `changed`
-        (the pointer did move, from the seed to the resolved page) but is not a
-        rollover.
+        The headline predicate, not the notification one. A fresh process
+        re-resolves the current month from Notion and lands on ADOPTED, which is
+        `changed` (the pointer did move, from nothing to the resolved page) but
+        is not a rollover.
         """
         return self.error is None and self.action != UNCHANGED
 
     @property
     def rolled_over(self) -> bool:
-        """True when this run moved David onto a month it was not already on.
+        """True when this run is worth interrupting you for.
 
-        THE PREDICATE THE NIGHTLY JOB NOTIFIES ON, and the reason `changed` is not.
-        `changed` is true of any run that wrote to Notion, including the ADOPTED
-        every fresh container produces: Railway's filesystem is ephemeral, so
-        `.month_state.json` dies with each deploy and the next run re-resolves the
-        current month from Notion and adopts the page it finds. That is correct
-        behaviour and worth logging — it is not worth a Telegram message, and
-        sending one meant a "✅ Monthly expenses page updated" on days David had
-        simply been restarted.
+        THE PREDICATE THE NIGHTLY JOB NOTIFIES ON, and the reason `changed` is
+        not. `changed` is true of any run that wrote to Notion, including the
+        ADOPTED that every fresh process produces — correct behaviour, correctly
+        logged, and not news. Notifying on it meant a "✅ Monthly expenses page
+        updated" on days David had simply been restarted, and a claim that
+        arrives that often is one you stop reading.
 
-        Comparing PERIODS instead of pages makes the message say what it claims:
-        the month moved. In a healthy deploy that is the 1st and only the 1st. If
-        David was down over the 1st, it is the first day it came back — which is
-        precisely the run you want to hear about, and is why this is a period
-        comparison rather than a `now_local().day == 1` check.
+        THE ORDINARY CASE is `period != from_period`: the month moved, which is
+        what the message claims. In a healthy deploy that is the 1st and only the
+        1st; if David was down over the 1st it is the first day it came back,
+        which is precisely the run you want to hear about — and is why this is a
+        period comparison rather than a `now_local().day == 1` check. Same period
+        in and out is silence, whatever was written.
+
+        THE from_period=None CASE is a process that had not resolved a month yet
+        — so it cannot claim the month moved, it only knows where it landed.
+        Every process now starts that way, since the resolved page is cached in
+        memory only. Treating None as "moved" would put a false
+        "✅ Monthly expenses page updated" on every deploy, which is the exact
+        bug the `changed` → `rolled_over` switch was made to kill.
+
+        Such a run speaks for exactly one reason: it CREATED the page. A month
+        page that did not exist and now does is news whoever asked for it, and it
+        can only happen once per month — every later run finds the page and lands
+        on ADOPTED or UNCHANGED. Landing on a page that already existed is just a
+        boot, and boots are not news.
         """
-        return self.error is None and self.period != self.from_period
+        if self.error is not None:
+            return False
+        if self.from_period is None:
+            return self.action == CREATED
+        return self.period != self.from_period
 
 
 # ─── NAMING ────────────────────────────────────────────────────────────────────
@@ -183,66 +210,40 @@ _lock = threading.RLock()
 _schema: dict = {}
 
 
-def _read_state_file() -> dict | None:
-    """The cached answer from a previous run, or None if there isn't a usable one."""
-    try:
-        with open(STATE_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError) as e:
-        logger.warning("Ignoring unreadable month state file %s: %s", STATE_FILE, e)
-        return None
-
-    if not isinstance(data, dict) or not data.get("period") or not data.get("page_id"):
-        logger.warning("Ignoring malformed month state file %s.", STATE_FILE)
-        return None
-
-    return {
-        "period":  str(data["period"]),
-        "page_id": str(data["page_id"]),
-        "title":   str(data.get("title") or ""),
-    }
-
-
 def _initial_state() -> dict:
-    """Where David starts from, in order of trustworthiness: cache, then seed.
+    """Where David starts from: knowing nothing, holding the seed in reserve.
 
-    With neither, the period is left None — which reads as "older than any real
-    month", so the first caller resolves it from Notion.
+    THE PERIOD IS ALWAYS None HERE, even when MONTH_ID is set, and that is the
+    whole point. `period = None` reads as "older than any real month", so the
+    first caller resolves from Notion instead of trusting what it was handed.
+
+    Labelling the seed with the CURRENT period — which this used to do — told
+    `current_month_id()` that an environment variable pasted in weeks ago was
+    today's answer, and it returned it without a single API call. See the module
+    docstring.
+
+    The page ID is still carried, so `current_month_id()` has something to fall
+    back to if that first resolve fails.
     """
-    cached = _read_state_file()
-    if cached:
-        return cached
-    if BOOTSTRAP_MONTH_ID:
-        return {"period": period_key(), "page_id": BOOTSTRAP_MONTH_ID, "title": canonical_title()}
-    return {"period": None, "page_id": None, "title": ""}
+    return {"period": None, "page_id": BOOTSTRAP_MONTH_ID, "title": ""}
 
 
 _state = _initial_state()
 
 
 def _remember(period: str, page_id: str, title: str) -> None:
-    """Adopt a resolved page as the current month's, and cache it for next boot.
+    """Adopt a resolved page as the current month's, for the life of the process.
 
     Ignores a result for any month that is not the current one: `when` exists so
     a past month can be repaired by hand, and doing that must not repoint live
     expense writes at a page from last year.
     """
     if period != period_key():
-        logger.info("Resolved %s (%s) — not the current month, so MONTH_ID is unchanged.",
+        logger.info("Resolved %s (%s) — not the current month, so the pointer is unchanged.",
                     title, page_id)
         return
 
     _state.update(period=period, page_id=page_id, title=title)
-
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as fh:
-            json.dump(_state, fh)
-    except OSError as e:
-        # A read-only or full filesystem costs the restart shortcut, nothing more:
-        # the next run re-resolves from Notion and gets the same answer.
-        logger.warning("Could not cache the month page to %s: %s", STATE_FILE, e)
 
 
 # ─── THE MONTH DATABASE ────────────────────────────────────────────────────────
@@ -435,28 +436,35 @@ def ensure_current_month_page(when=None) -> Rollover:
 def current_month_id() -> str | None:
     """The page ID this month's expenses relate to. THE replacement for MONTH_ID.
 
-    A plain memory read in the normal case. It only talks to Notion when the
-    cached answer belongs to an EARLIER month than today — which happens when the
-    scheduled rollover could not run, typically because David was redeployed or
-    down over the 1st. That check is what keeps a missed rollover from quietly
-    filing a week of expenses into last month.
+    A plain memory read in the normal case. It talks to Notion in exactly two
+    situations, and both are the point of the function:
+
+      • the FIRST call in a process, because the cache starts empty. That is one
+        resolve per container — two API calls — and it is what makes a stale
+        MONTH_ID harmless: David asks Notion which page August 2026 is rather
+        than believing a value pasted into Railway weeks ago.
+      • when the cached answer belongs to an EARLIER month than today, which
+        happens when the scheduled rollover could not run — typically because
+        David was redeployed or down over the 1st. That check is what keeps a
+        missed rollover from quietly filing a week of expenses into last month.
 
     Deliberately one-directional: a cached period that is NEWER than the clock is
     left alone. Months only roll forward, so a backwards jump is a clock problem,
     and re-resolving on it would write the wrong month into the cache.
 
-    If that on-demand resolve fails, the last known page ID is returned rather
-    than None. A Notion outage fails the expense write immediately afterwards
-    anyway, so refusing here would only replace one error with an emptier one —
-    but the failure IS logged, and the scheduled job reports it to Telegram.
+    If the resolve fails, the last known page ID is returned rather than None —
+    on a first call that is the MONTH_ID seed, which is the only job that
+    variable still has. A Notion outage fails the expense write immediately
+    afterwards anyway, so refusing here would replace one error with an emptier
+    one — but the failure IS logged, and the scheduled job reports it to Telegram.
     """
     with _lock:
         now = period_key()
         if _state["period"] is not None and _state["period"] >= now:
             return _state["page_id"]
 
-        logger.warning("Month page is stale (cached %s, now %s) — resolving from Notion.",
-                       _state["period"], now)
+        logger.info("Month page not resolved yet for %s (had %s) — asking Notion.",
+                    now, _state["period"])
         result = ensure_current_month_page()
         if result.error:
             logger.error("Falling back to the last known month page %s.", _state["page_id"])

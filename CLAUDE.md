@@ -97,8 +97,16 @@ flight. Notion writes are bounded by `notion_request`'s timeout and bounded retr
 
 No local mirror, no local database, no cached copy treated as authoritative. Railway's
 filesystem is ephemeral — anything written locally dies with the container. Caches for
-performance are fine *if deleting them is harmless*: `month.py` caches the resolved page in
-`.month_state.json`, and losing it just means asking Notion again.
+performance are fine *if deleting them is harmless*, and the safest place for one is
+**memory**: `month.py` holds the resolved page for the life of the process and a fresh
+container just asks Notion again, at a cost of two API calls.
+
+`month.py` used to persist that cache to `.month_state.json`, and removing it is
+instructive. The saving was negligible on a platform that deletes the file every deploy —
+but the file had quietly become load-bearing, because while it existed the fallback path
+behind it was never reached, and that path handed back a stale `MONTH_ID` **without asking
+Notion at all**. A cache whose absence changes behaviour is not a cache. If you add one,
+the no-cache path is the one to get right first.
 
 ### 2. Never delete before the replacement is committed
 

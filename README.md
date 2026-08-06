@@ -37,7 +37,7 @@ fine without them and loses the feature named below.
 | `LITERATURE_ID` | **Required** | Notion page ID of the Literature area; books relate to it. |
 | `LEARN_ID` | **Required** | Notion Learn database ID for videos, articles, podcasts and PDFs. |
 | `ANTHROPIC_API_KEY` | **Required** | Anthropic API key used to summarise Learn and Implement content. |
-| `MONTH_ID` | Optional | Notion page ID of the current month; expenses relate to it. **Seed value only** — David resolves and rolls it forward itself (see [Monthly rollover](#monthly-rollover)). Unset, the first run of a fresh container resolves it from Notion instead. |
+| `MONTH_ID` | Optional | **Outage fallback only** — used if Notion cannot be reached. David resolves the real page itself on first use (see [Monthly rollover](#monthly-rollover)). |
 | `SUPADATA_KEY` | Optional | Supadata API key for YouTube transcripts. Without it, `Learn video` fails. |
 | `GOOGLE_CREDENTIALS_JSON` | Optional | Service-account JSON for Google Calendar. Without it, reminders fail. |
 | `GOOGLE_CALENDAR_ID` | Optional | Target calendar. Defaults to `primary`. |
@@ -48,7 +48,6 @@ fine without them and loses the feature named below.
 | `ANTHROPIC_DAILY_BUDGET_USD` | Optional | Estimated Anthropic spend allowed per day before `Learn` and `Implement` are refused. Defaults to `5`. |
 | `ANTHROPIC_SPEND_FILE` | Optional | Where the running daily spend is recorded. Defaults to `.anthropic_spend.json`. |
 | `MONTHS_DB_ID` | Optional | Notion database the month pages live in. Discovered from the Expenses `Account` relation when unset. |
-| `MONTH_STATE_FILE` | Optional | Where the resolved month page ID is cached between restarts. Defaults to `.month_state.json`. |
 | `LOG_LEVEL` | Optional | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Defaults to `INFO`. An unrecognised value logs a warning and falls back to `INFO`. |
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
@@ -166,25 +165,36 @@ rather than picked from.
 | When | `month_rollover`, 00:05 Europe/Rome — daily, though it only has work on the 1st, so a missed or failed rollover retries the next night instead of a month later |
 | On demand | `Month` — the same idempotent call, and it prints the current page ID |
 | Safety net | `current_month_id()` re-resolves when the cached month is older than today, so a rollover missed while David was redeployed is fixed by the first expense of the day rather than at the next midnight |
-| Notification | Only when something moved (created, renamed, adopted) or failed — a nightly "still August" would train you to ignore it |
+| Notification | Only when the month actually moved, when the page was created, or on failure — a nightly "still August" would train you to ignore it, and so would one per deploy |
 
 The database the month pages live in is discovered from the Expenses `Account`
 relation, so there is no second ID to keep correct; `MONTHS_DB_ID` overrides that
-discovery. The resolved page ID is cached in `.month_state.json` so a mid-month
-restart does not fall back to the seed `MONTH_ID` — the cache can be deleted at
-any time, since Notion is the source of truth.
+discovery.
 
-`MONTH_ID` is still read, as the **seed**: with no cache file it is taken to be
-the current month's page, which is what it was when you set it. From the first
-rollover on it can go stale without consequence. Each rollover message includes
-the new page ID in backticks, so keeping the Railway variable current is one tap
-if you want to.
+### Where the answer is cached
 
-It is **optional**, and used to be required — which was the contract
-contradicting the code that reads it. Unset, the first run of a fresh container
-resolves the month from Notion by title instead, one query later. Requiring it
-meant a deploy died over a value nothing needs, and the obvious way to make that
-error go away is to paste a stale page ID back in.
+**In memory, for the life of the process, and nowhere else.** The first
+`current_month_id()` call in a fresh container asks Notion — two API calls — and
+every call after that is a memory read until the month turns.
+
+There used to be a `.month_state.json` alongside it. It saved a restart that one
+resolve, which is not worth a persistence story on a platform that deletes the
+file every deploy. But it had quietly acquired a second job: while the file
+existed, the fallback behind it was never reached — and that fallback stamped
+`MONTH_ID` with *today's* period, so `current_month_id()` saw a fresh-looking
+cache and returned it **without asking Notion at all**. Since `MONTH_ID` is
+documented as safe to let go stale, every container that booted without the file
+(i.e. every deploy) filed expenses against last month's page until the next 00:05
+job, and `B` answered for the wrong month. Both look completely normal.
+
+So the file is gone and a fresh process now starts knowing nothing, which forces
+it to ask.
+
+`MONTH_ID` keeps exactly one job: **the outage fallback.** If that first resolve
+fails, David uses it rather than nothing — a stale page beats no page — but only
+after Notion has been asked and could not answer. Each rollover message includes
+the current page ID in backticks, so keeping the Railway variable fresh is one
+tap if you want the fallback to be accurate.
 
 ### Input rules
 

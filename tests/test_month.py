@@ -51,15 +51,14 @@ PAGES_URL           = f"{NOTION_BASE}/pages"
 # ─── FIXTURES ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def fresh_month(monkeypatch, tmp_path):
-    """Reset the module's caches and pin the clock to 1 August 2026.
+def fresh_month(monkeypatch):
+    """Reset the module's cache and pin the clock to 1 August 2026.
 
     month.py deliberately keeps state across calls — that is what makes the
     common path a memory read rather than a Notion query — so every test starts
-    from a known one, with the state file inside tmp_path so nothing is written
-    into the repo.
+    from a known one. The cache is memory-only: there is no state file to
+    redirect, which is why this fixture no longer needs tmp_path.
     """
-    monkeypatch.setattr(month_module, "STATE_FILE", str(tmp_path / "month_state.json"))
     monkeypatch.setattr(month_module, "MONTHS_DB_ID", None)
     monkeypatch.setattr(month_module, "_schema", {})
     monkeypatch.setattr(month_module, "_state",
@@ -421,60 +420,77 @@ def test_an_unresolvable_stale_pointer_falls_back_to_the_last_known_page():
     assert current_month_id() == JULY_PAGE
 
 
-# ─── PERSISTENCE ───────────────────────────────────────────────────────────────
+# ─── WHAT A FRESH PROCESS BELIEVES ─────────────────────────────────────────────
+# There is no state file. The cache is memory-only, so every container starts
+# knowing nothing — which is the point: it has to ASK rather than believe what it
+# was handed.
 
 @responses.activate
-def test_the_resolved_page_survives_a_restart():
-    """Railway restarts mid-month. Without the cache the process would come back
-    up believing the seed MONTH_ID — which is last month's page by then — until
-    the next nightly job."""
+def test_a_stale_month_id_is_never_trusted_without_asking_notion(monkeypatch):
+    """THE BUG THE STATE FILE WAS ACCIDENTALLY HIDING.
+
+    _initial_state() used to stamp the seed with TODAY'S period, so
+    current_month_id() saw a fresh-looking cache and returned MONTH_ID without a
+    single API call. MONTH_ID is a value pasted into Railway once and documented
+    as safe to let go stale — so on any container that started with the file
+    missing (which is every deploy: the filesystem is ephemeral) every expense
+    until the next 00:05 job was filed against LAST month's page, and `B`
+    answered for the wrong month. Both look completely normal.
+    """
+    monkeypatch.setattr(month_module, "BOOTSTRAP_MONTH_ID", JULY_PAGE)
+    monkeypatch.setattr(month_module, "_state", month_module._initial_state())
     notion_month_database([month_page("August 2026")])
-    ensure_current_month_page()
 
-    with open(month_module.STATE_FILE, encoding="utf-8") as fh:
-        cached = json.load(fh)
-
-    assert cached["page_id"] == AUGUST_PAGE
-    assert cached["period"] == "2026-08"
-    assert month_module._read_state_file() == cached
+    assert current_month_id() == AUGUST_PAGE, (
+        "current_month_id() handed back the stale seed instead of resolving")
+    assert responses.calls, "it answered from the seed without asking Notion"
 
 
-def test_an_unreadable_state_file_is_ignored_rather_than_fatal(monkeypatch, tmp_path):
-    """It is a cache, not a source of truth. A truncated write must send David
-    back to Notion, not stop it starting."""
-    broken = tmp_path / "broken.json"
-    broken.write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(month_module, "STATE_FILE", str(broken))
-
-    assert month_module._read_state_file() is None
-
-
-def test_an_unwritable_state_file_does_not_fail_the_rollover(monkeypatch):
-    """Losing the restart shortcut is not worth failing a rollover over."""
-    monkeypatch.setattr(month_module, "STATE_FILE", "/nonexistent-dir/month.json")
-
-    month_module._remember("2026-08", AUGUST_PAGE, "August 2026")
-
-    assert month_module._state["page_id"] == AUGUST_PAGE
-
-
-def test_the_seed_month_id_is_adopted_on_a_first_boot(monkeypatch, tmp_path):
-    """With no cache file, MONTH_ID is what the owner set for the CURRENT month —
-    so David works immediately, exactly as it did before this module existed."""
-    monkeypatch.setattr(month_module, "STATE_FILE", str(tmp_path / "absent.json"))
+def test_a_fresh_process_starts_knowing_nothing(monkeypatch):
+    """period=None reads as older than any real month, so the first caller
+    resolves from Notion instead of believing what it was handed."""
     monkeypatch.setattr(month_module, "BOOTSTRAP_MONTH_ID", "seed-page-id")
 
     assert month_module._initial_state() == {
-        "period": "2026-08", "page_id": "seed-page-id", "title": "August 2026"}
+        "period": None, "page_id": "seed-page-id", "title": ""}
 
 
-def test_a_first_boot_with_no_seed_starts_stale(monkeypatch, tmp_path):
-    """period=None reads as older than any real month, so the first caller
-    resolves from Notion instead of writing expenses against nothing."""
-    monkeypatch.setattr(month_module, "STATE_FILE", str(tmp_path / "absent.json"))
+def test_with_no_seed_at_all_the_page_is_unknown_too(monkeypatch):
     monkeypatch.setattr(month_module, "BOOTSTRAP_MONTH_ID", None)
 
-    assert month_module._initial_state()["period"] is None
+    assert month_module._initial_state() == {
+        "period": None, "page_id": None, "title": ""}
+
+
+@responses.activate
+def test_the_seed_is_the_fallback_when_notion_cannot_answer(monkeypatch):
+    """The one job MONTH_ID still has: a stale page beats no page in an outage.
+
+    Only reached AFTER Notion has been asked and could not answer, which is the
+    whole difference from the behaviour above.
+    """
+    monkeypatch.setattr(month_module, "BOOTSTRAP_MONTH_ID", JULY_PAGE)
+    monkeypatch.setattr(month_module, "_state", month_module._initial_state())
+    responses.add(responses.GET, EXPENSES_SCHEMA_URL, status=500, json={})
+
+    assert current_month_id() == JULY_PAGE
+    assert responses.calls, "it fell back without asking Notion first"
+
+
+@responses.activate
+def test_the_resolved_page_is_reused_for_the_rest_of_the_process(monkeypatch):
+    """The cache still earns its keep WITHIN a process — one resolve, not one per
+    expense. Losing it across a restart costs two API calls, which is why it does
+    not need to survive one."""
+    monkeypatch.setattr(month_module, "_state", month_module._initial_state())
+    notion_month_database([month_page("August 2026")])
+
+    assert current_month_id() == AUGUST_PAGE
+    calls_after_first = len(responses.calls)
+
+    assert current_month_id() == AUGUST_PAGE
+    assert len(responses.calls) == calls_after_first, (
+        "the second call went back to Notion — the in-memory cache is not working")
 
 
 @responses.activate
@@ -571,10 +587,9 @@ def test_a_failure_message_says_what_went_wrong():
 def test_a_restart_mid_month_does_not_ping(monkeypatch):
     """WHY THE MESSAGE ARRIVED EVERY DAY.
 
-    Railway's filesystem is ephemeral, so .month_state.json dies with every deploy
-    and David reboots seeded from the MONTH_ID environment variable — which is the
-    page ID you last pasted in, not necessarily the one Notion resolves to. The
-    next nightly run adopts the resolved page, `changed` goes true, and a
+    David is holding a page ID that is not the one Notion resolves to — which is
+    what a stale MONTH_ID fallback looks like once it has been adopted. The next
+    nightly run adopts the resolved page, `changed` goes true, and a
     "✅ Monthly expenses page updated" went out on a day in the middle of August.
     """
     monkeypatch.setattr(month_module, "_state",
@@ -653,13 +668,13 @@ def test_the_job_speaks_up_when_the_month_moved(monkeypatch, action):
 @pytest.mark.parametrize("action", [CREATED, RENAMED, ADOPTED])
 def test_a_write_within_the_same_month_is_not_announced(monkeypatch, action):
     """THE DAILY-MESSAGE BUG. The job tested `changed`, which is true of any run
-    that wrote to Notion — including the ADOPTED every fresh container produces,
-    because Railway's ephemeral filesystem loses .month_state.json on each deploy
-    and the next run re-resolves the same month and adopts the page it finds.
+    that wrote to Notion — including the ADOPTED a re-resolve of the SAME month
+    produces.
 
     So "✅ Monthly expenses page updated" arrived on ordinary days, claiming a
     change of month that had not happened. Same period in and out = silence,
-    whatever was written.
+    whatever was written — including CREATED, which is only news to a run that
+    did not already know which month it was on.
     """
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
                         lambda: rollover(action, from_period="2026-08"))
@@ -683,15 +698,32 @@ def test_a_missed_rollover_is_announced_on_the_day_it_catches_up(monkeypatch):
     assert err is None
 
 
-def test_the_first_run_of_a_fresh_install_is_announced(monkeypatch):
-    """No cache and no MONTH_ID seed: from_period is None, so David did not know
-    which month it was on. Reporting the page it settled on is the point."""
+def test_a_first_run_that_created_the_page_is_announced(monkeypatch):
+    """from_period is None, so David did not know which month it was on — but a
+    page that did not exist and now does is news whoever asked for it, and it can
+    only happen once a month."""
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
                         lambda: rollover(CREATED, from_period=None))
 
     text, _ = build_rollover_message()
 
     assert AUGUST_PAGE in text
+
+
+@pytest.mark.parametrize("action", [RENAMED, ADOPTED])
+def test_a_first_run_that_only_found_the_page_stays_quiet(monkeypatch, action):
+    """THE DAILY-MESSAGE BUG, in the shape dropping the state file gives it.
+
+    Every process now starts with from_period=None — the resolved page is cached
+    in memory only, so there is nothing to carry across a restart. If that counted
+    as "the month moved", a "✅ Monthly expenses page updated" would go out on
+    every single deploy, claiming a change of month that had not happened. A run
+    that landed on a page which already existed is a boot, and boots are not news.
+    """
+    monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
+                        lambda: rollover(action, from_period=None))
+
+    assert build_rollover_message() == (None, None)
 
 
 def test_the_job_always_reports_a_failure(monkeypatch):
