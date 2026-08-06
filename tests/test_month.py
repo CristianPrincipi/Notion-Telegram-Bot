@@ -562,26 +562,136 @@ def test_a_failure_message_says_what_went_wrong():
     assert "Notion 404" in text
 
 
+# ─── THE JOB'S POLICY, END TO END ──────────────────────────────────────────────
+# These two drive the REAL ensure_current_month_page over the REAL builder, so
+# they fail if from_period stops being threaded through — which the monkeypatched
+# tests below, constructing Rollovers by hand, could not notice.
+
+@responses.activate
+def test_a_restart_mid_month_does_not_ping(monkeypatch):
+    """WHY THE MESSAGE ARRIVED EVERY DAY.
+
+    Railway's filesystem is ephemeral, so .month_state.json dies with every deploy
+    and David reboots seeded from the MONTH_ID environment variable — which is the
+    page ID you last pasted in, not necessarily the one Notion resolves to. The
+    next nightly run adopts the resolved page, `changed` goes true, and a
+    "✅ Monthly expenses page updated" went out on a day in the middle of August.
+    """
+    monkeypatch.setattr(month_module, "_state",
+                        {"period": "2026-08", "page_id": "stale-seed-from-railway",
+                         "title": "August 2026"})
+    notion_month_database([month_page("August 2026")])
+
+    # The builder, not a hand-built Rollover: this is the path the job takes, and
+    # it must be the FIRST resolve — a second one would find the state already
+    # repaired and be silent for the wrong reason.
+    assert build_rollover_message() == (None, None)
+
+
+@responses.activate
+def test_that_restart_is_still_a_write_worth_logging(monkeypatch):
+    """The counterpart to the silence above: nothing here says the adoption was
+    wrong, only that it is not news. `changed` must stay true so the log and the
+    `Month` command still report it."""
+    monkeypatch.setattr(month_module, "_state",
+                        {"period": "2026-08", "page_id": "stale-seed-from-railway",
+                         "title": "August 2026"})
+    notion_month_database([month_page("August 2026")])
+
+    result = ensure_current_month_page()
+
+    assert result.action == ADOPTED, "the pointer did move — that part was right"
+    assert result.changed, "and it is still a write worth logging"
+    assert not result.rolled_over, "but the month did not turn, so it is not news"
+
+
+@responses.activate
+def test_the_first_run_of_a_new_month_does_ping(monkeypatch):
+    """The counterpart, on the night it matters: July in the cache, August on the
+    clock. Anything that silences the restart case must leave this one speaking."""
+    monkeypatch.setattr(month_module, "_state",
+                        {"period": "2026-07", "page_id": JULY_PAGE, "title": "July 2026"})
+    notion_month_database([month_page("August 2026")])
+
+    text, err = build_rollover_message()
+
+    assert err is None
+    assert text is not None, "the 1st went unannounced"
+    assert "August 2026" in text
+    assert AUGUST_PAGE in text
+
+
 # ─── THE JOB'S POLICY ──────────────────────────────────────────────────────────
+
+def rollover(action, error=None, period="2026-08", from_period="2026-08"):
+    """A Rollover as the job sees one. Defaults to "the month did not move"."""
+    page = AUGUST_PAGE if period == "2026-08" else JULY_PAGE
+    title = "August 2026" if period == "2026-08" else "July 2026"
+    return month_module.Rollover(page, title, action, error, period, from_period)
+
 
 def test_the_job_stays_silent_when_there_was_nothing_to_do(monkeypatch):
     """It runs every night and only has work on the 1st. A nightly "still August"
     would train you to ignore the one message a year that matters."""
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
-                        lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", UNCHANGED))
+                        lambda: rollover(UNCHANGED))
 
     assert build_rollover_message() == (None, None)
 
 
 @pytest.mark.parametrize("action", [CREATED, RENAMED, ADOPTED])
-def test_the_job_speaks_up_when_something_moved(monkeypatch, action):
+def test_the_job_speaks_up_when_the_month_moved(monkeypatch, action):
     monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
-                        lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", action))
+                        lambda: rollover(action, from_period="2026-07"))
 
     text, err = build_rollover_message()
 
     assert AUGUST_PAGE in text
     assert err is None
+
+
+@pytest.mark.parametrize("action", [CREATED, RENAMED, ADOPTED])
+def test_a_write_within_the_same_month_is_not_announced(monkeypatch, action):
+    """THE DAILY-MESSAGE BUG. The job tested `changed`, which is true of any run
+    that wrote to Notion — including the ADOPTED every fresh container produces,
+    because Railway's ephemeral filesystem loses .month_state.json on each deploy
+    and the next run re-resolves the same month and adopts the page it finds.
+
+    So "✅ Monthly expenses page updated" arrived on ordinary days, claiming a
+    change of month that had not happened. Same period in and out = silence,
+    whatever was written.
+    """
+    monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
+                        lambda: rollover(action, from_period="2026-08"))
+
+    assert build_rollover_message() == (None, None)
+
+
+def test_a_missed_rollover_is_announced_on_the_day_it_catches_up(monkeypatch):
+    """Deliberately a period comparison and not `now_local().day == 1`.
+
+    If David is down over the 1st, the roll happens on the 2nd — the one run you
+    most need to hear about, and the one a strict day-of-month check would drop on
+    the floor in silence.
+    """
+    monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
+                        lambda: rollover(ADOPTED, from_period="2026-07"))
+
+    text, err = build_rollover_message()
+
+    assert "August 2026" in text
+    assert err is None
+
+
+def test_the_first_run_of_a_fresh_install_is_announced(monkeypatch):
+    """No cache and no MONTH_ID seed: from_period is None, so David did not know
+    which month it was on. Reporting the page it settled on is the point."""
+    monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
+                        lambda: rollover(CREATED, from_period=None))
+
+    text, _ = build_rollover_message()
+
+    assert AUGUST_PAGE in text
 
 
 def test_the_job_always_reports_a_failure(monkeypatch):
@@ -597,6 +707,23 @@ def test_the_job_always_reports_a_failure(monkeypatch):
     # better than a bare exception) and RETURNED (so the scheduler logs it too).
     assert "Notion 401" in text
     assert err == "Notion 401: unauthorized"
+
+
+def test_a_failure_on_the_1st_is_not_also_read_as_a_rollover(monkeypatch):
+    """A failed run moved nothing. If the clock turning the month were enough to
+    make it `rolled_over`, the failure notice would arrive with a success
+    predicate attached — and the retry that actually succeeds tomorrow would then
+    look like a repeat rather than the recovery.
+    """
+    monkeypatch.setattr("proactive.month_rollover.ensure_current_month_page",
+                        lambda: month_module.Rollover(JULY_PAGE, "July 2026", UNCHANGED,
+                                                      "Notion 502: bad gateway",
+                                                      "2026-07", "2026-07"))
+
+    text, err = build_rollover_message()
+
+    assert "Notion 502" in text
+    assert err == "Notion 502: bad gateway"
 
 
 # ─── THE COMMAND ───────────────────────────────────────────────────────────────
