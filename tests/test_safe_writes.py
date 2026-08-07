@@ -455,9 +455,11 @@ def test_two_overlapping_diet_runs_create_only_one_diet_page(monkeypatch):
                         lambda bid: ([{"type": "paragraph",
                                        "paragraph": {"rich_text": [
                                            {"plain_text": "some summary text"}]}}], None))
-    monkeypatch.setattr(implement_diet, "read_diet_tree", lambda pid: ({}, {}, None))
-    monkeypatch.setattr(implement_diet, "decide_updates",
-                        lambda tree, text, title: ({"plan": {}, "updates": []}, None))
+    monkeypatch.setattr(implement_diet, "read_diet_structure",
+                        lambda pid: ({"Goals": {"Fat Loss": {}}},
+                                     {"Goals>Fat Loss": "block-1"}, None))
+    monkeypatch.setattr(implement_diet, "route_sections",
+                        lambda paths, text, title: ({"affected": []}, None))
     monkeypatch.setattr(implement_diet, "update_page", lambda pid, props: (True, None))
 
     async def one_run():

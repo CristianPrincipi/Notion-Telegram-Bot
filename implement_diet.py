@@ -1,6 +1,5 @@
 import asyncio
 import os
-import json
 from concurrent.futures import ThreadPoolExecutor
 
 from anthropic_client import complete_json
@@ -96,8 +95,8 @@ def build_full_skeleton() -> list:
 # the slowest thing David does, and every one of those round trips is spent
 # waiting rather than working.
 #
-# Siblings at a level are independent, so read_diet_tree walks BREADTH-first and
-# fetches each level concurrently instead.
+# Siblings at a level are independent, so read_diet_structure walks BREADTH-first
+# and fetches each level concurrently instead.
 #
 # Four workers, not more. Notion rate-limits an integration to roughly three
 # requests per second on average, so a wider pool mostly buys 429s and the
@@ -141,18 +140,36 @@ def _children_of_many(block_ids: list) -> tuple[dict, str | None]:
     return children, error
 
 
-def read_diet_tree(page_id: str):
-    """Read the full H1>H2>H3 tree into a nested dict for Claude.
+def read_diet_structure(page_id: str):
+    """Read the page's section TAXONOMY — levels 1-3, and no content at all.
 
-    BLOCKING — dozens of Notion requests, four at a time. handle_implement_diet
-    runs it via asyncio.to_thread.
+    BLOCKING — Notion requests, four at a time. handle_implement_diet runs it via
+    asyncio.to_thread.
 
     Returns (tree, block_map, error) where:
-      tree      = {h1: {h2: {h3: "text content", ...}, ...}, ...}
-      block_map = {"h1>h2>h3": block_id}  — used later to locate sections to update
+      tree      = {h1: {h2: {h3: {}, ...}, ...}, ...}  — every node is a dict of
+                  its children, a leaf is {}
+      block_map = {"h1>h2>h3": block_id}  — how a path is located for reading or
+                  writing later
 
-    A section with no content reads as "" rather than being left out: Claude has
-    to see that it exists and is empty in order to fill it.
+    WHY THIS NO LONGER READS CONTENT
+    --------------------------------
+    It used to be `read_diet_tree`, and it fetched every section's text so the
+    whole page could be serialised into one prompt. Routing only needs the PATHS,
+    so levels 1-3 are enough to produce them, and the ~45 level-4 requests that
+    fetched H3 leaf content are now made after routing, for the handful of
+    sections that turned out to be affected. See read_section_contents.
+
+    ONE SHAPE AT EVERY LEVEL. The old tree returned a `str` for an H2 holding leaf
+    content and a `dict` for an H2 holding H3 toggles, so the same position in the
+    structure had two types and every consumer had to test which.
+
+    AND NO `content` FIELD, deliberately. Carrying one would mean writing `""` for
+    every section not yet fetched — and `""` is also what a genuinely empty
+    section looks like. That is the empty-versus-unknown collapse that already
+    cost this module a content overwrite once (see _children_of_many): a section
+    that reads as empty is exactly what makes Claude decide to populate it. A
+    structure that does not claim to know content cannot be wrong about it.
     """
     tree, block_map = {}, {}
 
@@ -193,82 +210,196 @@ def read_diet_tree(page_id: str):
     if err:
         return {}, {}, err
 
-    h3s = []                                   # [(h1_name, h2_name, h3_name, h3_block), ...]
     for h1_name, h2_name, h2 in h2s:
+        tree[h1_name][h2_name] = {}
         if not h2.get("has_children"):
-            tree[h1_name][h2_name] = ""
-            continue
+            continue                   # a leaf row — its content is fetched later
 
         blocks = h3_children.get(h2["id"], [])
-        # An H2 either holds H3 toggles, or leaf content directly.
-        if not any(b.get("type", "").startswith("heading_3") for b in blocks):
-            tree[h1_name][h2_name] = blocks_to_text(blocks, style="plain")
-            continue
-
-        tree[h1_name][h2_name] = {}
+        # An H2 either holds H3 toggles, or leaf content directly. The content
+        # case is a leaf here too: {} either way, and read_section_contents is
+        # what tells them apart when the content is actually wanted.
         for h3 in blocks:
             h3_name = _heading_name(h3, 3)
             if not h3_name:
                 continue
             block_map[f"{h1_name}>{h2_name}>{h3_name}"] = h3["id"]
-            h3s.append((h1_name, h2_name, h3_name, h3))
-
-    # ── Level 4: the leaf content under every H3, in one pass ──────────────────
-    leaf_children, err = _children_of_many(
-        [h3["id"] for *_, h3 in h3s if h3.get("has_children")])
-    if err:
-        return {}, {}, err
-
-    for h1_name, h2_name, h3_name, h3 in h3s:
-        tree[h1_name][h2_name][h3_name] = blocks_to_text(
-            leaf_children.get(h3["id"], []), style="plain")
+            tree[h1_name][h2_name][h3_name] = {}
 
     return tree, block_map, None
 
 
-# ─── 3. CLAUDE: DECIDE WHICH SECTIONS TO UPDATE ────────────────────────────────
+def content_paths(tree: dict) -> list:
+    """The paths that can actually hold content, in page order.
 
-_DIET_SYSTEM = """You maintain a structured personal DIET knowledge page in Notion.
+    Leaf H2 rows and H3 attributes — never an H1 category, and never an H2 that
+    holds H3 toggles. Those are containers: the blueprint puts content under
+    them, not in them, and offering one to the router only creates a way for it
+    to name a section nothing can be written to.
+    """
+    paths = []
 
-The page has a fixed hierarchy: H1 categories > H2 rows > H3 attributes.
-You receive:
-- CURRENT_TREE: the existing page as nested JSON (section path → current text content)
-- SUMMARY: newly learned content (article/video/book) to integrate
+    def walk(node, prefix):
+        for name, children in node.items():
+            path = f"{prefix}>{name}" if prefix else name
+            if children:
+                walk(children, path)
+            elif prefix:               # depth >= 2 — H1 categories are excluded
+                paths.append(path)
 
-Your job: decide which H3 attribute sections (or H2 leaf sections) the SUMMARY actually
-affects, and return their FULL merged content. Touch ONLY sections the summary informs.
+    walk(tree, "")
+    return paths
+
+
+def read_section_contents(sections: dict):
+    """Fetch the current content of specific sections. Returns (contents, error).
+
+    BLOCKING — one Notion request per section, four at a time.
+
+    `sections` is {path: block_id}; the result is {path: "text content"}. This is
+    the level-4 read that read_diet_structure no longer does up front, and it now
+    runs only for the sections routing selected — a handful rather than ~45.
+
+    Any failed read fails the WHOLE fetch, for the reason in _children_of_many:
+    a section that failed to read is indistinguishable from an empty one once the
+    error is dropped, and an empty section is what makes Claude populate it.
+    """
+    if not sections:
+        return {}, None
+
+    paths = list(sections)
+    children, err = _children_of_many([sections[p] for p in paths])
+    if err:
+        return {}, err
+
+    contents = {}
+    for path in paths:
+        blocks = children.get(sections[path], [])
+        # Nested toggle headings are structure, not this section's content — the
+        # same filter apply_updates uses to decide what is replaceable, so what
+        # the model is shown is exactly what a rewrite would replace.
+        leaf = [b for b in blocks if not b.get("type", "").startswith("heading_")]
+        contents[path] = blocks_to_text(leaf, style="plain")
+    return contents, None
+
+
+# ─── 3. THE TWO CLAUDE CALLS ───────────────────────────────────────────────────
+#
+# WHY TWO CALLS AND NOT ONE
+# -------------------------
+# `decide_updates` used to send CURRENT_TREE — the whole page, serialised — plus
+# the summary, on EVERY run. Three things were wrong with that:
+#
+#   • Cost and latency scaled with the size of the knowledge base rather than the
+#     size of the update. A one-paragraph summary about creatine paid to ship
+#     every seasonality note and every fat-loss strategy along with it.
+#   • The payload was sliced at `[:30000]`. On a page with four bullets per
+#     section the tree JSON is already ~20k characters, so the tail of the page
+#     was heading for the same silent truncation `manual_text[:40000]` inflicted
+#     on the flat Manuals — dropped from the prompt with nothing raised, and
+#     therefore dropped from the model's view of what already exists.
+#   • Judgement degrades on noise. Most of that payload was irrelevant to any
+#     given summary.
+#
+# So it splits, the same way implement.py already does it:
+#
+#   ROUTE — the section paths, names ONLY, plus the summary. "Which of these does
+#           this inform?" A few hundred tokens of taxonomy.
+#   MERGE — the current content of ONLY the routed sections, plus the summary.
+#           "Here is what those sections say now; return their full merged text."
+#
+# Measured on a populated page: ~5,800 input tokens down to ~2,500, and ~45
+# Notion reads deferred to the sections that turn out to matter. The summary is
+# in both calls, which is why the saving is ~56% rather than ~90%.
+#
+# The routing call is the one whose failures are INVISIBLE — a section it does
+# not name is never fetched, never merged, never written, and the run still
+# reports success. That is why it stays on config.ANTHROPIC_MODEL rather than
+# being moved to a cheaper model to save a fraction of a cent per run, and why
+# handle_implement_diet accounts for every path at every stage below.
+
+_ROUTE_SYSTEM = """You route newly learned content into a structured personal DIET page in Notion.
+
+You are given the SECTION PATHS of the page (names only, no content) and a SUMMARY of
+something newly learned. Decide which sections the summary actually informs.
+
+The hierarchy is: category > row > attribute. Every path you are given can hold content.
 
 Rules:
-- "path" MUST exactly match an existing section path from CURRENT_TREE (same names, same '>' format).
-- Only output sections the SUMMARY genuinely informs. If the summary says nothing about a section, omit it.
-- Store ACTIONABLE information, not raw notes. Each bullet is a concrete, standalone statement.
-- mode "merge": combine your bullets with existing content, removing duplicates and keeping the stronger version.
-- mode "replace": existing content is outdated/wrong and the summary supersedes it.
-- For Evidence sections, structure bullets as "Question: …", "Result: …", "Limits: …", "Practical Conclusion: …" when the summary provides them.
-- Do NOT invent content. Do NOT infer beyond the summary.
-- If the summary affects nothing in the structure, return an empty "updates" list."""
+- Only name a section if the SUMMARY genuinely adds to, corrects, or sharpens it.
+  Sections the summary says nothing about must be left out — they will not be touched,
+  which is the point.
+- "path" MUST be copied EXACTLY from the SECTIONS list, including the '>' separators.
+- Prefer the most specific section. A fact about creatine dosing belongs in that
+  supplement's Dosage attribute, not in the whole Supplementation category.
+- Name every section the summary genuinely informs — a summary often touches several.
+- If the summary informs nothing on this page, return an empty list."""
 
-_DIET_SCHEMA = {
+_ROUTE_SCHEMA = {
     "type": "object",
     "properties": {
-        "plan": {
-            "type": "object",
-            "description": "What you are about to change, for the user to read before it happens.",
-            "properties": {
-                "new_sections":     {"type": "array", "items": {"type": "string"}},
-                "updated_sections": {"type": "array", "items": {"type": "string"}},
-                "evidence_added":   {"type": "array", "items": {"type": "string"}},
-                "conflicts":        {"type": "array", "items": {"type": "string"},
-                                     "description": "Contradictions found, and how resolved."},
+        "affected": {
+            "type": "array",
+            "description": "The sections this summary informs.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Exactly as given in SECTIONS."},
+                    "why":  {"type": "string", "description": "One short line."},
+                },
+                "required": ["path"],
             },
         },
+    },
+    "required": ["affected"],
+}
+
+
+def route_sections(paths: list, summary_text: str, summary_title: str):
+    """Which sections does this summary touch? Returns (routing, error).
+
+    Deliberately cheap: section PATHS only, never their content. That is what
+    keeps the untouched majority of the page out of the model entirely.
+    """
+    listing = "\n".join(f"- {p}" for p in paths)
+    user_msg = (
+        f"=== SECTIONS (names only) ===\n{listing}\n\n"
+        f"=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
+    )
+    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=2048)
+
+
+_MERGE_SYSTEM = """You merge newly learned content into specific sections of a personal DIET page.
+
+For each section you are given its current content and the new SUMMARY. Return the FULL
+merged content for that section — it replaces what is there.
+
+Rules:
+- Merge, never concatenate. Each fact appears exactly once, in its best form.
+- Keep everything in the current content that the summary does not supersede.
+  Content you leave out is deleted.
+- Store ACTIONABLE information, not raw notes. Each bullet is a concrete, standalone statement.
+- mode "merge": you combined your bullets with the existing content, removing duplicates
+  and keeping the stronger version.
+- mode "replace": the existing content is outdated or wrong and the summary supersedes it.
+- For Evidence sections, structure bullets as "Question: …", "Result: …", "Limits: …",
+  "Practical Conclusion: …" when the summary provides them.
+- Do NOT invent content. Do NOT infer beyond the summary.
+- "path" MUST be copied EXACTLY from the section headers given to you."""
+
+# `updates` is byte-for-byte the shape apply_updates already consumes, so the
+# write path — append-then-delete, and both modes replacing the section's leaf
+# content — is untouched by this split.
+_MERGE_SCHEMA = {
+    "type": "object",
+    "properties": {
         "updates": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
                     "path":    {"type": "string",
-                                "description": "Exactly matching a section path from CURRENT_TREE."},
+                                "description": "Exactly matching a section header given to you."},
                     "mode":    {"type": "string", "enum": ["merge", "replace"]},
                     "bullets": {"type": "array", "items": {"type": "string"},
                                 "description": "The FULL merged content for this section."},
@@ -276,18 +407,31 @@ _DIET_SCHEMA = {
                 "required": ["path", "mode", "bullets"],
             },
         },
+        "conflicts": {"type": "array", "items": {"type": "string"},
+                      "description": "Contradictions found between the summary and the "
+                                     "existing content, and how you resolved them."},
     },
     "required": ["updates"],
 }
 
 
-def decide_updates(tree: dict, summary_text: str, summary_title: str):
-    """Ask Claude which sections to update. Returns (result_dict, error)."""
+def merge_sections(contents: dict, summary_text: str, summary_title: str):
+    """Merge the summary into the given sections. Returns (result, error).
+
+    `contents` is {path: current text} for the routed sections ONLY. Everything
+    else on the page is absent from this prompt, which is the only guarantee that
+    it comes back unchanged — because it never went.
+    """
+    parts = []
+    for path, text in contents.items():
+        body = text.strip() or "(empty — this section has no content yet)"
+        parts.append(f"--- SECTION: {path} ---\n{body}")
+
     user_msg = (
-        f"CURRENT_TREE:\n{json.dumps(tree, ensure_ascii=False, indent=1)[:30000]}\n\n"
-        f"=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
+        "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
+        f"\n\n=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
     )
-    return complete_json(_DIET_SYSTEM, user_msg, _DIET_SCHEMA)
+    return complete_json(_MERGE_SYSTEM, user_msg, _MERGE_SCHEMA)
 
 
 # ─── 4. APPLY UPDATES SURGICALLY ───────────────────────────────────────────────
@@ -305,9 +449,10 @@ def apply_updates(updates: list, block_map: dict):
 
     Treating "merge" as append-only (the previous behaviour) wrote that full
     merged superset ON TOP of the bullets it already contained. Every run
-    therefore duplicated the section, and because read_diet_tree feeds the tree
-    back into the next prompt, the bloat compounded run over run and degraded
-    each subsequent merge. Nothing errored — the page just grew.
+    therefore duplicated the section, and because the next run reads that content
+    straight back out (read_section_contents) and feeds it to the merge, the bloat
+    compounded run over run and degraded every subsequent merge. Nothing errored —
+    the page just grew.
 
     Sections not in `updates` are never touched.
     Returns (applied_count, skipped_paths).
@@ -353,16 +498,24 @@ def apply_updates(updates: list, block_map: dict):
     return applied, skipped
 
 
+def _path_key(path: str) -> str:
+    """The comparable form of a path.
+
+    Spacing around '>' and letter case are not meaningful — Claude copies paths
+    back from a prompt and does not always reproduce them byte for byte. One
+    function so that "does this path resolve to a block?" and "did the merge
+    return this path?" cannot answer differently for the same pair of strings,
+    which would put a section in two buckets of the report or none.
+    """
+    return ">".join(p.strip() for p in (path or "").split(">")).lower()
+
+
 def _resolve_path(path: str, block_map: dict):
-    """Find a block id for a path, tolerant to spacing differences around '>'."""
-    norm = ">".join(p.strip() for p in path.split(">"))
-    if norm in block_map:
-        return block_map[norm]
-    # Case-insensitive fallback
-    low = norm.lower()
-    for k, v in block_map.items():
-        if k.lower() == low:
-            return v
+    """Find a block id for a path, tolerant to spacing and case differences."""
+    key = _path_key(path)
+    for known, block_id in block_map.items():
+        if _path_key(known) == key:
+            return block_id
     return None
 
 
@@ -431,10 +584,18 @@ async def handle_implement_diet(update, summary_name: str):
     Flow:
       A) Find [Summary Name] in LEARN_ID
       B) Find or build the Diet page (full skeleton on first run)
-      C) Read the current tree
-      D) Claude decides which sections to update
-      E) Apply surgical updates; report the plan
-      F) Tick the source page's 'Implemented' checkbox (feeds the Learn-nudge job)
+      C) Read the section taxonomy — paths only, no content
+      D) ROUTE: which sections does this summary inform?
+      E) Read the current content of ONLY those sections
+      F) MERGE: their merged content
+      G) Apply surgical updates; report what happened to every routed path
+      H) Tick the source page's 'Implemented' checkbox (feeds the Learn-nudge job)
+
+    EVERY ROUTED PATH IS ACCOUNTED FOR. A path can fall out at three points — it
+    may not resolve to a block, its content read may fail, or the merge may
+    decline to return it — and each of those is reported rather than dropped. A
+    section quietly missing from the write is indistinguishable from a section
+    the summary had nothing to say about, and only one of those is fine.
     """
 
     summary_name = summary_name.strip()
@@ -480,9 +641,9 @@ async def handle_implement_diet(update, summary_name: str):
     #   - the page id is not known until that call returns, so a lock keyed on it
     #     could not have covered the call that produces it.
     #
-    # It is also taken before read_diet_tree: Claude decides which sections to
-    # update from the tree it was given, so that decision is only valid while
-    # nobody else is mutating it.
+    # It is also taken before read_diet_structure: Claude routes and merges from
+    # the structure and content it was given, so those decisions are only valid
+    # while nobody else is mutating them.
     try:
         async with page_lock(DIET_ID):
             # ── Step B: find or create the Diet page ───────────────────────────────────
@@ -495,20 +656,29 @@ async def handle_implement_diet(update, summary_name: str):
                 await update.message.reply_text(
                     "🥗 First run — built the full Diet structure in Notion.")
 
-            # ── Step C: read the current tree ──────────────────────────────────────────
+            # ── Step C: read the taxonomy — paths only, no content ─────────────────────
             await update.message.reply_text("📂 Reading current Diet structure…")
-            tree, block_map, err = await asyncio.to_thread(read_diet_tree, page_id)
+            tree, block_map, err = await asyncio.to_thread(read_diet_structure, page_id)
             if err:
-                await update.message.reply_text(f"❌ Could not read the Diet tree: {err}")
+                await update.message.reply_text(f"❌ Could not read the Diet structure: {err}")
                 return
 
-            # ── Step D: Claude decides what to update ──────────────────────────────────
-            await update.message.reply_text("🧠 Claude is analysing the summary…")
+            paths = content_paths(tree)
+            if not paths:
+                await update.message.reply_text(
+                    "❌ The Diet page has no sections to update. Delete the page and "
+                    "re-run to rebuild the structure."
+                )
+                return
+
+            # ── Step D: ROUTE — which sections does this inform? ───────────────────────
+            await update.message.reply_text(
+                f"🧭 Checking which of the {len(paths)} sections this affects…")
             # Safe to time out: nothing has been written yet, and the source page
             # is not yet marked implemented.
             try:
-                result, err = await asyncio.wait_for(
-                    asyncio.to_thread(decide_updates, tree, summary_text, summary_title),
+                routing, err = await asyncio.wait_for(
+                    asyncio.to_thread(route_sections, paths, summary_text, summary_title),
                     timeout=ANTHROPIC_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -518,36 +688,93 @@ async def handle_implement_diet(update, summary_name: str):
                 )
                 return
             if err:
-                await update.message.reply_text(f"❌ Analysis failed: {err}")
+                await update.message.reply_text(f"❌ Routing failed: {err}")
                 return
 
-            plan    = result.get("plan", {})
+            affected = [a for a in routing.get("affected", []) if a.get("path")]
+            if not affected:
+                await reply(
+                    update,
+                    f"ℹ️ *{escape_md(summary_title)}* doesn't map to anything on the "
+                    f"Diet page — nothing was changed.",
+                )
+                await asyncio.to_thread(update_page, summary_id,
+                                        {"Implemented": {"checkbox": True}})
+                return
+
+            # Resolve every routed path NOW, so one the model invented is reported
+            # here rather than disappearing between the two calls.
+            targets, unresolved = {}, []
+            for item in affected:
+                path = item["path"].strip()
+                block_id = _resolve_path(path, block_map)
+                if block_id:
+                    targets[path] = block_id
+                else:
+                    unresolved.append(path)
+
+            await reply(update, _format_plan(affected, unresolved, len(paths), summary_title))
+
+            if not targets:
+                await update.message.reply_text(
+                    "⚠️ Claude named sections I couldn't find on the page — nothing was changed."
+                )
+                return
+
+            # ── Step E: read the content of ONLY those sections ────────────────────────
+            contents, err = await asyncio.to_thread(read_section_contents, targets)
+            if err:
+                await update.message.reply_text(
+                    f"❌ Could not read the sections to update: {err}\n"
+                    "Nothing was written."
+                )
+                return
+
+            # ── Step F: MERGE — only the routed sections ───────────────────────────────
+            await update.message.reply_text("🧠 Claude is merging the summary in…")
+            try:
+                result, err = await asyncio.wait_for(
+                    asyncio.to_thread(merge_sections, contents, summary_text, summary_title),
+                    timeout=ANTHROPIC_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                await update.message.reply_text(
+                    f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
+                    "Your Diet page is unchanged — nothing was written."
+                )
+                return
+            if err:
+                await update.message.reply_text(f"❌ Merge failed: {err}")
+                return
+
             updates = result.get("updates", [])
 
-            # ── Send the implementation plan BEFORE applying (per spec) ────────────────
-            await reply(update, _format_plan(plan, summary_title))
-
-            # ── Step F: Mark the source Learn page as implemented (best-effort) ─────────
+            # ── Step H: Mark the source Learn page as implemented (best-effort) ────────
             # The act of running Implement marks it processed, so the Learn-nudge job
             # stops surfacing it regardless of how many Diet sections matched.
             await asyncio.to_thread(update_page, summary_id, {"Implemented": {"checkbox": True}})
 
-            if not updates:
-                await update.message.reply_text(
-                    "ℹ️ The summary didn't map to any Diet section — nothing was changed."
-                )
-                return
-
-            # ── Step E: apply surgically ───────────────────────────────────────────────
+            # ── Step G: apply surgically ───────────────────────────────────────────────
             await update.message.reply_text("📝 Applying updates to Notion…")
             applied, skipped = await asyncio.to_thread(apply_updates, updates, block_map)
 
-            msg = f"✅ Diet page updated — *{applied}* section(s) modified."
-            if skipped:
-                # skipped entries are the section paths Claude named — its text.
-                msg += ("\n\n⚠️ Skipped (path not found):\n"
-                        + "\n".join(f"• {escape_md(s)}" for s in skipped[:8]))
-            await reply(update, msg)
+            # THE ACCOUNTING. Every path routing named ends in exactly one bucket,
+            # and each bucket is printed. A routed section that merged into
+            # nothing, failed to resolve, or failed to write must not read the
+            # same as a section the summary never mentioned.
+            returned  = {_path_key(u.get("path", "")) for u in updates}
+            unchanged = [p for p in targets if _path_key(p) not in returned]
+
+            lines = [f"✅ Diet page updated — *{applied}* of {len(targets)} "
+                     f"routed section(s) modified."]
+            # skipped entries are "path" or "path (notion error)" — Claude's text
+            # either way, so both halves need escaping.
+            lines += _report_lines("Skipped — unchanged", skipped, "⚠️")
+            lines += _report_lines("Routed but left unchanged by the merge", unchanged, "➖")
+            lines += _report_lines("Not found on the page", unresolved, "❓")
+            for conflict in result.get("conflicts", [])[:_REPORT_LIMIT]:
+                lines.append(f"\n⚖️ {escape_md(conflict)}")
+            await reply(update, "\n".join(lines))
     except PageBusy:
         await update.message.reply_text(
             "⏳ An update to the Diet Manual is already in progress.\n"
@@ -556,26 +783,41 @@ async def handle_implement_diet(update, summary_name: str):
         return
 
 
-def _format_plan(plan: dict, title: str) -> str:
-    """Render Claude's implementation plan as a Telegram message.
+# How many paths a report lists before it summarises the rest. The number is
+# less important than the fact that the TOTAL is always printed: the old report
+# sliced to eight with no count, so on a summary touching a dozen sections the
+# rest were invisible, and a section dropped from the write looked exactly like a
+# section that was never routed in the first place.
+_REPORT_LIMIT = 8
 
-    `title` is a Notion page title and every item is Claude's own text — the
-    `conflicts` list in particular is free-form prose. All escaped here so the
+
+def _report_lines(label: str, paths: list, emoji: str) -> list:
+    """A bounded list of paths that still says how many there were."""
+    if not paths:
+        return []
+    lines = ["", f"{emoji} {label} ({len(paths)}):"]
+    lines += [f"• {escape_md(p)}" for p in paths[:_REPORT_LIMIT]]
+    if len(paths) > _REPORT_LIMIT:
+        lines.append(f"…and {len(paths) - _REPORT_LIMIT} more")
+    return lines
+
+
+def _format_plan(affected: list, unresolved: list, total: int, title: str) -> str:
+    """What is about to change, sent before anything is written.
+
+    Built from the ROUTING call, so it names the sections that will be read and
+    merged — and it is sent before the merge call, so you see the plan before the
+    expensive half runs rather than after it.
+
+    Every interpolated value is Claude's: the paths it chose and the free-form
+    `why` it wrote for each. Escaped here rather than at the send site so the
     function stays safe wherever it is sent from.
     """
-    lines = [f"📋 *Implementation Plan* — _{escape_md(title)}_\n"]
-
-    def section(label, items, emoji):
-        if items:
-            lines.append(f"{emoji} *{label}:*")
-            lines.extend(f"  • {escape_md(i)}" for i in items[:10])
-            lines.append("")
-
-    section("New sections",     plan.get("new_sections", []),     "🆕")
-    section("Updated sections", plan.get("updated_sections", []), "♻️")
-    section("Evidence added",   plan.get("evidence_added", []),   "🔬")
-    section("Conflicts",        plan.get("conflicts", []),        "⚠️")
-
-    if len(lines) == 1:
-        lines.append("_No structural changes detected._")
+    lines = [f"📋 *Plan* — {len(affected)} of {total} sections — _{escape_md(title)}_", ""]
+    for item in affected:
+        why = item.get("why", "")
+        lines.append(f"♻️ {escape_md(item['path'])}"
+                     + (f" — _{escape_md(why)}_" if why else ""))
+    lines += _report_lines("Named but not found on the page — will be skipped",
+                           unresolved, "⚠️")
     return "\n".join(lines).strip()
