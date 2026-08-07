@@ -62,23 +62,30 @@ routes on the default model — diverging only for Diet means two answers, no me
 
 ## Milestone 2: reminder year rollover (F-17) — commit 2
 
-- [ ] `parse_date_time`: roll to year+1 ONLY when the parsed datetime is more than
+- [x] `parse_date_time`: roll to year+1 ONLY when the parsed datetime is more than
       `PAST_GRACE` (24h) in the past. Inside that window, return an error asking for
       confirmation instead of guessing — the 10:00-for-a-09:00-meeting case that currently
       books August 2027 and looks normal.
-- [ ] Make the year prominent in the confirmation (`reminder.handle_remind`).
-- [ ] `TIMEZONE.localize(..., is_dst=None)` so a nonexistent (spring-forward) or ambiguous
+- [x] Make the year prominent in the confirmation (`reminder.handle_remind`).
+- [x] `TIMEZONE.localize(..., is_dst=None)` so a nonexistent (spring-forward) or ambiguous
       (fall-back) local time raises instead of being silently shifted. Handle
       `NonExistentTimeError` and `AmbiguousTimeError` separately, each with a message that
       says what to send instead. Applies to the year+1 branch too.
-- [ ] Comment on the pytz → zoneinfo migration. **Written accurately**: zoneinfo does NOT
+- [x] Comment on the pytz → zoneinfo migration. **Written accurately**: zoneinfo does NOT
       raise on these times, it resolves them via `fold`. What it removes is the
       `localize()` footgun itself (tzinfo attaches at construction, arithmetic is
       DST-aware). Detecting nonexistent/ambiguous times there still needs an explicit
       fold-offset comparison. Saying "handles it natively" without that caveat would
       mislead whoever does the migration.
-- [ ] Tests per case: inside the grace window, outside it, nonexistent time, ambiguous
-      time, year prominent in the confirmation.
+- [x] Tests per case: inside the grace window, outside it, the boundary either side,
+      explicit year (future, past, two-digit), nonexistent time, ambiguous time, an
+      ordinary time unaffected, the rollover DST-checked, 29.02 into a non-leap year,
+      and the confirmation's year. Mutation-checked: reverting PAST_GRACE turns 3 red,
+      reverting is_dst=None turns 3 red.
+- [x] ADDED, not in the ticket: an optional year in the command (`DD.MM.YYYY`). Without
+      it the refusal is a dead end — "confirm rather than guess" needs a way to answer,
+      and re-sending the same bare date just hits the same refusal. Documented in the
+      README row and the usage message.
 
 ## Open questions
 

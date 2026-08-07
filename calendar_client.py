@@ -84,18 +84,85 @@ def _get_service():
 
 # ─── DATE / TIME PARSING ───────────────────────────────────────────────────────
 
-def parse_date_time(date_str: str, time_str: str):
-    """Parse 'DD.MM' + 'HH.MM' (24h) into a timezone-aware datetime.
+# How far into the past a date may fall before it is read as "you meant next year".
+#
+# THE BUG THIS EXISTS FOR: the rule used to be "any past datetime rolls to
+# year + 1". So at 10:00, `Remind Dentist 06.08 - 09.00` — an appointment an hour
+# ago, most likely a typo or a note-to-self about something happening today —
+# silently created an event on the same day in AUGUST NEXT YEAR. The confirmation
+# read normally, the event was a year away, and nothing ever pinged.
+#
+# A day's grace keeps the useful half of the behaviour: in December, `12.06`
+# obviously means next June, and that is months past, not hours. Inside the
+# window the two readings are genuinely ambiguous, so it asks instead of guessing.
+PAST_GRACE = timedelta(hours=24)
 
-    - Assumes the current year; if that date/time has already passed, rolls to
-      next year (so '12.06' entered in December means next June, not the past).
-    - Returns (datetime, error). datetime is localized to Europe/Rome.
+
+def _localize(naive: datetime, date_str: str, time_str: str):
+    """Attach Europe/Rome to a naive datetime. Returns (datetime, error).
+
+    is_dst=None, so pytz RAISES on the two local times that are not a single
+    real instant, instead of quietly picking one:
+
+      - NONEXISTENT: the hour skipped at the start of summer time. Europe/Rome
+        jumps 02:00 -> 03:00, so 02:30 that night never happens. pytz's default
+        (is_dst=False) shifted it silently, booking an event an hour from where
+        it was asked for.
+      - AMBIGUOUS: the hour repeated at the end of summer time. 03:00 -> 02:00,
+        so 02:30 happens twice and "02.30" names two instants an hour apart.
+
+    Both land on 02:00-02:59 in this timezone, once a year each. Rare — and
+    exactly the kind of rare that is impossible to diagnose from a calendar entry
+    that is simply an hour out.
+
+    ON MIGRATING TO stdlib zoneinfo: it would remove the localize() step
+    altogether — tzinfo attaches at construction (`datetime(..., tzinfo=ZoneInfo(
+    "Europe/Rome"))`) and arithmetic is DST-aware, so the whole class of
+    "forgot to localize" bugs goes away. It would NOT give this behaviour for
+    free, though: zoneinfo does not raise on either case, it resolves them
+    through the `fold` attribute, picking one silently the way pytz's default
+    did. Detecting them there means comparing the utcoffset at fold=0 against
+    fold=1 explicitly. Worth knowing before anyone starts that migration
+    expecting an exception. Not doing it here.
     """
-    # Date
     try:
-        day, month = (int(p) for p in date_str.split("."))
+        return TIMEZONE.localize(naive, is_dst=None), None
+    except pytz.exceptions.NonExistentTimeError:
+        return None, (f"{time_str} doesn't exist on {date_str} — the clocks go forward "
+                      f"that night and the hour from 02:00 to 03:00 is skipped. "
+                      f"Pick a time before 02:00 or from 03:00.")
+    except pytz.exceptions.AmbiguousTimeError:
+        return None, (f"{time_str} happens twice on {date_str} — the clocks go back "
+                      f"that night, so 02:00 to 03:00 runs through a second time. "
+                      f"Pick a time before 02:00 or from 03:00.")
+
+
+def parse_date_time(date_str: str, time_str: str):
+    """Parse 'DD.MM' or 'DD.MM.YYYY' + 'HH.MM' (24h) into an aware datetime.
+
+    Returns (datetime, error). The datetime is localized to Europe/Rome.
+
+    With no year, the current one is assumed and a date more than PAST_GRACE in
+    the past rolls to next year. A date inside that window is REFUSED rather than
+    guessed at — see PAST_GRACE. Spelling the year out (`06.08.2027`) is how you
+    say which one you meant; an explicit year is taken at face value, past or not,
+    because it is no longer a guess at that point.
+    """
+    # Date — the year is optional, and its presence changes everything below.
+    parts = date_str.split(".")
+    try:
+        if len(parts) == 3:
+            day, month, year_given = (int(p) for p in parts)
+            if year_given < 100:                      # '27' -> 2027
+                year_given += 2000
+        elif len(parts) == 2:
+            day, month = (int(p) for p in parts)
+            year_given = None
+        else:
+            raise ValueError
     except (ValueError, TypeError):
-        return None, f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06)."
+        return None, (f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06) "
+                      f"or DD.MM.YYYY (e.g. 12.06.2027).")
     if not (1 <= month <= 12) or not (1 <= day <= 31):
         return None, f"Invalid date '{date_str}'. Day 1-31, month 1-12."
 
@@ -108,24 +175,38 @@ def parse_date_time(date_str: str, time_str: str):
         return None, f"Invalid time '{time_str}'. Hour 0-23, minute 0-59."
 
     now = datetime.now(TIMEZONE)
-    year = now.year
 
     # Build the datetime; catch impossible dates like 31.02
     try:
-        naive = datetime(year, month, day, hour, minute)
+        naive = datetime(year_given or now.year, month, day, hour, minute)
     except ValueError:
         return None, f"'{date_str}' is not a real date."
 
-    dt = TIMEZONE.localize(naive)
+    dt, err = _localize(naive, date_str, time_str)
+    if err:
+        return None, err
 
-    # If already in the past, roll to next year
-    if dt < now:
-        try:
-            dt = TIMEZONE.localize(datetime(year + 1, month, day, hour, minute))
-        except ValueError:
-            return None, f"'{date_str}' is not a real date."
+    # An explicit year is the answer to the question below, so it is not asked.
+    if year_given is not None or dt >= now:
+        return dt, None
 
-    return dt, None
+    # ── In the past, with no year given. Do not guess. ─────────────────────────
+    if dt >= now - PAST_GRACE:
+        return None, (
+            f"{date_str} at {time_str} was earlier today — that is already past. "
+            f"If you meant next year, send it with the year: "
+            f"`{day:02d}.{month:02d}.{now.year + 1}`."
+        )
+
+    # Comfortably past, so "next year" is the only reading that makes sense.
+    try:
+        naive_next = datetime(now.year + 1, month, day, hour, minute)
+    except ValueError:
+        # 29.02 in a non-leap next year.
+        return None, (f"'{date_str}' does not exist in {now.year + 1}. "
+                      f"Send it with the year you meant.")
+
+    return _localize(naive_next, date_str, time_str)
 
 
 # ─── EVENT CREATION ────────────────────────────────────────────────────────────
@@ -161,7 +242,14 @@ def create_event(summary: str, start_dt: datetime, duration_minutes: int = DEFAU
 # ─── EVENT QUERIES (for the daily reminder poll + conflict detection) ───────────
 
 def _to_local(iso_str: str) -> datetime:
-    """Parse a Google ISO datetime string into a Europe/Rome-aware datetime."""
+    """Parse a Google ISO datetime string into a Europe/Rome-aware datetime.
+
+    Plain localize() here, NOT the is_dst=None of _localize, and deliberately:
+    this is a READ path over data Google owns. Raising on an ambiguous timestamp
+    somebody else stored would break the morning briefing over an event David did
+    not create and cannot fix. Refusing to guess is right when the user is at the
+    keyboard to answer; it is not right in a scheduled job at 07:30.
+    """
     dt = datetime.fromisoformat(iso_str)
     if dt.tzinfo is None:
         return TIMEZONE.localize(dt)

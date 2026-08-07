@@ -14,16 +14,21 @@ import asyncio
 import re
 
 from calendar_client import (
-    parse_date_time, create_event,
+    parse_date_time, create_event, now_local,
     find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from telegram_text import escape_md, reply
 from datetime import timedelta
 
-# Remind [Name] [DD.MM] - [HH.MM]
+# Remind [Name] [DD.MM] - [HH.MM]   (or DD.MM.YYYY)
 # Name is non-greedy so it stops at the date; date and time are dot-separated.
-REMIND_PATTERN = r"(?i)remind\s+(.+?)\s+(\d{1,2}\.\d{1,2})\s*-\s*(\d{1,2}\.\d{1,2})"
+#
+# The year is OPTIONAL and is what makes the past-date refusal actionable: with
+# no year, a date inside the last day is ambiguous and calendar_client refuses to
+# guess (see PAST_GRACE), so spelling the year out is how you answer it.
+REMIND_PATTERN = (r"(?i)remind\s+(.+?)\s+(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)"
+                  r"\s*-\s*(\d{1,2}\.\d{1,2})")
 
 
 def _format_conflict_warning(new_name: str, start_dt, end_dt, conflicts: list) -> str:
@@ -59,7 +64,8 @@ async def handle_remind(update, user_text: str):
             "📅 *Reminder usage:*\n"
             "`Remind [Name] [Date] - [Time]`\n\n"
             "Example: `Remind Dentist 12.06 - 14.30`\n"
-            "_Date is DD.MM, time is HH.MM in 24-hour format._",
+            "_Date is DD.MM, time is HH.MM in 24-hour format._\n"
+            "_Add the year — `12.06.2027` — to book a specific one._",
         )
         return
 
@@ -104,13 +110,23 @@ async def handle_remind(update, user_text: str):
         return
 
     # Confirmation — include a heads-up if the appointment is before the morning poll
-    when = start_dt.strftime("%d.%m.%Y at %H:%M")
+    #
+    # THE YEAR IS SPELLED OUT, in a weekday-first long form. It used to render as
+    # "06.08.2027 at 09:00", where the one wrong digit sat mid-string between two
+    # correct ones and read as normal — which is how a reminder silently a year
+    # out was confirmed and never questioned. calendar_client no longer guesses
+    # the year, and this makes whatever it did decide impossible to skim past.
+    when = start_dt.strftime("%A %d %B %Y at %H:%M")
     msg = (
         f"✅ Reminder set!\n\n"
         f"📅 *{escape_md(name)}*\n"
-        f"🕐 {when}\n\n"
-        f"You'll get a Telegram ping the day before and on the day, "
-        f"plus Google's own alerts (1 day + 1 hour before)."
+        f"🕐 *{when}*\n"
+    )
+    if start_dt.year != now_local().year:
+        msg += f"\n📆 Note: that is *{start_dt.year}*, not this year.\n"
+    msg += (
+        "\nYou'll get a Telegram ping the day before and on the day, "
+        "plus Google's own alerts (1 day + 1 hour before)."
     )
     if start_dt.hour < 8:
         msg += "\n\n⚠️ This is before 08:00 — the morning ping arrives at 07:30, so for very early events rely on Google's 1-hour alert."
