@@ -22,11 +22,13 @@ Europe/Rome transitions, verified against pytz rather than assumed:
   2026-10-25  03:00 -> 02:00   (02:00-02:59 happens twice)
 """
 
+import re
 from datetime import datetime
 
 import pytest
 
 import calendar_client
+import david
 import reminder
 from conftest import FakeUpdate, run
 
@@ -273,3 +275,39 @@ def test_the_command_still_accepts_a_bare_date(monkeypatch, calendar):
     run(reminder.handle_remind(update, update.message.text))
 
     assert update.message.replied_with("Reminder set!")
+
+
+# ─── THE HELP AND THE PARSER MUST AGREE ────────────────────────────────────────
+
+def test_the_help_advertises_only_date_forms_the_parser_accepts(monkeypatch):
+    """`h` is generated from david.COMMANDS, so the reminder's advertised forms
+    are structured data — which means they can be filled in and RUN rather than
+    read. A help entry offering a syntax the parser rejects is the same drift
+    class as `Learn recipe`, one module over, and this is the check that has it.
+
+    It is also the test that was missing when the optional year landed: the
+    command grew a format and the help entry did not mention it, which nothing
+    caught because nothing ran the help against the parser.
+    """
+    freeze(monkeypatch, year=2026, month=1, day=15, hour=10)
+    remind = next(c for c in david.COMMANDS if c.name == "Remind")
+    values = {"[Name]": "Dentist", "[DD.MM.YYYY]": "12.06.2027",
+              "[DD.MM]": "12.06", "[HH.MM]": "14.30"}
+
+    for usage in remind.help.usage:
+        example = usage
+        for placeholder, value in values.items():
+            example = example.replace(placeholder, value)
+        assert "[" not in example, (
+            f"{usage!r} uses a placeholder this test does not know how to fill")
+
+        assert remind.pattern.fullmatch(example), (
+            f"the help advertises {example!r}, which the router does not route")
+
+        parsed = re.match(reminder.REMIND_PATTERN, example)
+        assert parsed, (
+            f"the help advertises {example!r}, which the reminder pattern rejects")
+
+        _, err = calendar_client.parse_date_time(parsed.group(2), parsed.group(3))
+        assert err is None, (
+            f"the help advertises {example!r}, which the parser rejects: {err}")

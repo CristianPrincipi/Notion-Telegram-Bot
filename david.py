@@ -1059,8 +1059,11 @@ COMMANDS = [
         pattern=re.compile(r"(?P<text>remind\s+.+)", re.I),
         handler=_cmd_remind,
         help=Help("📅 *REMINDER*",
-                  usage=("Remind [Name] [Date] - [Time]",),
-                  notes=("e.g. Remind Dentist 12.06 - 14.30 (date DD.MM, time HH.MM 24h)",)),
+                  usage=("Remind [Name] [DD.MM] - [HH.MM]",
+                         "Remind [Name] [DD.MM.YYYY] - [HH.MM]"),
+                  notes=("e.g. Remind Dentist 12.06 - 14.30 (time is 24h)",
+                         "Without a year: a date over a day past means next year, and "
+                         "one inside that window is queried rather than guessed")),
     ),
     Command(
         name="Add e",
