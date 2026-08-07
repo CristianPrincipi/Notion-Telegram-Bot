@@ -12,7 +12,7 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
-| `david.py` | Entry point (`__main__`), the `handle_message`/`handle_document` regex routers, owner filter, job registration, expense + book + quote writes, PDF download | Feature logic, budget maths, month resolution, raw Notion HTTP |
+| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the `handle_document` caption router, the generated help, owner filter, job registration, expense + book + quote writes, PDF download | Feature logic, budget maths, month resolution, raw Notion HTTP |
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
 | `anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
@@ -213,11 +213,25 @@ project module loads — several read `os.environ` at module scope) and `respons
 HTTP. Nothing reaches Notion, Telegram or Google.
 
 `tests/test_router.py` is the pre-deploy gate: a table of `input → handler → parsed args`
-driving the **real** `handle_message`. Which command wins depends on the order of the regex
-checks and on `fullmatch` vs `match` — invisible when reading one branch, and exactly what
-breaks when a command is added in the wrong place. Adding a command means adding a
-`SPY_TARGETS` entry plus rows. Rows marked `known_bug` assert current *wrong* behaviour on
-purpose; fixing one turns its row red, and the row is updated in the same commit.
+driving the **real** `handle_message`. Which command wins depends on the order of
+`david.COMMANDS` and on `fullmatch` vs `match` — invisible when reading one entry, and
+exactly what breaks when a command is added in the wrong place. Adding a command means
+adding a `Command`, a `SPY_TARGETS` entry, and rows; the registry tests fail until the
+table covers it. Rows marked `known_bug` assert current *wrong* behaviour on purpose;
+fixing one turns its row red, and the row is updated in the same commit.
+
+**A command declares itself once.** Pattern, handler, help entry and the `destructive`
+flag live on one `Command`; the help message is GENERATED from that list. The
+hand-written help had already drifted — it advertised `Learn recipe`, which
+`handle_learn` rejects as an unknown type, omitted `Learn podcast`, which works, and
+never mentioned that `Implement … - Diet` merges into a toggle tree instead of a flat
+Manual. Nothing catches that class of error, because nothing runs the help.
+
+Registry order is still precedence — dispatch takes the first pattern that fullmatches —
+but it is arranged for reading, since every pattern is anchored on a distinct literal
+prefix and no input can satisfy two. That is asserted, not assumed
+(`test_no_input_can_be_claimed_by_two_commands`): a new command that overlaps an existing
+one turns it red and has to be positioned deliberately.
 
 **Every bug fix ships with a test that fails before it and passes after**, asserting against
 the shipping code path — a test that rebuilds the logic only proves it agrees with itself.
@@ -233,11 +247,14 @@ a PR, let CI go green, then merge. Never commit directly to `main`.
 
 Found in the code, not resolved here — do not "fix" these by guessing intent:
 
-- **Unreferenced code:** `implement.clear_page_blocks` (only the `_by_id` variant is
-  called), `DATABASE_ID` in `david.py`. (`reminder.build_today_message` /
-  `build_tomorrow_message` were on this list and have been deleted — they had zero
+- **Unreferenced code:** `DATABASE_ID` in `david.py` — still the only one left, and still
+  unexplained, so it stays. (`implement.clear_page_blocks` was on this list and no longer
+  exists; only `clear_page_blocks_by_id` does, and it is live. `reminder.build_today_message` /
+  `build_tomorrow_message` were here too and have been deleted — they had zero
   callers and carried a copy of the error/empty collapse that made them look like
-  the bug's home. The live copy was in `briefing.py`.)
+  the bug's home. The live copy was in `briefing.py`. `david.headers` — a second
+  Notion header dict, superseded by `notion_client` and read by nothing — has been
+  deleted along with the `NOTION_KEY` that existed only to build it.)
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
   checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
   (takeaway of the week) and Step 7 (tasks). The checkbox is written and never read.

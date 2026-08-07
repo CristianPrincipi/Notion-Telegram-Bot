@@ -81,7 +81,7 @@ def manual_spy(monkeypatch):
         {"id": "old-2", "type": "numbered_list_item",
          "numbered_list_item": {"rich_text": [{"plain_text": "old step two"}]}},
     ])
-    monkeypatch.setattr(implement, "get_all_blocks", spy.get_children)
+    monkeypatch.setattr(implement, "get_children", spy.get_children)
     monkeypatch.setattr(implement, "delete_block", spy.delete_block)
     monkeypatch.setattr(implement, "append_children", spy.append_children)
     return spy
@@ -371,7 +371,7 @@ def test_implement_refuses_a_concurrent_manual_update(monkeypatch):
     monkeypatch.setattr(implement, "search_page_in_db",
                         lambda db, name, exact=False: ({"id": "source-1",
                                                         "properties": {}}, None))
-    monkeypatch.setattr(implement, "get_all_blocks", lambda pid: ([{"id": "b1"}], None))
+    monkeypatch.setattr(implement, "get_children", lambda pid: ([{"id": "b1"}], None))
     monkeypatch.setattr(implement, "blocks_to_text", lambda blocks: "source content")
 
     async def main():

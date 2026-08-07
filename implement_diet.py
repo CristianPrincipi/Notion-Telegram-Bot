@@ -8,7 +8,7 @@ from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md, reply
 from notion_client import (
-    search_page_in_db, get_children,
+    search_page_in_db, get_children, blocks_to_text,
     append_children, delete_block, create_page, extract_rich_text, rich,
     update_page,
     bullet as _bullet,
@@ -202,7 +202,7 @@ def read_diet_tree(page_id: str):
         blocks = h3_children.get(h2["id"], [])
         # An H2 either holds H3 toggles, or leaf content directly.
         if not any(b.get("type", "").startswith("heading_3") for b in blocks):
-            tree[h1_name][h2_name] = _content_to_text(blocks)
+            tree[h1_name][h2_name] = blocks_to_text(blocks, style="plain")
             continue
 
         tree[h1_name][h2_name] = {}
@@ -220,22 +220,10 @@ def read_diet_tree(page_id: str):
         return {}, {}, err
 
     for h1_name, h2_name, h3_name, h3 in h3s:
-        tree[h1_name][h2_name][h3_name] = _content_to_text(
-            leaf_children.get(h3["id"], []))
+        tree[h1_name][h2_name][h3_name] = blocks_to_text(
+            leaf_children.get(h3["id"], []), style="plain")
 
     return tree, block_map, None
-
-
-def _content_to_text(blocks: list) -> str:
-    """Flatten a section's leaf content (bullets/paragraphs) into text."""
-    out = []
-    for b in blocks:
-        btype = b.get("type", "")
-        rt = b.get(btype, {}).get("rich_text", [])
-        txt = extract_rich_text(rt)
-        if txt:
-            out.append(txt)
-    return "\n".join(out)
 
 
 # ─── 3. CLAUDE: DECIDE WHICH SECTIONS TO UPDATE ────────────────────────────────
@@ -476,7 +464,7 @@ async def handle_implement_diet(update, summary_name: str):
     if err:
         await update.message.reply_text(f"❌ Could not read the summary: {err}")
         return
-    summary_text = _content_to_text_deep(summary_blocks)
+    summary_text = blocks_to_text(summary_blocks)
     if not summary_text.strip():
         await update.message.reply_text("❌ The summary page appears to be empty.")
         return
@@ -566,26 +554,6 @@ async def handle_implement_diet(update, summary_name: str):
             "Wait for it to finish, then try again."
         )
         return
-
-
-def _content_to_text_deep(blocks: list) -> str:
-    """Flatten Learn-summary blocks (headings, callouts, quotes, bullets) into text."""
-    out = []
-    for b in blocks:
-        btype = b.get("type", "")
-        rt = b.get(btype, {}).get("rich_text", [])
-        txt = extract_rich_text(rt)
-        if not txt:
-            continue
-        if btype == "heading_1":   out.append(f"# {txt}")
-        elif btype == "heading_2": out.append(f"## {txt}")
-        elif btype == "heading_3": out.append(f"### {txt}")
-        elif btype == "callout":   out.append(f"💡 {txt}")
-        elif btype == "quote":     out.append(f'"{txt}"')
-        elif btype == "bulleted_list_item": out.append(f"• {txt}")
-        elif btype == "numbered_list_item": out.append(f"- {txt}")
-        else: out.append(txt)
-    return "\n".join(out)
 
 
 def _format_plan(plan: dict, title: str) -> str:

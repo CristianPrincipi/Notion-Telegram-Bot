@@ -58,21 +58,26 @@ Every F-34 item checked against the code as it stands today:
 
 ## Milestone 2: dead code sweep (F-34) — commit 2
 
-- [ ] `david.py`: drop the `headers` dict and the now-unused `NOTION_KEY`.
-- [ ] `implement.py`: drop `_get_page_title_from_result`, `get_all_blocks`,
+- [x] `david.py`: drop the `headers` dict and the now-unused `NOTION_KEY`.
+- [x] `implement.py`: drop `_get_page_title_from_result`, `get_all_blocks`,
       `append_blocks_to_page`; call `get_page_title` / `get_children` / `append_children` directly.
-- [ ] Update the three test files that monkeypatch the removed wrappers
+- [x] Update the three test files that monkeypatch the removed wrappers
       (`test_safe_writes.py`, `test_implement_sections.py`, `test_async_io.py`).
-- [ ] `implement.build_manual_blocks`: drop the unused `source_title` parameter.
-- [ ] `learn.py`: `metadata: dict | None = None`; remove the newspaper branch and correct
+- [x] `implement.build_manual_blocks`: drop the unused `source_title` parameter.
+- [x] `learn.py`: `metadata: dict | None = None`; remove the newspaper branch and correct
       the two comments that describe it (including `test_async_io.py:394`'s docstring).
-- [ ] `notion_client.blocks_to_text(blocks, style="markdown"|"plain")` replaces all three
-      flatteners; update `implement.py` and `implement_diet.py` call sites.
-- [ ] Move `TYPE_EMOJI` + the `_get_db_id` mapping into `config.py` as one keyed map
-      (emoji + db env var per type), so they cannot drift apart. `learn.py` keeps reading
-      `os.environ` itself — config.py must not own feature IDs.
-- [ ] `ruff check .` + full suite green → commit 2.
-- [ ] Update CLAUDE.md's "Unreferenced code" open question (the `headers` entry is resolved).
+- [x] `notion_client.blocks_to_text(blocks, style="markdown"|"plain")` replaces all three
+      flatteners; `implement.py` and `implement_diet.py` call sites updated.
+- [x] Move `TYPE_EMOJI` + the `_get_db_id` mapping into `config.py` as one keyed map
+      (`LEARN_TYPES`: emoji + db env var per type), so they cannot drift apart. `learn.py`
+      keeps reading `os.environ` itself — config.py must not own feature IDs.
+      `SUPPORTED_TYPES` is now derived from it rather than being a third list.
+- [x] Added tests for the two parts of the sweep that are not pure deletion: the four
+      `blocks_to_text` tests (including the dropped-block-type gap) and
+      `test_learn_page_metadata_is_not_shared_between_calls`.
+- [x] `ruff check .` + full suite green (665 passed) → commit 2.
+- [x] Update CLAUDE.md: the module map and testing sections for the registry, and the
+      "Unreferenced code" open question.
 
 ## Open questions
 
@@ -83,6 +88,13 @@ Every F-34 item checked against the code as it stands today:
 - Consolidating the flatteners changes what Claude sees for the Diet summary by a hair:
   dividers render as `---` and quotes/callouts gain their `> ` prefix, because the
   markdown style becomes the single one. No caller parses that text; it is prompt input only.
+- The same consolidation closed a real gap, which is why it ships with a test: the old
+  `blocks_to_text` listed the block types it knew and dropped the rest, so a `to_do` (or any
+  other unlisted type) in a Manual section was invisible to Claude while still being in
+  `Section.content_ids` — which `apply_section_updates` deletes. The replacement content had
+  been merged as though the block did not exist, and the delete then made that true.
+  Worth knowing about rather than filing as a fix: nobody reported it, and I have not
+  found evidence of it happening in this Notion workspace.
 
 ## Changelog
 

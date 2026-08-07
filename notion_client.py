@@ -398,20 +398,53 @@ def divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
 
 
-def blocks_to_text(blocks: list) -> str:
-    """Convert a list of Notion blocks to readable plain text for Claude."""
+# ─── FLATTENING BLOCKS BACK TO TEXT ────────────────────────────────────────────
+# One function, because there used to be three: this one, plus
+# implement_diet._content_to_text and _content_to_text_deep. They differed in
+# whether a heading kept its `##`, whether a divider became `---`, and whether a
+# block type nobody had thought of was dropped or kept — three answers to the
+# same question, each fixed in one place and none of them documented as a choice.
+#
+# The one that mattered was the last. Dropping unknown types made a block INVISIBLE
+# to Claude while leaving it very much visible to the write-back: a `to_do` in a
+# Manual section is in Section.content_ids, so apply_section_updates deletes it,
+# but it was never in Section.text, so the merged content that replaced it was
+# computed as though it had never existed. Anything with text now flattens, prefix
+# or no prefix.
+
+_MARKDOWN_PREFIXES = {
+    "heading_1":          "# {}",
+    "heading_2":          "## {}",
+    "heading_3":          "### {}",
+    "callout":            "> 💡 {}",
+    "quote":              '> "{}"',
+    "bulleted_list_item": "• {}",
+    "numbered_list_item": "- {}",
+}
+
+
+def blocks_to_text(blocks: list, style: str = "markdown") -> str:
+    """Flatten Notion blocks into readable text for Claude.
+
+    style="markdown" keeps the structure: headings marked with #, list items
+    bulleted, dividers as ---. Use it whenever the shape of a page is part of
+    what the model needs to read.
+
+    style="plain" is the text alone, no prefixes and no dividers — for the leaf
+    content of one already-addressed section, where the surrounding structure is
+    the caller's (implement_diet reads a section it located by path, so repeating
+    the heading inside the value would just be noise in the tree it builds).
+    """
+    markdown = style == "markdown"
     lines = []
     for block in blocks:
         btype = block.get("type", "")
-        content = block.get(btype, {})
-        text = extract_rich_text(content.get("rich_text", []))
-        if btype == "paragraph"            and text: lines.append(text)
-        elif btype == "heading_1"          and text: lines.append(f"# {text}")
-        elif btype == "heading_2"          and text: lines.append(f"## {text}")
-        elif btype == "heading_3"          and text: lines.append(f"### {text}")
-        elif btype == "callout"            and text: lines.append(f"> 💡 {text}")
-        elif btype == "quote"              and text: lines.append(f'> "{text}"')
-        elif btype == "bulleted_list_item" and text: lines.append(f"• {text}")
-        elif btype == "numbered_list_item" and text: lines.append(f"- {text}")
-        elif btype == "divider":                     lines.append("---")
+        text = extract_rich_text(block.get(btype, {}).get("rich_text", []))
+        if btype == "divider":
+            if markdown:
+                lines.append("---")
+            continue
+        if not text:
+            continue
+        lines.append(_MARKDOWN_PREFIXES.get(btype, "{}").format(text) if markdown else text)
     return "\n".join(lines)

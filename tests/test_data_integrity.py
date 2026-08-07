@@ -23,6 +23,7 @@ import budget as budget_module
 import calendar_client
 import config
 import david
+import learn
 from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run
 
 QUERY_URL = f"{NOTION_BASE}/databases/{EXPENSES_ID}/query"
@@ -413,3 +414,32 @@ def test_a_new_upload_still_reaches_the_document_handler():
     fresh = Update(update_id=1, message=owner_message(caption="Learn pdf", document=PDF))
 
     assert registered_handler(david.handle_document).check_update(fresh)
+
+
+# ─── BUG 8: A MUTABLE DEFAULT ARGUMENT ─────────────────────────────────────────
+
+def test_learn_page_metadata_is_not_shared_between_calls(monkeypatch):
+    """`metadata: dict = {}` builds ONE dict, at definition time.
+
+    Every call that omitted the argument got that same object — the function's
+    own state, dressed as a parameter. Nothing writes to it today, so this is a
+    trap rather than a live bug: the first line that ever did would leak one
+    Learn page's author onto the next one, and only for the calls that passed no
+    metadata, which is not a shape anyone debugs quickly.
+    """
+    created = []
+    monkeypatch.setattr(learn, "create_page",
+                        lambda db, props, children=None, icon=None: (created.append(props), "p1")[1])
+
+    ok, _ = learn.create_learn_page("book", "First", [], metadata={"author": "Herbert"})
+    assert ok
+    assert "Author" in created[0]
+
+    # No metadata this time: the author must not survive from the call above.
+    ok, _ = learn.create_learn_page("book", "Second", [])
+    assert ok
+    assert "Author" not in created[1]
+
+    assert learn.create_learn_page.__defaults__ == (None,), (
+        "metadata is back to a mutable default"
+    )

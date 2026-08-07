@@ -70,18 +70,17 @@ def get_area_db_id(area_name: str) -> str | None:
     return os.environ.get(key)
 
 
-# ─── 2. NOTION HELPERS (thin wrappers over the shared client) ──────────────────
+# ─── 2. NOTION HELPERS ─────────────────────────────────────────────────────────
 # All of them BLOCK. handle_implement reaches every one through
 # asyncio.to_thread — calling one directly from the event loop stalls the whole
 # bot for the length of the round trip.
-
-_get_page_title_from_result = get_page_title  # alias for the old name used below
-
-
-def get_all_blocks(page_id: str) -> tuple[list[dict], str | None]:
-    """Retrieve all top-level blocks of a Notion page. Delegates to shared get_children."""
-    return get_children(page_id)
-
+#
+# Only the ones that ADD something live here. get_children, append_children and
+# get_page_title are used straight from notion_client: the wrappers that used to
+# stand in front of them (get_all_blocks, append_blocks_to_page and a
+# `_get_page_title_from_result = get_page_title` alias kept for a name nothing
+# has called in a long time) forwarded their arguments unchanged and bought only
+# a second name to look up.
 
 def clear_page_blocks_by_id(block_ids: list) -> None:
     """Archive blocks from a snapshot of IDs taken before the replacement was written.
@@ -94,12 +93,6 @@ def clear_page_blocks_by_id(block_ids: list) -> None:
     for block_id in block_ids:
         if block_id:
             delete_block(block_id)
-
-
-def append_blocks_to_page(page_id: str, blocks: list[dict], after: str | None = None) -> str | None:
-    """Append blocks to a page in batches. Returns error string or None."""
-    _, err = append_children(page_id, blocks, after=after)
-    return err
 
 
 def create_manual_page(db_id: str, blocks: list[dict]) -> tuple[str | None, str | None]:
@@ -184,7 +177,7 @@ def read_manual_sections(page_id: str) -> tuple[list, str | None]:
 
     BLOCKING — one Notion request (paginated). Run via asyncio.to_thread.
     """
-    blocks, err = get_all_blocks(page_id)
+    blocks, err = get_children(page_id)
     if err:
         return [], err
 
@@ -369,7 +362,7 @@ def render_lines(lines: list, style: str) -> list:
     return [builder(line) for line in lines]
 
 
-def build_manual_blocks(merged: dict, source_title: str) -> list[dict]:
+def build_manual_blocks(merged: dict) -> list[dict]:
     """The full Manual, built from scratch. Used ONLY on the first run for an area.
 
     After that the page exists and every run is sectioned, so this shape is what
@@ -544,7 +537,7 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
                 continue
             name = path.split(">")[-1].strip()
             blocks = [_heading3(f"→ {name}")] + render_lines(lines, "bullet")
-            err = append_blocks_to_page(page_id, blocks, after=anchor.tail_id)
+            _, err = append_children(page_id, blocks, after=anchor.tail_id)
             if err:
                 skipped.append(f"{path} ({err})")
                 continue
@@ -553,7 +546,7 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
 
         # ── An existing section: replace its content in place ────────────────────
         stale_ids = list(section.content_ids)
-        err = append_blocks_to_page(
+        _, err = append_children(
             page_id, render_lines(lines, section.style), after=section.heading_id)
         if err:
             # Nothing deleted — the section still holds its previous content.
@@ -628,9 +621,9 @@ async def handle_implement(update, user_text: str):
         return
 
     source_page_id = source_page["id"]
-    source_title   = _get_page_title_from_result(source_page)
+    source_title   = get_page_title(source_page)
 
-    source_blocks, err = await asyncio.to_thread(get_all_blocks, source_page_id)
+    source_blocks, err = await asyncio.to_thread(get_children, source_page_id)
     if err:
         await update.message.reply_text(f"❌ Could not retrieve content of source page: {err}")
         return
@@ -690,7 +683,7 @@ async def _first_run(update, area_db_id, area_name, page_name, source_text, sour
         return False
 
     page_id, err = await asyncio.to_thread(
-        create_manual_page, area_db_id, build_manual_blocks(manual, source_title))
+        create_manual_page, area_db_id, build_manual_blocks(manual))
     if not page_id:
         await update.message.reply_text(f"❌ Could not create Manual page: {err}")
         return False

@@ -8,6 +8,7 @@ shortcut once — and it applies everywhere.
 
 import logging
 import os
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,33 @@ PRIORITY_MAP = {
 
 # Default category when none is supplied on an expense
 DEFAULT_CATEGORY = "Food"
+
+
+# ─── LEARN CONTENT TYPES ───────────────────────────────────────────────────────
+# What `Learn [type] [source]` accepts, the page icon each type gets, and which
+# database it is filed in. One map rather than the two that lived in learn.py
+# (TYPE_EMOJI, plus the dict inside _get_db_id) precisely because they were keyed
+# identically and had to agree: a type in one and not the other is a command that
+# either files nowhere or files with the wrong icon, and nothing would say so.
+#
+# The VALUE is the env var's NAME, not its value. config.py does not read feature
+# IDs — each module reads its own os.environ (see learn._get_db_id, and
+# implement.get_area_db_id, which derives its key the same way).
+
+class LearnType(NamedTuple):
+    emoji:  str
+    db_env: str
+
+
+LEARN_TYPES = {
+    "video":   LearnType("🎬",  "LEARN_ID"),
+    "article": LearnType("📰",  "LEARN_ID"),
+    "book":    LearnType("📚",  "LETTI_ID"),
+    "podcast": LearnType("🎙️", "LEARN_ID"),
+    "pdf":     LearnType("📄",  "LEARN_ID"),
+}
+
+DEFAULT_LEARN_EMOJI = "📖"
 
 
 def genre_help() -> str:

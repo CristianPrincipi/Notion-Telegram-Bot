@@ -44,7 +44,6 @@ logger = logging.getLogger("david")
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = os.environ.get("OWNER_ID")
-NOTION_KEY = os.environ.get("NOTION_KEY")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
 LETTI_ID = os.environ.get("LETTI_ID")
@@ -86,13 +85,6 @@ MAX_PDF_MB    = 15
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
 HTTP_TIMEOUT_SECONDS     = 30    # per-request cap: fail fast on a stalled socket
 DOWNLOAD_TIMEOUT_SECONDS = 120   # whole-operation cap
-
-
-# --- NOTION API ---
-
-headers = {'Authorization': f"Bearer {NOTION_KEY}",
-           'Content-Type': 'application/json',
-           'Notion-Version': '2022-06-28'}
 
 
 # --- NOTION FUNCTIONS --- #
