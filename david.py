@@ -5,10 +5,12 @@ import requests
 import re
 import asyncio
 import pytz
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from learn import handle_learn
+from learn import SUPPORTED_TYPES, handle_learn
 from implement import handle_implement
 from reminder import handle_remind
 from calendar_client import now_local
@@ -42,7 +44,6 @@ logger = logging.getLogger("david")
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = os.environ.get("OWNER_ID")
-NOTION_KEY = os.environ.get("NOTION_KEY")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 EXPENSES_ID = os.environ.get("EXPENSES_ID")
 LETTI_ID = os.environ.get("LETTI_ID")
@@ -84,13 +85,6 @@ MAX_PDF_MB    = 15
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
 HTTP_TIMEOUT_SECONDS     = 30    # per-request cap: fail fast on a stalled socket
 DOWNLOAD_TIMEOUT_SECONDS = 120   # whole-operation cap
-
-
-# --- NOTION API ---
-
-headers = {'Authorization': f"Bearer {NOTION_KEY}",
-           'Content-Type': 'application/json',
-           'Notion-Version': '2022-06-28'}
 
 
 # --- NOTION FUNCTIONS --- #
@@ -746,7 +740,7 @@ async def handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE
 # Accepts a dot or a comma decimal separator. Italian keyboards produce commas
 # by reflex, and the old \d+\.?\d* matched "2" out of "2,20" and dropped the
 # rest, recording EUR 2.00 as a success.
-AMOUNT = r"(\d+(?:[.,]\d+)?)"
+AMOUNT = r"(?P<amount>\d+(?:[.,]\d+)?)"
 
 
 def parse_amount(raw: str):
@@ -777,6 +771,464 @@ def resolve_category(raw):
     return category, None
 
 
+# --- COMMAND HANDLERS --- #
+#
+# One per registry entry, all with the same shape: (update, context, args),
+# where `args` is the match's groupdict(). They are the bodies of what used to be
+# the branches of one long if/elif chain in handle_message.
+#
+# Every downstream call below is resolved through david's own module namespace at
+# call time (`add_Expenses(...)`, not a reference captured into the registry),
+# which is what keeps the spies in tests/test_router.py pointed at the code the
+# bot actually runs.
+
+async def _cmd_help(update, context, args):
+    await reply(update, build_help())
+
+
+async def _cmd_undo(update, context, args):
+    await handle_undo(update, context)
+
+
+async def _cmd_budget(update, context, args):
+    result_text = await asyncio.to_thread(budget)
+    if result_text:
+        # format_budget escapes the Notion category names it interpolates.
+        await reply(update, result_text)
+    else:
+        await update.message.reply_text("❌ Error: Could not calculate budget.")
+
+
+async def _cmd_diag(update, context, args):
+    await handle_diag(update)
+
+
+async def _cmd_dbs(update, context, args):
+    await handle_dbs(update)
+
+
+async def _cmd_month(update, context, args):
+    await handle_month(update)
+
+
+async def _cmd_find(update, context, args):
+    await handle_find(update, args["query"])
+
+
+async def _cmd_get(update, context, args):
+    await handle_get(update, args["text"])
+
+
+async def _cmd_remind(update, context, args):
+    await handle_remind(update, args["text"])
+
+
+async def _cmd_add_book(update, context, args):
+    book_name   = args["name"].strip()
+    author      = args["author"].strip()
+    genre_input = args["genre"].strip()
+
+    genre = GENRE_MAP.get(genre_input.lower())
+
+    if genre is None: # Added check for invalid genre
+        await update.message.reply_text(f"❌ Error: Invalid genre. Please use: {genre_help()}")
+        return
+
+    await update.message.reply_text(f"⏳ Adding '{book_name}' '{author}' '{genre_input}' to Notion...")
+
+    # CALL THE NOTION FUNCTION
+    page_id = await asyncio.to_thread(add_New_Book, book_name, author, genre)
+
+    if page_id:
+        await update.message.reply_text("✅ Success! Book added to your database.")
+    else:
+        await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
+
+
+async def _cmd_add_quote(update, context, args):
+    book_name     = args["book"].strip()
+    quote_title   = args["title"].strip()
+    quote_content = args["body"].strip()
+
+    await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
+    page_id = await asyncio.to_thread(find_Book_Page, book_name)
+
+    if not page_id:
+        await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
+        return
+
+    # --- PDF EXTRACTION MODE: attach PDF with this caption instead ---
+    if " / " in quote_content:
+        await reply(
+            update,
+            "📎 To extract a quote from a PDF, *attach the PDF file* and use it as the caption:\n\n"
+            "`Add q [Book] - [Title] - [Begin text] / [End text]`",
+        )
+        return
+
+    # --- MANUAL MODE: full quote provided directly ---
+    if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
+        await update.message.reply_text(f"✍️ Quote added to '{book_name}'!")
+    else:
+        await update.message.reply_text("❌ Error during quote transcription.")
+
+
+async def _cmd_learn(update, context, args):
+    # Detached: fetch + Claude can run for minutes. See run_detached.
+    run_detached(context, update, handle_learn(update, args["text"]), "learn")
+
+
+async def _cmd_implement(update, context, args):
+    # Detached: the Claude merge alone is tens of seconds, under a page lock.
+    run_detached(context, update, handle_implement(update, args["text"]), "implement")
+
+
+async def _cmd_update_expense(update, context, args):
+    name = args["name"].strip()
+
+    amount, err = parse_amount(args["amount"])
+    if err:
+        await update.message.reply_text(err)
+        return
+
+    category, err = resolve_category(args["category"])
+    if err:
+        await update.message.reply_text(err)
+        return
+
+    await update.message.reply_text(f"🔍 Finding '{name}' to update to €{amount} [{category}]...")
+    await _start_destructive_expense(update, context, expense_safety.UPDATE,
+                                     name, amount=amount, category=category)
+
+
+async def _cmd_delete_expense(update, context, args):
+    name = args["name"].strip()
+
+    await update.message.reply_text(f"🔍 Finding '{name}' to delete...")
+    await _start_destructive_expense(update, context, expense_safety.DELETE, name)
+
+
+async def _cmd_add_expense(update, context, args):
+    name = args["name"].strip()
+
+    amount, err = parse_amount(args["amount"])
+    if err:
+        await update.message.reply_text(err)
+        return
+
+    # --- IF NAME = C -> CARREFOUR (case-insensitive, like the command itself)
+    if name.lower() == "c": name = "Carrefour"
+
+    # --- CATEGORY: absent -> default, supplied but unknown -> error
+    category, err = resolve_category(args["category"])
+    if err:
+        await update.message.reply_text(err)
+        return
+
+    await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
+
+    # CALL THE NOTION FUNCTION
+    success = await asyncio.to_thread(add_Expenses, name, amount, category)
+
+    if success:
+        await update.message.reply_text("✅ Success! Expenses added to your database.")
+    else:
+        await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
+
+
+# --- THE COMMAND REGISTRY --- #
+#
+# WHY A REGISTRY AND NOT AN if/elif CHAIN
+# ---------------------------------------
+# The chain this replaces held three things that could not be read off the page:
+# which pattern wins (control-flow order), what each branch parses out
+# (group(1)/group(2)/group(3), counted by eye), and what the command claims to do
+# (a hand-written help string somewhere else entirely). The last one had already
+# drifted: help advertised `Learn recipe`, which is not in learn.SUPPORTED_TYPES
+# and answers "Unknown type recipe", it left out `Learn podcast` which does work,
+# and it never mentioned that `Implement … - Diet` takes a different path from
+# every other area.
+#
+# So all three now come from one declaration per command:
+#   pattern      — compiled, matched with fullmatch, NAMED groups only
+#   handler      — the branch body, above
+#   help         — what `h` prints, GENERATED from this list (see build_help)
+#   destructive  — see below
+#
+# NAMED GROUPS, NOT POSITIONAL. `U e (.+?) (\d+…)(?:\s+(\w+))?` fed group(3) to
+# the category and group(2) to the amount; adding an optional group anywhere to
+# their left silently renumbered both, and the result would have been a wrong
+# amount written to Notion, not an exception.
+#
+# ORDER IS STILL PRECEDENCE — dispatch takes the first pattern that fullmatches,
+# so this list IS the precedence table the order of the `if`s used to be. It is
+# arranged for reading (and for the help it generates) rather than to resolve
+# conflicts, which is sound only while there are none to resolve: every pattern
+# is anchored on a distinct literal prefix (`add b`, `add q`, `add e`, `u e`,
+# `d e`, `undo`, `learn`, …), so under fullmatch no string satisfies two. That is
+# not left as an assurance — tests/test_router.py drives every input in its table
+# through every pattern and fails if any input matches more than one.
+
+@dataclass(frozen=True)
+class Help:
+    """How one command presents itself in the generated help message."""
+
+    label: str                            # "📖 *ADD BOOK*" — emoji + bold name
+    usage: tuple[str, ...] = ()           # rendered as `code` spans
+    notes: tuple[str, ...] = ()           # rendered as _italic_ lines beneath
+    inline: bool = False                  # "LABEL — `usage`" on one line
+    group: str = ""                       # commands sharing a key share a block
+
+
+@dataclass(frozen=True)
+class HelpGroup:
+    """A block several commands render into together."""
+
+    label: str | None = None              # set when the members share ONE line
+    notes: tuple[str, ...] = ()           # italic lines closing the block
+
+
+@dataclass(frozen=True)
+class Command:
+    """One thing David answers to."""
+
+    name: str                             # the trigger, verbatim: "Add e", "U e"
+    pattern: re.Pattern
+    handler: Callable                     # async (update, context, args) -> None
+    help: Help | None = None
+    # DESTRUCTIVE = mutates or removes a row that already exists, so it must go
+    # through expense_safety's find-then-choose path instead of writing straight
+    # away (Hard Rule 4). It is not a second copy of that wiring: the guards are
+    # driven by the expense_safety.UPDATE/DELETE action the handler passes to
+    # _start_destructive_expense, and there never was a hardcoded list to
+    # replace. What the flag drives is the shared warning in the generated help,
+    # and tests/test_router.py asserts the flag and the guarded path agree — a
+    # destructive command that skipped the lookup turns that test red.
+    destructive: bool = False
+
+
+# The Learn types come from learn.SUPPORTED_TYPES, not from a list written out
+# here — that is the exact drift this registry exists to make impossible. The
+# hints are decoration: a type with no hint still prints, a hint for a type that
+# is not supported never does.
+_LEARN_ARG_HINTS = {
+    "video":   "https://youtu.be/...",
+    "article": "https://...",
+    "book":    "[Title]",
+    "podcast": "https://...",
+    "pdf":     "",
+}
+
+_LEARN_USAGE = tuple(
+    f"Learn {content_type} {_LEARN_ARG_HINTS.get(content_type, '[source]')}".strip()
+    for content_type in SUPPORTED_TYPES
+)
+
+HELP_GROUPS = {
+    "notion_ids": HelpGroup(label="🩺 *FIND NOTION IDs*"),
+    "expense":    HelpGroup(notes=(f"Categories: {category_help()}",)),
+}
+
+COMMANDS = [
+    Command(
+        name="Add b",
+        pattern=re.compile(r"add b (?P<name>.+?) - (?P<author>.+?) - (?P<genre>.+)", re.I),
+        handler=_cmd_add_book,
+        help=Help("📖 *ADD BOOK*",
+                  usage=("Add b [Name] - [Author] - [Genre]",),
+                  notes=(f"Genres: {genre_help()}",)),
+    ),
+    Command(
+        name="Add q",
+        # Two shapes, one pattern: a full quote, or the "[Begin] / [End]" markers
+        # that only mean something on an attached PDF — the handler tells the
+        # second apart and explains the upload flow.
+        pattern=re.compile(r"add q (?P<book>.+?) - (?P<title>.+?) - (?P<body>[\s\S]+)", re.I),
+        handler=_cmd_add_quote,
+        help=Help("🖋️ *ADD QUOTE*",
+                  usage=("Add q [Book] - [Title] - [Full quote]",
+                         "Add q [Book] - [Title] - [Begin text] / [End text]"),
+                  notes=("The second form reads the quote out of a PDF — attach it "
+                         "and send the command as the caption",)),
+    ),
+    Command(
+        name="Remind",
+        # Only the prefix is checked here; validating the date and time is
+        # handle_remind's job, so a malformed one still reaches it and gets a
+        # usage message instead of "I didn't get that".
+        pattern=re.compile(r"(?P<text>remind\s+.+)", re.I),
+        handler=_cmd_remind,
+        help=Help("📅 *REMINDER*",
+                  usage=("Remind [Name] [Date] - [Time]",),
+                  notes=("e.g. Remind Dentist 12.06 - 14.30 (date DD.MM, time HH.MM 24h)",)),
+    ),
+    Command(
+        name="Add e",
+        pattern=re.compile(rf"add e (?P<name>.+?) {AMOUNT}(?:\s+(?P<category>\w+))?", re.I),
+        handler=_cmd_add_expense,
+        help=Help("💵 *ADD EXPENSE*",
+                  usage=("Add e [Name] [Amount] [Category]",),
+                  inline=True, group="expense"),
+    ),
+    Command(
+        name="U e",
+        pattern=re.compile(rf"u e (?P<name>.+?) {AMOUNT}(?:\s+(?P<category>\w+))?", re.I),
+        handler=_cmd_update_expense,
+        help=Help("✏️ *UPDATE EXPENSE*",
+                  usage=("U e [Name] [Amount] [Category]",),
+                  inline=True, group="expense"),
+        destructive=True,
+    ),
+    Command(
+        name="D e",
+        pattern=re.compile(r"d e (?P<name>.+)", re.I),
+        handler=_cmd_delete_expense,
+        help=Help("🗑️ *DELETE EXPENSE*",
+                  usage=("D e [Name]",),
+                  inline=True, group="expense"),
+        destructive=True,
+    ),
+    Command(
+        name="undo",
+        pattern=re.compile(r"undo", re.I),
+        handler=_cmd_undo,
+        help=Help("↩️ *UNDO*", usage=("undo",), inline=True,
+                  notes=("Reverses the last delete or update",)),
+    ),
+    Command(
+        name="B",
+        pattern=re.compile(r"b", re.I),
+        handler=_cmd_budget,
+        help=Help("💰 *BUDGET*", usage=("B",), inline=True),
+    ),
+    Command(
+        name="Month",
+        # Idempotent, so sending it twice is harmless; the scheduled job runs the
+        # exact same call at 00:05 every night.
+        pattern=re.compile(r"month", re.I),
+        handler=_cmd_month,
+        help=Help("🗓️ *MONTH PAGE*", usage=("Month",), inline=True,
+                  notes=("Rolls over automatically on the 1st; this forces a check",)),
+    ),
+    Command(
+        name="Diag",
+        pattern=re.compile(r"diag", re.I),
+        handler=_cmd_diag,
+        help=Help("", usage=("Diag",), group="notion_ids"),
+    ),
+    Command(
+        name="Find",
+        pattern=re.compile(r"find\s+(?P<query>.+)", re.I),
+        handler=_cmd_find,
+        help=Help("", usage=("Find [name]",), group="notion_ids"),
+    ),
+    Command(
+        name="DBs",
+        pattern=re.compile(r"dbs", re.I),
+        handler=_cmd_dbs,
+        help=Help("", usage=("DBs",), group="notion_ids"),
+    ),
+    Command(
+        name="Learn",
+        pattern=re.compile(r"(?P<text>learn\s+\w+[\s\S]*)", re.I),
+        handler=_cmd_learn,
+        help=Help("🧠 *LEARN*", usage=_LEARN_USAGE,
+                  notes=("Learn pdf needs the file attached, with the command as the caption",)),
+    ),
+    Command(
+        name="Implement",
+        pattern=re.compile(r"(?P<text>implement\s+.+\s*-\s*.+)", re.I),
+        handler=_cmd_implement,
+        help=Help("🔧 *IMPLEMENT*",
+                  usage=("Implement [Page Name] - [Area]",),
+                  notes=("Merges a Learn page into an Area Manual",
+                         "Area `Diet` is different: it merges into the structured Diet "
+                         "page (categories > rows > attributes), not a flat Manual")),
+    ),
+    Command(
+        name="Get",
+        # The separator is a SPACE-hyphen-SPACE, matching pkm.GET_PATTERN, so a
+        # topic containing a hyphen ("Step-by-Step Breakdown") is not split at
+        # it. Without the " - [Area]" it is not a command, exactly like
+        # `Implement`.
+        #
+        # Runs INLINE, not detached: it is read-only, so it cannot reorder
+        # against a write the way a detached command could. The slow case is a
+        # toggle manual (Diet), where build_index walks the tree one request per
+        # heading.
+        pattern=re.compile(r"(?P<text>get\s+.+\s+-\s+.+)", re.I),
+        handler=_cmd_get,
+        help=Help("🔎 *GET*",
+                  usage=("Get [Topic] - [Area]", "Get ? - [Area]"),
+                  notes=("? in place of the topic lists every topic in that area",)),
+    ),
+    Command(
+        name="h",
+        pattern=re.compile(r"h|help|aiuto", re.I),
+        handler=_cmd_help,
+        help=Help("❓ *HELP*", usage=("h", "help", "aiuto"), inline=True),
+    ),
+]
+
+
+# --- THE GENERATED HELP MESSAGE --- #
+
+def _render_entry(entry: Help) -> list[str]:
+    """One command's own lines: label, usage, notes."""
+    spans = " · ".join(f"`{usage}`" for usage in entry.usage)
+    if entry.inline:
+        lines = [f"{entry.label} — {spans}" if spans else entry.label]
+    else:
+        lines = [entry.label] + [f"`{usage}`" for usage in entry.usage]
+    return lines + [f"_{note}_" for note in entry.notes]
+
+
+def build_help() -> str:
+    """The `h` message, built from COMMANDS.
+
+    GENERATED rather than written out so it cannot drift from what the bot
+    actually answers to, which is the whole point — the hand-written version it
+    replaces advertised `Learn recipe` (rejected by handle_learn as an unknown
+    type), omitted `Learn podcast`, and said nothing about `Implement … - Diet`
+    taking a different path.
+
+    Commands appear in registry order, grouped by Help.group; a group with a
+    label collapses its members onto one line, and one with notes closes on them.
+    """
+    blocks: dict[str, list[Command]] = {}
+    for command in COMMANDS:
+        if command.help is None:
+            continue
+        blocks.setdefault(command.help.group or command.name, []).append(command)
+
+    rendered = []
+    for key, members in blocks.items():
+        group = HELP_GROUPS.get(key, HelpGroup())
+
+        if group.label:
+            spans = " · ".join(f"`{usage}`"
+                               for member in members for usage in member.help.usage)
+            lines = [f"{group.label} — {spans}"]
+        else:
+            lines = [line for member in members for line in _render_entry(member.help)]
+
+        notes = list(group.notes)
+        # The destructive flag earning its keep: the guard that makes `U e` and
+        # `D e` safe is only reassuring if you know it is there, and naming the
+        # commands from the flag means a third one cannot be added without this
+        # sentence growing to cover it.
+        guarded = [member.name for member in members if member.destructive]
+        if guarded:
+            notes.append(" and ".join(f"`{name}`" for name in guarded)
+                         + " search this month only. Several matches → I list them "
+                           "and wait for a number.")
+        lines += [f"_{note}_" for note in notes]
+
+        rendered.append("\n".join(lines))
+
+    return "\n\n".join(rendered)
+
+
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Tag every log line produced while handling this update — including from the
@@ -785,254 +1237,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_correlation_id(getattr(update, "update_id", None))
     record_command()
 
-    # Stripped once, here: every pattern below is a fullmatch, so stray leading
-    # or trailing whitespace would otherwise miss every command.
+    # Stripped once, here: every pattern is a fullmatch, so stray leading or
+    # trailing whitespace would otherwise miss every command.
     user_text = (update.message.text or "").strip()
     logger.info("Received: %s", user_text)
 
     # --- PENDING CHOICE: a bare number answering a printed list of matches ---
-    # FIRST, because while a list is live the reply to it is a plain integer,
-    # which every pattern below rejects — it would fall through to "I didn't get
-    # that" while the list sat there unanswered. Guarded on there BEING a live
-    # list, so a stray "2" with nothing pending is still an unrecognised message
-    # rather than a command with no visible effect. See expense_safety.py.
+    # AHEAD OF THE REGISTRY, and not a Command itself, because it is the only
+    # thing David answers that depends on STATE rather than on the text: while a
+    # list is live the reply to it is a plain integer, which every pattern
+    # rejects, so it would fall through to "I didn't get that" with the list left
+    # unanswered. Guarded on there BEING a live list, so a stray "2" with nothing
+    # pending stays an unrecognised message rather than a command with no visible
+    # effect. See expense_safety.py.
     if expense_safety.has_pending(context):
         selection = expense_safety.parse_selection(user_text)
         if selection is not None:
             await handle_expense_selection(update, context, selection)
             return
 
-    # --- UNDO: reverse the last destructive expense write ---
-    if re.fullmatch(r"(?i)undo", user_text):
-        await handle_undo(update, context)
-        return
-
-    # --- REGEX FOR HELP COMMAND: Look for "h"
-    if re.fullmatch(r"(?i)h|help|aiuto", user_text):
-        await reply(
-            update,
-            "📖 *ADD BOOK*\n"
-            "`Add b [Name] - [Author] - [Genre]`\n"
-            "_Genres: s · h · m · p · a · ph_\n\n"
-            "🖋️ *ADD QUOTE — manual*\n"
-            "`Add q [Book] - [Title] - [Full quote]`\n\n"
-            "📄 *ADD QUOTE — from PDF*\n"
-            "_Attach the PDF and use this caption:_\n"
-            "`Add q [Book] - [Title] - [Begin text] / [End text]`\n\n"
-            "📅 *REMINDER*\n"
-            "`Remind [Name] [Date] - [Time]`\n"
-            "_e.g. Remind Dentist 12.06 - 14.30 (date DD.MM, time HH.MM 24h)_\n\n"
-            "💵 *ADD EXPENSE* — `Add e [Name] [Amount] [Category]`\n"
-            "✏️ *UPDATE EXPENSE* — `U e [Name] [Amount] [Category]`\n"
-            "🗑️ *DELETE EXPENSE* — `D e [Name]`\n"
-            "_Categories: s · f · g · o_\n"
-            "_Both search this month only. Several matches → I list them and wait "
-            "for a number._\n\n"
-            "↩️ *UNDO* — `undo`\n"
-            "_Reverses the last delete or update_\n\n"
-            "💰 *BUDGET* — `B`\n\n"
-            "🗓️ *MONTH PAGE* — `Month`\n"
-            "_Rolls over automatically on the 1st; this forces a check_\n\n"
-            "🩺 *FIND NOTION IDs* — `Diag` · `Find [name]` · `DBs`\n\n"
-            "🧠 *LEARN*\n"
-            "`Learn video https://youtu.be/...`\n"
-            "`Learn article https://...`\n"
-            "`Learn book [Title]`\n"
-            "`Learn recipe https://...`\n"
-            "`Learn pdf`  _(attach PDF as caption)_\n\n"
-            "🔧 *IMPLEMENT*\n"
-            "`Implement [Page Name] - [Area]`\n"
-            "_Merges a Learn page into an Area Manual_\n\n"
-            "🔎 *GET*\n"
-            "`Get [Topic] - [Area]`\n"
-            "`Get ? - [Area]`  _(list every topic)_",
-        )
-        return
-
-    # --- REGEX FOR BUDGET: Look for "B"
-    if re.fullmatch(r"(?i)B", user_text):
-        result_text = await asyncio.to_thread(budget)
-        if result_text:
-            # format_budget escapes the Notion category names it interpolates.
-            await reply(update, result_text)
-        else:
-            await update.message.reply_text("❌ Error: Could not calculate budget.")
-        return
-
-    # --- DIAGNOSTIC: "Diag" → introspect Notion IDs + schema, report to Telegram ---
-    if re.fullmatch(r"(?i)diag", user_text):
-        await handle_diag(update)
-        return
-
-    # --- LIST DATABASES: "DBs" → every database the integration can see + its ID ---
-    if re.fullmatch(r"(?i)dbs", user_text):
-        await handle_dbs(update)
-        return
-
-    # --- MONTH: "Month" → force the monthly-page rollover now and report ---
-    # Idempotent, so sending it twice is harmless; the scheduled job runs the
-    # exact same call at 00:05 every night.
-    if re.fullmatch(r"(?i)month", user_text):
-        await handle_month(update)
-        return
-
-    # --- FIND: "Find [query]" → search pages/databases by name, return IDs ---
-    find_match = re.fullmatch(r"(?i)find\s+(.+)", user_text)
-    if find_match:
-        await handle_find(update, find_match.group(1))
-        return
-
-    # --- RETRIEVE: "Get [Topic] - [Area]" → read a section back out of a Manual ---
-    # The separator is a SPACE-hyphen-SPACE, matching pkm.GET_PATTERN, so a topic
-    # containing a hyphen ("Step-by-Step Breakdown") is not split at it. Without
-    # the " - [Area]" it is not a command, exactly like `Implement`.
-    #
-    # Runs INLINE, not detached: it is read-only, so it cannot reorder against a
-    # write the way a detached command could. The slow case is a toggle manual
-    # (Diet), where build_index walks the tree one request per heading.
-    if re.fullmatch(r"(?i)get\s+.+\s+-\s+.+", user_text):
-        await handle_get(update, user_text)
-        return
-
-    # --- REGEX FOR REMINDER: "Remind [Name] [Date] - [Time]" ---
-    if re.fullmatch(r"(?i)remind\s+(.+)", user_text):
-        await handle_remind(update, user_text)
-        return
-
-    # --- REGEX FOR NEW BOOK: Look for "Add b [Book's Name] - [Author] - [Genre]"
-    book_pattern = r"(?i)add b (.+?) - (.+?) - (.+)"
-    book_match = re.fullmatch(book_pattern, user_text)
-
-    if book_match:
-        book_name = book_match.group(1).strip()
-        author = book_match.group(2).strip()
-        genre_input = book_match.group(3).strip()
-
-        genre = GENRE_MAP.get(genre_input.lower())
-
-        if genre is None: # Added check for invalid genre
-            await update.message.reply_text(f"❌ Error: Invalid genre. Please use: {genre_help()}")
+    # fullmatch, never search: a partial match must fail loudly rather than
+    # execute a command the user only mentioned in passing.
+    for command in COMMANDS:
+        match = command.pattern.fullmatch(user_text)
+        if match:
+            await command.handler(update, context, match.groupdict())
             return
 
-        await update.message.reply_text(f"⏳ Adding '{book_name}' '{author}' '{genre_input}' to Notion...")
-
-        # CALL THE NOTION FUNCTION
-        page_id = await asyncio.to_thread(add_New_Book, book_name, author, genre)
-
-        if page_id:
-            await update.message.reply_text("✅ Success! Book added to your database.")
-        else:
-            await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
-        return
-
-    # --- REGEX FOR QUOTES ---
-    # Supports two formats:
-    #   Manual:  Add q [Book] - [Title] - [Full quote]
-    #   PDF:     Add q [Book] - [Title] - [Begin text] / [End text]
-    quote_pattern = r"(?i)add q (.+?) - (.+?) - ([\s\S]+)"
-    quote_match = re.fullmatch(quote_pattern, user_text)
-
-    if quote_match:
-        book_name     = quote_match.group(1).strip()
-        quote_title   = quote_match.group(2).strip()
-        quote_content = quote_match.group(3).strip()
-
-        await update.message.reply_text(f"🔍 Searching '{book_name}' in library...")
-        page_id = await asyncio.to_thread(find_Book_Page, book_name)
-
-        if not page_id:
-            await update.message.reply_text(f"⚠️ I didn't find '{book_name}' in the library.")
-            return
-
-        # --- PDF EXTRACTION MODE: attach PDF with this caption instead ---
-        if " / " in quote_content:
-            await reply(
-                update,
-                "📎 To extract a quote from a PDF, *attach the PDF file* and use it as the caption:\n\n"
-                "`Add q [Book] - [Title] - [Begin text] / [End text]`",
-            )
-            return
-
-        # --- MANUAL MODE: full quote provided directly ---
-        if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
-            await update.message.reply_text(f"✍️ Quote added to '{book_name}'!")
-        else:
-            await update.message.reply_text("❌ Error during quote transcription.")
-        return
-
-    # --- REGEX FOR LEARN COMMAND: "Learn [type] [source]" ---
-    # Detached: fetch + Claude can run for minutes. See run_detached.
-    if re.fullmatch(r"(?i)learn\s+\w+[\s\S]*", user_text):
-        run_detached(context, update, handle_learn(update, user_text), "learn")
-        return
-
-    # --- REGEX FOR IMPLEMENT COMMAND: "Implement [Page Name] - [Target Area]" ---
-    # Detached: the Claude merge alone is tens of seconds, under a page lock.
-    if re.fullmatch(r"(?i)implement\s+.+\s*-\s*.+", user_text):
-        run_detached(context, update, handle_implement(update, user_text), "implement")
-        return
-
-    # --- REGEX FOR UPDATE EXPENSE: Look for "U e [Name] [Amount] [Category]"
-    update_expense_match = re.fullmatch(rf"(?i)U e (.+?) {AMOUNT}(?:\s+(\w+))?", user_text)
-    if update_expense_match:
-        name = update_expense_match.group(1).strip()
-
-        amount, err = parse_amount(update_expense_match.group(2))
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        category, err = resolve_category(update_expense_match.group(3))
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        await update.message.reply_text(f"🔍 Finding '{name}' to update to €{amount} [{category}]...")
-        await _start_destructive_expense(update, context, expense_safety.UPDATE,
-                                         name, amount=amount, category=category)
-        return
-
-    # --- REGEX FOR DELETE EXPENSE: Look for "D e [Name]"
-    delete_expense_match = re.fullmatch(r"(?i)D e (.+)", user_text)
-    if delete_expense_match:
-        name = delete_expense_match.group(1).strip()
-
-        await update.message.reply_text(f"🔍 Finding '{name}' to delete...")
-        await _start_destructive_expense(update, context, expense_safety.DELETE, name)
-        return
-
-    # REGEX FOR EXPENSES: Look for "Add e [Name] [Amount] [Category]"
-    pattern = rf"(?i)add e (.+?) {AMOUNT}(?:\s+(\w+))?"
-    expenses_match = re.fullmatch(pattern, user_text)
-
-    if expenses_match:
-        name = expenses_match.group(1).strip()
-
-        amount, err = parse_amount(expenses_match.group(2))
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        # --- IF NAME = C -> CARREFOUR (case-insensitive, like the command itself)
-        if name.lower() == "c": name = "Carrefour"
-
-        # --- CATEGORY: absent -> default, supplied but unknown -> error
-        category, err = resolve_category(expenses_match.group(3))
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        await update.message.reply_text(f"⏳ Adding '{name}' (€{amount}) to Notion...")
-
-        # CALL THE NOTION FUNCTION
-        success = await asyncio.to_thread(add_Expenses, name, amount, category)
-
-        if success:
-            await update.message.reply_text("✅ Success! Expenses added to your database.")
-        else:
-            await update.message.reply_text("❌ Error: Could not connect to Notion. Check your API keys.")
-    else:
-        await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
+    await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
 
 
 # --- PDF ATTACHMENT DOWNLOAD --- #

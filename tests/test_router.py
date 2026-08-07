@@ -2,10 +2,10 @@
 
 WHAT THIS LOCKS DOWN
 --------------------
-`david.handle_message` is one long if/elif chain of regexes. Which command wins
-depends on the ORDER of those checks and on whether each uses `re.match`,
-`re.search` or `re.fullmatch`. That is invisible when reading a single branch,
-and it is exactly what breaks when a new command is added in the wrong place.
+`david.handle_message` dispatches by walking `david.COMMANDS` and taking the
+first pattern that fullmatches. Which command wins therefore depends on the ORDER
+of that list, and what each handler receives depends on the NAMES of the capture
+groups in its pattern — neither of which is visible from reading one entry.
 
 The table below drives the REAL `handle_message` with every Notion/Telegram call
 replaced by a spy, then asserts:
@@ -15,22 +15,30 @@ replaced by a spy, then asserts:
 Tests run against the shipping code path, not a re-implementation of it, so a
 route can never silently drift away from what the bot actually does.
 
+The registry tests at the bottom close the loop the table cannot: every command
+in `COMMANDS` has a row, no two patterns can claim the same input (which is what
+makes the list's order safe to arrange for reading), `destructive` means what it
+says, and the generated help describes exactly the commands that exist.
+
 HOW TO ADD A COMMAND
 --------------------
-1. Add its handler to `SPY_TARGETS` (name in david's namespace, its arg names).
-2. Add a happy-path row plus its edge cases to `ROUTES`.
-3. If it is reached by `re.search` (unanchored), add a precedence row proving it
-   does not steal traffic from a command declared before it.
+1. Add a `Command` to `david.COMMANDS`, in the position you want it read.
+2. Add its handler to `SPY_TARGETS` (name in david's namespace, its arg names).
+3. Add a happy-path row plus its edge cases to `ROUTES`. The per-command tests
+   below fail until at least one row matches the new pattern.
 
 `known_bug` rows assert TODAY'S behaviour, which is wrong — each says so and why.
 Fixing the bug makes that row fail; update the row in the same commit as the fix.
 """
 
+import pathlib
+import re
 from dataclasses import dataclass, field
 
 import pytest
 
 import david
+import learn
 from conftest import FakeContext, FakeUpdate, run
 
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
@@ -238,6 +246,10 @@ ROUTES = [
           {"user_text": "Learn article https://example.com/post"}, "learn article"),
     Route("Learn book Sapiens", "handle_learn",
           {"user_text": "Learn book Sapiens"}, "learn book"),
+    # Supported all along, and missing from the hand-written help for just as
+    # long — the generated one lists it because learn.SUPPORTED_TYPES does.
+    Route("Learn podcast https://show.com/episode", "handle_learn",
+          {"user_text": "Learn podcast https://show.com/episode"}, "learn podcast"),
     Route("Learn pdf", "handle_learn", {"user_text": "Learn pdf"},
           "'Learn pdf' as plain text routes to learn (which asks for the file)"),
     Route("Learn", NO_HANDLER, reply("I didn't get that"),
@@ -412,6 +424,224 @@ def test_known_bug_rows_are_documented():
     for route in ROUTES:
         if route.known_bug:
             assert route.note, f"known_bug row {route.text!r} needs a note explaining it"
+
+
+# ─── THE REGISTRY ──────────────────────────────────────────────────────────────
+# The table above proves the routes it lists. These prove things about the WHOLE
+# registry, so a command added without a row — or with a pattern that overlaps
+# one already there — cannot slip through.
+
+# handle_message strips before matching, so the registry must be probed the same
+# way or a row with phone-keyboard whitespace looks like it matches nothing.
+def _matching(text):
+    return [c for c in david.COMMANDS if c.pattern.fullmatch(text.strip())]
+
+
+def _example_row(command):
+    """The first ROUTES row that reaches `command`, or None if it has no row."""
+    for route in ROUTES:
+        if command.pattern.fullmatch(route.text.strip()):
+            return route
+    return None
+
+
+@pytest.mark.parametrize("command", david.COMMANDS, ids=lambda c: c.name)
+def test_every_registered_command_has_a_route_row(command):
+    """A command with no row is a command nothing checks before a deploy."""
+    assert _example_row(command) is not None, (
+        f"{command.name!r} is in COMMANDS but no ROUTES row matches its pattern"
+    )
+
+
+def test_no_input_can_be_claimed_by_two_commands():
+    """THIS IS WHAT MAKES THE LIST'S ORDER SAFE TO READ.
+
+    Dispatch stops at the first pattern that matches, so ordering is precedence.
+    COMMANDS is arranged for reading (and for the help it generates) rather than
+    to resolve conflicts — which is only sound while there are no conflicts to
+    resolve. Every pattern is anchored on a distinct literal prefix (`add b`,
+    `add q`, `add e`, `u e`, `d e`, `undo`, `learn`, …), so under fullmatch no
+    string satisfies two.
+
+    Verified over every input the table drives, plus every complete example the
+    help advertises. A new command that overlaps an existing one turns this red
+    and has to be positioned deliberately.
+    """
+    probes = [route.text for route in ROUTES] + [
+        usage for command in david.COMMANDS if command.help
+        for usage in command.help.usage if "[" not in usage
+    ]
+
+    collisions = {text: [c.name for c in _matching(text)]
+                  for text in probes if len(_matching(text)) > 1}
+
+    assert collisions == {}, f"these inputs match more than one pattern: {collisions}"
+
+
+@pytest.mark.parametrize("command", david.COMMANDS, ids=lambda c: c.name)
+def test_destructive_is_exactly_what_goes_through_the_expense_guard(command, router):
+    """`destructive=True` is a claim about the code path, not a label.
+
+    A destructive command finds its target through `find_expense_matches` — the
+    month-scoped, CREATED_DESC-sorted lookup that Hard Rule 4 is built on — and
+    only then writes. If one ever wrote without it, or a harmless command started
+    reaching it, the flag and the behaviour would disagree here.
+    """
+    route = _example_row(command)
+
+    run(david.handle_message(FakeUpdate(text=route.text), FakeContext()))
+
+    assert ("find_expense_matches" in router.chain) == command.destructive, (
+        f"{command.name!r} declares destructive={command.destructive} but routed "
+        f"to {router.chain}"
+    )
+
+
+def test_the_destructive_commands_are_the_two_expected_ones():
+    """A new destructive command must be a deliberate act, not a diff nobody read."""
+    assert {c.name for c in david.COMMANDS if c.destructive} == {"U e", "D e"}
+
+
+# ─── THE GENERATED HELP ────────────────────────────────────────────────────────
+# The help used to be a hand-written string, and it had drifted: it advertised
+# `Learn recipe`, which is not in learn.SUPPORTED_TYPES and answers "Unknown type
+# recipe", and it said nothing about `Implement … - Diet` taking a different path
+# from every other area. It is generated from COMMANDS now, and these keep it
+# honest about what that means.
+
+BOLD = re.compile(r"\*([^*\n]+)\*")
+
+
+def test_help_documents_every_registered_command():
+    help_text = david.build_help()
+
+    for command in david.COMMANDS:
+        assert f"`{command.name}" in help_text, (
+            f"{command.name!r} is a command but the help never mentions it"
+        )
+
+
+def test_help_documents_nothing_that_is_not_a_command():
+    """Every section heading in the help belongs to a command that exists.
+
+    The "and nothing else" half: a section can no longer outlive the command it
+    describes, because there is nowhere to write one by hand.
+    """
+    declared = {label for c in david.COMMANDS if c.help and c.help.label
+                for label in BOLD.findall(c.help.label)}
+    declared |= {label for g in david.HELP_GROUPS.values() if g.label
+                 for label in BOLD.findall(g.label)}
+
+    assert set(BOLD.findall(david.build_help())) == declared
+
+
+def test_every_complete_example_in_the_help_actually_runs(router):
+    """An advertised example with no placeholder in it must route somewhere.
+
+    This is the shape of the `Learn recipe` bug: help promising something the
+    router or the handler then rejects. Examples containing a `[placeholder]`
+    are skipped — they are shapes, not commands.
+    """
+    help_text = david.build_help()
+
+    for command in david.COMMANDS:
+        for usage in command.help.usage:
+            assert f"`{usage}`" in help_text, f"{usage!r} is declared but never rendered"
+            if "[" in usage:
+                continue
+
+            update = FakeUpdate(text=usage)
+            run(david.handle_message(update, FakeContext()))
+
+            assert not update.message.replied_with("I didn't get that"), (
+                f"the help advertises {usage!r}, which David does not understand"
+            )
+
+
+def test_help_advertises_exactly_the_learn_types_learn_supports():
+    """The drift this registry exists to prevent, asserted directly.
+
+    `Learn recipe` was in the help for as long as the help was written by hand.
+    The usage lines are built from learn.SUPPORTED_TYPES now, so adding a type
+    documents it and removing one un-documents it.
+    """
+    learn_command = next(c for c in david.COMMANDS if c.name == "Learn")
+    advertised = {usage.split()[1] for usage in learn_command.help.usage}
+
+    assert advertised == set(learn.SUPPORTED_TYPES)
+    assert "recipe" not in david.build_help()
+
+
+def test_help_explains_that_diet_is_implemented_differently():
+    """Implement routes Diet to implement_diet.py, which merges into a toggle
+    tree instead of a flat Manual. The hand-written help never said so."""
+    assert "Diet" in david.build_help()
+
+
+# ─── THE README COMMANDS TABLE ─────────────────────────────────────────────────
+# With `h` generated, the README's Commands table is the LAST hand-written copy
+# of the command set — and it carries the same shape the bug had, a row reading
+# `Learn video|article|podcast|book|pdf [source]` with the types spelled out by
+# hand. It cannot be generated (it is prose, with a description per command that
+# is worth writing), so it is checked instead.
+
+README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+TABLE_ROW = re.compile(r"^\|(.+?)\|", re.M)      # first column of a table row
+PIPE_IN_SPAN = r"\|"                             # escaped pipe inside a code span
+
+
+def _commands_section() -> str:
+    """The README's `## Commands` section, including its subsections."""
+    text = README.read_text(encoding="utf-8")
+    start = text.index("## Commands")
+    rest = text[start + len("## Commands"):]
+    end = rest.find("\n## ")
+    return rest if end == -1 else rest[:end]
+
+
+def _documented_commands() -> list[str]:
+    """Every code span in the first column of the Commands table."""
+    section = _commands_section().replace(PIPE_IN_SPAN, "\x00")
+    spans = []
+    for first_column in TABLE_ROW.findall(section):
+        spans += [s.replace("\x00", "|") for s in re.findall(r"`([^`]+)`", first_column)]
+    return spans
+
+
+def test_the_readme_table_documents_every_command():
+    """A command missing from the README is undiscoverable outside the chat."""
+    section = _commands_section()
+
+    for command in david.COMMANDS:
+        assert f"`{command.name}" in section, (
+            f"{command.name!r} is a command but the README's Commands section omits it"
+        )
+
+
+def test_the_readme_table_documents_nothing_that_is_not_a_command():
+    """The other direction: a row cannot outlive the command it describes."""
+    names = sorted((c.name for c in david.COMMANDS), key=len, reverse=True)
+
+    for documented in _documented_commands():
+        assert any(documented == name or documented.startswith(f"{name} ")
+                   for name in names), (
+            f"the README documents {documented!r}, which is not a command"
+        )
+
+
+def test_the_readme_lists_exactly_the_learn_types_learn_supports():
+    """The `Learn recipe` bug's last hiding place.
+
+    The README spells the types out by hand — `Learn video|article|…` — so it is
+    the one copy left that can advertise a type handle_learn rejects, or omit one
+    it accepts.
+    """
+    learn_row = next(d for d in _documented_commands() if d.startswith("Learn "))
+    documented = set(learn_row.removeprefix("Learn ").split(" ")[0].split("|"))
+
+    assert documented == set(learn.SUPPORTED_TYPES), (
+        f"README lists {sorted(documented)}, learn supports {sorted(learn.SUPPORTED_TYPES)}"
+    )
 
 
 # ─── FAILURE BRANCHES ──────────────────────────────────────────────────────────

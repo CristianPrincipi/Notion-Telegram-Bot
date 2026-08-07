@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 from anthropic_client import complete_json
 from config import (
-    ANTHROPIC_TIMEOUT,
+    ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, LEARN_TYPES,
     PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
 )
 from notion_client import (
@@ -16,19 +16,13 @@ from notion_client import (
 )
 from telegram_text import escape_md, reply
 
-# ─── ENV ───────────────────────────────────────────────────────────────────────
-LEARN_ID = os.environ.get("LEARN_ID")                  # videos, articles, podcasts
-LETTI_ID = os.environ.get("LETTI_ID")                  # books  (already exists in David)
-
-SUPPORTED_TYPES = ["video", "article", "book", "podcast", "pdf"]
-
-TYPE_EMOJI = {
-    "video":   "🎬",
-    "article": "📰",
-    "book":    "📚",
-    "podcast": "🎙️",
-    "pdf":     "📄",
-}
+# ─── CONTENT TYPES ─────────────────────────────────────────────────────────────
+# The types, their icons and their target databases are declared once, in
+# config.LEARN_TYPES. Everything here — what the command accepts, what the
+# refusal message lists, what the router advertises in `h` — is derived from it,
+# so a type cannot be supported without being documented or documented without
+# being supported.
+SUPPORTED_TYPES = list(LEARN_TYPES)
 
 
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
@@ -64,21 +58,16 @@ def extract_youtube(url: str) -> tuple[str | None, str | None]:
 
 
 def extract_article(url: str) -> tuple[dict | None, str | None]:
-    """Return ({"title", "author", "text"}, error). Uses newspaper3k if available, falls back to BS4."""
-    try:
-        from newspaper import Article
-        art = Article(url)
-        art.download()
-        art.parse()
-        return {
-            "title":  art.title or url,
-            "author": ", ".join(art.authors) if art.authors else "",
-            "text":   art.text,
-        }, None
-    except Exception:
-        pass
+    """Return ({"title", "author", "text"}, error). Extracts with requests + BS4.
 
-    # Fallback: raw requests + BeautifulSoup
+    This USED to open with a `from newspaper import Article` branch, described as
+    the good path with BS4 as its fallback. newspaper is not in requirements.txt
+    — it was taken out deliberately, because it pulls lxml, which compiles from C
+    source — so the import raised ImportError on every call, the bare `except`
+    swallowed it, and BS4 did the work every time. The branch documented an
+    extraction quality nothing was delivering. Improving on BS4 is a separate
+    piece of work; it starts from what actually runs.
+    """
     try:
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         resp.raise_for_status()
@@ -205,18 +194,28 @@ def build_notion_blocks(summary: dict, source: str) -> list[dict]:
 
 # ─── 4. NOTION PAGE CREATOR ────────────────────────────────────────────────────
 
+def _emoji(content_type: str) -> str:
+    """The page icon for a type — also the one used in the Telegram confirmation."""
+    learn_type = LEARN_TYPES.get(content_type)
+    return learn_type.emoji if learn_type else DEFAULT_LEARN_EMOJI
+
+
 def _get_db_id(content_type: str) -> str | None:
-    return {
-        "video":   LEARN_ID,
-        "article": LEARN_ID,
-        "podcast": LEARN_ID,
-        "pdf":     LEARN_ID,
-        "book":    LETTI_ID,
-    }.get(content_type)
+    """The database this type is filed in, read from the environment by name."""
+    learn_type = LEARN_TYPES.get(content_type)
+    return os.environ.get(learn_type.db_env) if learn_type else None
 
 
-def create_learn_page(content_type: str, title: str, blocks: list[dict], metadata: dict = {}) -> tuple[bool, str]:
-    """Create a Notion page. Returns (success, page_id_or_error)."""
+def create_learn_page(content_type: str, title: str, blocks: list[dict],
+                      metadata: dict | None = None) -> tuple[bool, str]:
+    """Create a Notion page. Returns (success, page_id_or_error).
+
+    `metadata` defaults to None, not {}: a mutable default is built ONCE, at
+    definition time, and shared by every call that omits the argument — so
+    anything that ever wrote to it would be writing into the function itself.
+    """
+    metadata = metadata or {}
+
     db_id = _get_db_id(content_type)
     if not db_id:
         return False, f"No Notion database configured for type '{content_type}'."
@@ -234,7 +233,7 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict], metadat
         db_id,
         properties,
         children=blocks,
-        icon=TYPE_EMOJI.get(content_type, "📖"),
+        icon=_emoji(content_type),
     )
     if not page_id:
         return False, err or "Unknown error creating page."
@@ -414,7 +413,7 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
         await reply(
             update,
             f"✅ Saved to Notion!\n\n"
-            f"{TYPE_EMOJI.get(content_type, '📖')} *{escape_md(final_title)}*\n\n"
+            f"{_emoji(content_type)} *{escape_md(final_title)}*\n\n"
             f"💡 {escape_md(tldr_preview)}",
         )
     else:

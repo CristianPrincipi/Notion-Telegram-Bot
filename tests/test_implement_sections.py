@@ -84,7 +84,7 @@ def manual(monkeypatch):
         "append_error": None,
     }
 
-    def get_all_blocks(page_id):
+    def get_children(page_id):
         # The Learn source page and the Manual are different pages; returning the
         # Manual for both would let a section's content leak in as "the source".
         if page_id == "source-1":
@@ -110,7 +110,7 @@ def manual(monkeypatch):
                         lambda db, name, exact=False: (
                             {"id": "manual-1" if db == AREA_DB else "source-1",
                              "properties": {}}, None))
-    monkeypatch.setattr(implement, "get_all_blocks", get_all_blocks)
+    monkeypatch.setattr(implement, "get_children", get_children)
     monkeypatch.setattr(implement, "route_sections", route_sections)
     monkeypatch.setattr(implement, "merge_sections", merge_sections)
     monkeypatch.setattr(implement, "append_children", append_children)
@@ -272,7 +272,7 @@ def test_a_failed_append_deletes_nothing(manual):
 def test_the_stale_ids_come_from_the_pre_write_index(manual):
     """Deleting from a re-read after appending would list the new blocks too and
     delete the replacement along with the original."""
-    def growing_get_all_blocks(page_id):
+    def growing_get_children(page_id):
         if page_id == "source-1":
             return [leaf("src-1", "SOURCE BODY")], None
         snapshot = list(manual["blocks"])
@@ -280,7 +280,7 @@ def test_the_stale_ids_come_from_the_pre_write_index(manual):
         return snapshot, None
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(implement, "get_all_blocks", growing_get_all_blocks)
+        mp.setattr(implement, "get_children", growing_get_children)
         implement_it()
 
     assert "SHOULD-NOT-BE-DELETED" not in manual["deletes"]

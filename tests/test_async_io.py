@@ -216,7 +216,7 @@ def implement_stubs(monkeypatch):
     monkeypatch.setattr(implement, "blocks_to_text", lambda blocks: "content")
     return stub_module(monkeypatch, implement, {
         "search_page_in_db":     lambda db, name, exact=False: ({"id": "page-1", "properties": {}}, None),
-        "get_all_blocks":        lambda page_id: ([{"id": "old-1"}], None),
+        "get_children":          lambda page_id: ([{"id": "old-1"}], None),
         "read_manual_sections":  lambda page_id: ([_fake_section()], None),
         "route_sections":        lambda paths, text, title: (
             {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None),
@@ -241,7 +241,7 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
     assert offloaded == expect(
         implement_stubs,
         "search_page_in_db",       # find the Learn source page
-        "get_all_blocks",          # read its content
+        "get_children",            # read its content
         "search_page_in_db",       # find the area's Manual
         "read_manual_sections",    # index it by heading
         "route_sections",          # cheap: section names only
@@ -391,8 +391,8 @@ def test_a_slow_transcript_fetch_times_out(learn_stubs, monkeypatch):
 
 
 def test_a_slow_article_fetch_times_out(learn_stubs, monkeypatch):
-    """newspaper3k's download() takes no timeout of its own — this cap is the
-    only thing bounding it."""
+    """requests' read timeout restarts on every byte, so a site trickling one
+    byte at a time never trips it — this cap is the only whole-operation bound."""
     monkeypatch.setattr(learn, "SOURCE_FETCH_TIMEOUT", CAP)
     monkeypatch.setattr(learn, "extract_article", stalls)
     update = FakeUpdate(text="Learn article https://example.com/post")
@@ -515,10 +515,10 @@ OFFLOADED_FUNCTIONS = [
     david.extract_quote_from_pdf,
     learn.extract_youtube, learn.extract_article, learn.extract_pdf,
     learn.summarize_with_claude, learn.create_learn_page,
-    implement.search_page_in_db, implement.get_all_blocks,
+    implement.search_page_in_db, implement.get_children,
     implement.read_manual_sections, implement.route_sections, implement.merge_sections,
     implement.apply_section_updates, implement.build_manual,
-    implement.create_manual_page, implement.append_blocks_to_page,
+    implement.create_manual_page, implement.append_children,
     implement.clear_page_blocks_by_id, implement.update_page,
     implement_diet.read_diet_tree, implement_diet.decide_updates,
     implement_diet.apply_updates, implement_diet.find_or_create_diet_page,

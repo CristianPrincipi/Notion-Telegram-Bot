@@ -329,3 +329,75 @@ def test_notion_request_goes_through_the_pooled_session(monkeypatch):
 
     assert resp.status_code == 200
     assert sent == [("POST", QUERY_URL, 15)], "the request bypassed the Session"
+
+
+# ─── FLATTENING BLOCKS BACK TO TEXT ────────────────────────────────────────────
+# blocks_to_text replaced three near-identical flatteners (this one, plus
+# implement_diet._content_to_text and _content_to_text_deep). These pin the two
+# styles apart, and pin down the difference that was not cosmetic.
+
+def _block(btype, text):
+    return {"type": btype, btype: {"rich_text": [{"plain_text": text}]}}
+
+
+PAGE = [
+    _block("heading_2", "Perfect Process"),
+    _block("paragraph", "Some prose."),
+    _block("bulleted_list_item", "A point."),
+    _block("numbered_list_item", "A step."),
+    _block("quote", "A quotation."),
+    _block("callout", "An aside."),
+    {"type": "divider", "divider": {}},
+]
+
+
+def test_markdown_style_keeps_the_structure():
+    assert notion_client.blocks_to_text(PAGE) == (
+        "## Perfect Process\n"
+        "Some prose.\n"
+        "• A point.\n"
+        "- A step.\n"
+        '> "A quotation."\n'
+        "> 💡 An aside.\n"
+        "---"
+    )
+
+
+def test_plain_style_is_the_text_alone():
+    """No prefixes, no dividers: the caller already knows which section this is.
+
+    read_diet_tree addresses a section by path and stores its content as the
+    value, so a `##` inside that value would be describing structure the tree
+    already expresses.
+    """
+    assert notion_client.blocks_to_text(PAGE, style="plain") == (
+        "Perfect Process\n"
+        "Some prose.\n"
+        "A point.\n"
+        "A step.\n"
+        "A quotation.\n"
+        "An aside."
+    )
+
+
+def test_a_block_type_with_no_prefix_is_flattened_rather_than_dropped():
+    """THE DIFFERENCE THAT WASN'T COSMETIC.
+
+    The old blocks_to_text listed the types it knew and dropped everything else,
+    so a `to_do` in a Manual section was invisible to Claude — while staying very
+    much visible to the write-back, which takes Section.content_ids and deletes
+    every one of them. The merged content that replaced the section had therefore
+    been computed as though that block never existed, and the delete made that
+    true. Anything carrying text is flattened now, prefix or no prefix.
+    """
+    todo = {"type": "to_do", "to_do": {"rich_text": [{"plain_text": "Buy oats"}]}}
+
+    assert notion_client.blocks_to_text([todo]) == "Buy oats"
+    assert notion_client.blocks_to_text([todo], style="plain") == "Buy oats"
+
+
+def test_blocks_with_no_text_contribute_no_lines():
+    """An empty paragraph is spacing in Notion, not content."""
+    empty = {"type": "paragraph", "paragraph": {"rich_text": []}}
+
+    assert notion_client.blocks_to_text([empty]) == ""
