@@ -25,7 +25,7 @@ NOTION_BASE = "https://api.notion.com/v1"
 # ─── CONNECTION POOLING ────────────────────────────────────────────────────────
 # requests.request() builds a throwaway Session per call, so every Notion request
 # paid a fresh TCP connect plus a full TLS handshake. One Implement run makes
-# dozens of requests — read_diet_tree alone walks the whole H1>H2>H3 tree one
+# dozens of requests — read_diet_structure alone walks the H1>H2>H3 tree one
 # request at a time — so that handshake was a large share of the wall clock.
 # A Session keeps the connection alive and reuses it.
 #

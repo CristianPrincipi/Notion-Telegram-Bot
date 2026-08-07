@@ -366,7 +366,7 @@ def test_markdown_style_keeps_the_structure():
 def test_plain_style_is_the_text_alone():
     """No prefixes, no dividers: the caller already knows which section this is.
 
-    read_diet_tree addresses a section by path and stores its content as the
+    read_section_contents addresses a section by path and stores its content as the
     value, so a `##` inside that value would be describing structure the tree
     already expresses.
     """

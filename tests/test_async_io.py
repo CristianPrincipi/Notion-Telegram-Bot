@@ -262,9 +262,13 @@ def diet_stubs(monkeypatch):
         "get_children":            lambda block_id: ([{"type": "paragraph", "paragraph": {
                                        "rich_text": [{"plain_text": "summary text"}]}}], None),
         "find_or_create_diet_page": lambda: ("diet-page-1", False, None),
-        "read_diet_tree":          lambda page_id: ({"Goals": {}}, {"Goals": "block-1"}, None),
-        "decide_updates":          lambda tree, text, title: (
-            {"plan": {}, "updates": [{"path": "Goals", "mode": "merge", "bullets": ["x"]}]}, None),
+        "read_diet_structure":     lambda page_id: ({"Goals": {"Fat Loss": {}}},
+                                                   {"Goals>Fat Loss": "block-1"}, None),
+        "route_sections":          lambda paths, text, title: (
+            {"affected": [{"path": "Goals>Fat Loss"}]}, None),
+        "read_section_contents":   lambda sections: ({"Goals>Fat Loss": "current"}, None),
+        "merge_sections":          lambda contents, text, title: (
+            {"updates": [{"path": "Goals>Fat Loss", "mode": "merge", "bullets": ["x"]}]}, None),
         "update_page":             lambda page_id, props: (True, None),
         "apply_updates":           lambda updates, block_map: (1, []),
     })
@@ -280,8 +284,10 @@ def test_implement_diet_runs_every_call_off_the_loop(offloaded, diet_stubs):
         "search_page_in_db",        # find the Learn summary
         "get_children",             # read it
         "find_or_create_diet_page",  # build the skeleton on a first run
-        "read_diet_tree",           # dozens of sequential Notion reads
-        "decide_updates",           # the slow one
+        "read_diet_structure",      # the taxonomy: levels 1-3, no content
+        "route_sections",           # cheap: paths only
+        "read_section_contents",    # level-4 reads, affected sections only
+        "merge_sections",           # the slow one
         "update_page",              # tick 'Implemented'
         "apply_updates",            # the surgical writes
     )
@@ -430,7 +436,7 @@ def test_a_slow_merge_times_out_and_says_nothing_was_written(implement_stubs, mo
 
 def test_a_slow_diet_analysis_times_out_and_says_nothing_was_written(diet_stubs, monkeypatch):
     monkeypatch.setattr(implement_diet, "ANTHROPIC_TIMEOUT", CAP)
-    monkeypatch.setattr(implement_diet, "decide_updates", stalls)
+    monkeypatch.setattr(implement_diet, "merge_sections", stalls)
     applied = []
     monkeypatch.setattr(implement_diet, "apply_updates",
                         lambda updates, block_map: applied.append(updates) or (0, []))
@@ -520,7 +526,8 @@ OFFLOADED_FUNCTIONS = [
     implement.apply_section_updates, implement.build_manual,
     implement.create_manual_page, implement.append_children,
     implement.clear_page_blocks_by_id, implement.update_page,
-    implement_diet.read_diet_tree, implement_diet.decide_updates,
+    implement_diet.read_diet_structure, implement_diet.route_sections,
+    implement_diet.read_section_contents, implement_diet.merge_sections,
     implement_diet.apply_updates, implement_diet.find_or_create_diet_page,
     reminder.find_conflicts, reminder.create_event,
     scheduler.build_morning_briefing, scheduler.build_evening_briefing,

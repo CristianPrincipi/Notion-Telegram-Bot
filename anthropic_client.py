@@ -4,8 +4,9 @@ The only place David talks to the Anthropic API.
 WHY THIS EXISTS
 ---------------
 `learn.summarize_with_claude`, `implement.merge_with_claude` and
-`implement_diet.decide_updates` were three hand-rolled copies of the same call,
-and all three shared the same three gaps:
+`implement_diet.decide_updates` (since split into route_sections/merge_sections)
+were three hand-rolled copies of the same call, and all three shared the same
+three gaps:
 
   1. NO RETRY. notion_client has retried 429/5xx since the beginning; these did
      not. A single 429 or 529 — arriving after a transcript fetch, a Notion read

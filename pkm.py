@@ -100,7 +100,7 @@ def _clean_title(title: str) -> str:
 #
 # BLOCKING, and not by a little: Notion has no recursive block read, so a toggle
 # manual costs one request per heading that has children — the Diet page is ~67.
-# handle_get runs it via asyncio.to_thread. Like read_diet_tree it takes no outer
+# handle_get runs it via asyncio.to_thread. Like read_diet_structure it takes no outer
 # wait_for: every individual request is already bounded by notion_request's
 # timeout and its bounded retries.
 
