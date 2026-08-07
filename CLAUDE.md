@@ -258,3 +258,43 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
     failure is indistinguishable from "the slot is clear". Deliberate (a failed check
     degrades to no warning rather than blocking the reminder) but undocumented until
     now.
+
+## Implementation Plan Tracking
+
+For any non-trivial task (multi-file changes, new features,
+refactors, migrations), maintain a plan file at `PLAN.md` in
+the project root.
+
+### Before writing any code
+1. Create or update `PLAN.md` with the full list of steps
+   required, grouped under milestones.
+2. Each step is a checkbox: `- [ ] Step description`.
+3. Show me the plan and wait for confirmation before starting.
+
+### Format
+~~~
+# Plan: <task name>
+_Last updated: YYYY-MM-DD_
+
+## Milestone 1: <name>
+- [x] Completed step
+- [ ] Pending step — <one-line note on approach or blocker>
+
+## Open questions
+- ...
+~~~
+
+### Rules for keeping it current
+- The moment a step is finished, mark it `[x]` before moving
+  to the next one. Never batch updates at the end.
+- If requirements change, rewrite the affected steps
+  immediately and note what changed and why under a
+  `## Changelog` section.
+- If you discover a step that wasn't in the plan, add it
+  rather than doing it silently.
+- If a step turns out to be unnecessary, strike it through
+  (`- [ ] ~~step~~ — dropped: reason`) instead of deleting it.
+- Re-read `PLAN.md` at the start of every session so you
+  resume from the correct state.
+- Keep steps atomic: each one should be independently
+  verifiable.
