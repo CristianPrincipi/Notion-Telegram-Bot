@@ -79,6 +79,21 @@ Every F-34 item checked against the code as it stands today:
 - [x] Update CLAUDE.md: the module map and testing sections for the registry, and the
       "Unreferenced code" open question.
 
+## Milestone 3: verification and the last hand-written copy
+
+- [x] Differential-checked the OLD if/elif router against the new registry: the pre-refactor
+      patterns, transcribed verbatim in their original control-flow order, versus
+      `david.COMMANDS`, over 1230 unique inputs (every ROUTES row plus a combinatorial
+      expansion of every command verb against 29 argument shapes). Same winner, same
+      extracted arguments, zero mismatches — which is the direct evidence that the reorder
+      is inert, rather than inferring it from the suite staying green.
+- [x] Guarded the README Commands table — with `h` generated, it is the last hand-written
+      copy of the command set, and it carries the bug's own shape in a
+      `Learn video|article|podcast|book|pdf` row. Three tests: every command documented,
+      nothing documented that is not a command, and the Learn row's types equal
+      `learn.SUPPORTED_TYPES`. Mutation-checked (the `recipe` row turns it red).
+- [x] CI green on the runner for the branch tip (run #44, Python 3.12).
+
 ## Open questions
 
 - `implement.clear_page_blocks` and `david.DATABASE_ID` are on CLAUDE.md's

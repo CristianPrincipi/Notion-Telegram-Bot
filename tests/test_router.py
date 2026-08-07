@@ -31,6 +31,7 @@ HOW TO ADD A COMMAND
 Fixing the bug makes that row fail; update the row in the same commit as the fix.
 """
 
+import pathlib
 import re
 from dataclasses import dataclass, field
 
@@ -575,6 +576,72 @@ def test_help_explains_that_diet_is_implemented_differently():
     """Implement routes Diet to implement_diet.py, which merges into a toggle
     tree instead of a flat Manual. The hand-written help never said so."""
     assert "Diet" in david.build_help()
+
+
+# ─── THE README COMMANDS TABLE ─────────────────────────────────────────────────
+# With `h` generated, the README's Commands table is the LAST hand-written copy
+# of the command set — and it carries the same shape the bug had, a row reading
+# `Learn video|article|podcast|book|pdf [source]` with the types spelled out by
+# hand. It cannot be generated (it is prose, with a description per command that
+# is worth writing), so it is checked instead.
+
+README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+TABLE_ROW = re.compile(r"^\|(.+?)\|", re.M)      # first column of a table row
+PIPE_IN_SPAN = r"\|"                             # escaped pipe inside a code span
+
+
+def _commands_section() -> str:
+    """The README's `## Commands` section, including its subsections."""
+    text = README.read_text(encoding="utf-8")
+    start = text.index("## Commands")
+    rest = text[start + len("## Commands"):]
+    end = rest.find("\n## ")
+    return rest if end == -1 else rest[:end]
+
+
+def _documented_commands() -> list[str]:
+    """Every code span in the first column of the Commands table."""
+    section = _commands_section().replace(PIPE_IN_SPAN, "\x00")
+    spans = []
+    for first_column in TABLE_ROW.findall(section):
+        spans += [s.replace("\x00", "|") for s in re.findall(r"`([^`]+)`", first_column)]
+    return spans
+
+
+def test_the_readme_table_documents_every_command():
+    """A command missing from the README is undiscoverable outside the chat."""
+    section = _commands_section()
+
+    for command in david.COMMANDS:
+        assert f"`{command.name}" in section, (
+            f"{command.name!r} is a command but the README's Commands section omits it"
+        )
+
+
+def test_the_readme_table_documents_nothing_that_is_not_a_command():
+    """The other direction: a row cannot outlive the command it describes."""
+    names = sorted((c.name for c in david.COMMANDS), key=len, reverse=True)
+
+    for documented in _documented_commands():
+        assert any(documented == name or documented.startswith(f"{name} ")
+                   for name in names), (
+            f"the README documents {documented!r}, which is not a command"
+        )
+
+
+def test_the_readme_lists_exactly_the_learn_types_learn_supports():
+    """The `Learn recipe` bug's last hiding place.
+
+    The README spells the types out by hand — `Learn video|article|…` — so it is
+    the one copy left that can advertise a type handle_learn rejects, or omit one
+    it accepts.
+    """
+    learn_row = next(d for d in _documented_commands() if d.startswith("Learn "))
+    documented = set(learn_row.removeprefix("Learn ").split(" ")[0].split("|"))
+
+    assert documented == set(learn.SUPPORTED_TYPES), (
+        f"README lists {sorted(documented)}, learn supports {sorted(learn.SUPPORTED_TYPES)}"
+    )
 
 
 # ─── FAILURE BRANCHES ──────────────────────────────────────────────────────────
