@@ -27,7 +27,7 @@ filter — an unauthorized update is dropped by the dispatcher and never reaches
 | `implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `implement_diet`) |
 | `implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
-| `reminder.py` | `Remind …` — parse, conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`) |
+| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`), and what a token MEANS — `t` becoming a date is `calendar_client`'s job |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
@@ -90,6 +90,52 @@ testable; the handler does the offloading. Long *reads* also get an `asyncio.wai
 from `config.py` — **writes do not**, because `wait_for` cancels the awaiting coroutine but
 cannot cancel the worker thread, so timing out a write reports failure while it is still in
 flight. Notion writes are bounded by `notion_request`'s timeout and bounded retries instead.
+
+**`Remind` never guesses which moment you meant.** The command takes a date and a
+time, and the accepted forms are:
+
+| Date | |
+| --- | --- |
+| `12.06` | that day this year, subject to the rollover rule below |
+| `12.06.2027` | that year, taken at face value — past or not |
+| `t` / `tomorrow` | the day after today |
+
+| Time | |
+| --- | --- |
+| `14.30` | 24-hour |
+| `10` | a bare hour, meaning o'clock |
+
+The ` - ` between them is optional, so `Remind Dentist t 10` and
+`Remind Dentist 12.06 - 14.30` are both whole commands. `reminder.REMIND_PATTERN`
+decides which TOKENS are legal; `calendar_client.parse_date_time` decides what they
+MEAN. Keep that split — a shorthand resolved in the regex is a date rule nothing
+can unit-test.
+
+Four things are refused rather than resolved, and each one is a bug that already
+shipped or nearly did:
+
+- **A bare `DD.MM` inside the last 24 hours** (`PAST_GRACE`). The old rule rolled
+  ANY past datetime to next year, so at 10:00 a reminder for 09:00 today was
+  booked for next August and confirmed as though it were fine. Beyond a day past,
+  `12.06` in December still obviously means next June, so that still rolls.
+- **Local times that are not one real instant.** `localize()` defaults to
+  `is_dst=False`, which silently shifted the hour skipped at the start of summer
+  time and silently picked one of the two at the end. `is_dst=None` raises, and
+  both are reported with the hour to avoid.
+- **`t` running into the next token.** `t` matches the first letter of any t-word,
+  and the rest is skipped as separator noise: `Remind Bus t4 to town 10` parsed as
+  "Bus", tomorrow, 04:00 — wrong name AND wrong time. A lookahead requires the
+  token to end where the word does, which costs `t10` and is worth it.
+- **A run-together time.** `1030` would match its first two digits and book 10:00.
+
+Every one of those guards was verified by REMOVING it and watching a named test go
+red. A lookahead that guards nothing is worse than none, because it reads like
+protection.
+
+The confirmation is the backstop for all of it: it names the weekday and the full
+date (`Friday 07 August 2026 at 10:00`), plus a line of its own when the year is
+not the current one. A terse shorthand is safe to type precisely because the reply
+is not terse.
 
 ## Hard rules
 
@@ -271,10 +317,12 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
     legitimate empty value, which is the root cause every caller has to work around
     by checking `err` FIRST. Changing it ripples into `find_conflicts`,
     `reminder.handle_remind` and three test files.
-  - `reminder.py:93` discards the `find_conflicts` error into `_`, so a calendar read
-    failure is indistinguishable from "the slot is clear". Deliberate (a failed check
-    degrades to no warning rather than blocking the reminder) but undocumented until
-    now.
+  - `reminder.handle_remind` discards the `find_conflicts` error into `_`, so a
+    calendar read failure is indistinguishable from "the slot is clear". Deliberate
+    (a failed check degrades to no warning rather than blocking the reminder) but
+    undocumented until now. Named by FUNCTION, not by line: this entry said
+    `reminder.py:93` and the line had since moved to 132, which is what a line
+    number in a document nobody recompiles is always eventually worth.
 
 ## Implementation Plan Tracking
 
