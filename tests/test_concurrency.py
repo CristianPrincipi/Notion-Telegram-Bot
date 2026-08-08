@@ -29,6 +29,9 @@ from types import SimpleNamespace
 import pytest
 
 from clients import calendar_client
+import bot.commands
+import bot.implement
+import bot.learn
 import david
 from services import books
 from services import expenses as expense_service
@@ -293,11 +296,11 @@ def slow_command_stubs(monkeypatch):
     async def noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(david, "handle_learn", noop)
-    monkeypatch.setattr(david, "handle_implement", noop)
+    monkeypatch.setattr(bot.learn, "handle_learn", noop)
+    monkeypatch.setattr(bot.implement, "handle_implement", noop)
     monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
     monkeypatch.setattr(books, "add_Quote", lambda *a: True)
-    monkeypatch.setattr(david, "budget", lambda: "TOTAL")
+    monkeypatch.setattr(bot.commands, "budget", lambda: "TOTAL")
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
     monkeypatch.setattr(expense_service, "find_expense_matches",
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
@@ -358,7 +361,7 @@ def test_detached_commands_carry_their_update_for_the_error_handler():
     with pytest.MonkeyPatch.context() as mp:
         async def noop(*a, **kw):
             return None
-        mp.setattr(david, "handle_learn", noop)
+        mp.setattr(bot.learn, "handle_learn", noop)
         run(david.handle_message(update, context))
 
     name, passed_update = context.application.tasks[0]
@@ -379,8 +382,8 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
         await asyncio.sleep(0.1)
         order.append("learn-end")
 
-    monkeypatch.setattr(david, "handle_learn", slow_learn)
-    monkeypatch.setattr(david, "budget", lambda: order.append("budget") or "TOTAL")
+    monkeypatch.setattr(bot.learn, "handle_learn", slow_learn)
+    monkeypatch.setattr(bot.commands, "budget", lambda: order.append("budget") or "TOTAL")
 
     context = FakeContext()
 

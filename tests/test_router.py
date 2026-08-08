@@ -37,9 +37,11 @@ from dataclasses import dataclass, field
 
 import pytest
 
+import bot.commands
+import bot.implement
+import bot.learn
 import david
-from services import learn
-from services import books, expenses
+from services import books, expenses, learn
 from conftest import FakeContext, FakeUpdate, run
 
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
@@ -99,6 +101,15 @@ SPY_TARGETS = [
 ]
 
 SPY_HOMES = {
+    "budget":               bot.commands,
+    "handle_diag":          bot.commands,
+    "handle_dbs":           bot.commands,
+    "handle_month":         bot.commands,
+    "handle_find":          bot.commands,
+    "handle_get":           bot.commands,
+    "handle_remind":        bot.commands,
+    "handle_learn":         bot.learn,
+    "handle_implement":     bot.implement,
     "add_New_Book":         books,
     "find_Book_Page":       books,
     "add_Quote":            books,
@@ -743,7 +754,7 @@ def test_delete_expense_distinguishes_the_three_lookup_outcomes(router, monkeypa
 
 
 def test_budget_reports_a_notion_failure(router, monkeypatch):
-    monkeypatch.setattr(david, "budget", lambda: None)
+    monkeypatch.setattr(bot.commands, "budget", lambda: None)
     update = FakeUpdate(text="B")
 
     run(david.handle_message(update, FakeContext()))

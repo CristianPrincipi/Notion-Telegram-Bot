@@ -7,8 +7,14 @@ end.
 """
 
 from bot.notify import for_update
+from bot.tasks import run_detached
 from clients.telegram_files import download_pdf_attachment
 from services.learn import run_learn
+
+
+async def cmd_learn(update, context, args):
+    # Detached: fetch + Claude can run for minutes. See run_detached.
+    run_detached(context, update, handle_learn(update, args["text"]), "learn")
 
 
 async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):

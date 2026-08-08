@@ -6,28 +6,26 @@ import pytz
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import time
-from functools import partial
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from reminder import handle_remind
-from notion_ids import handle_diag, handle_find, handle_dbs
 
 import config
 import expense_safety
-from bot.implement import handle_implement
-from bot.learn import handle_learn, learn_pdf_upload
-from bot.notify import for_update
-from budget import budget
-from clients.telegram_files import download_pdf_attachment, validate_pdf_attachment
-from config import (
-    CATEGORY_MAP, DEFAULT_CATEGORY,
-    PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
+from bot.books import cmd_add_book, cmd_add_quote
+from bot.commands import (
+    cmd_budget, cmd_dbs, cmd_diag, cmd_find, cmd_get, cmd_month, cmd_remind,
 )
-from month import handle_month
-from pkm import handle_get
+from bot.documents import handle_document
+from bot.expenses import (
+    AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_undo, cmd_update_expense,
+    handle_selection,
+)
+from bot.implement import cmd_implement
+from bot.learn import cmd_learn
+from budget import budget
+from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
 from observability import record_command, record_error, set_correlation_id, setup_logging
 from proactive.scheduler import register_all
-from services import books, expenses
 from services.learn import SUPPORTED_TYPES
 from telegram_text import reply, send
 
@@ -65,41 +63,6 @@ FINANCE_ID = os.environ.get("FINANCE_ID")
 #
 # Still reached as david.budget, so the call sites and the spies in the tests are
 # unchanged.
-
-
-# --- DETACHED (BACKGROUND) COMMANDS --- #
-
-def run_detached(context: ContextTypes.DEFAULT_TYPE, update: Update, coro, name: str):
-    """Run a long command as a background task instead of awaiting it inline.
-
-    WHY THIS EXISTS
-    ---------------
-    Moving blocking work onto worker threads freed the event LOOP, but
-    python-telegram-bot still processes updates one at a time: it will not look
-    at the next update until this handler returns. So a five-minute `Learn video`
-    left every other command sitting in the queue behind it, even though the loop
-    itself was idle the whole time.
-
-    Detaching only the genuinely long commands fixes that without enabling
-    concurrent_updates. Everything else — expenses, budget, quotes, books,
-    reminders, diagnostics — stays strictly sequential, so a write followed by a
-    read of the same data still cannot be reordered. `Add e` then `B` always
-    reports the new total. That guarantee is the reason this is a per-command
-    decision and not a global switch.
-
-    WHAT THIS ALLOWS TO OVERLAP
-    ---------------------------
-    Two detached commands can now run at once, which is exactly what the locks
-    are for: two Implements against the same area are refused by the area lock,
-    and two against Diet by the Diet lock. Nothing detached here touches the
-    expense or calendar paths.
-
-    Uses Application.create_task rather than asyncio.create_task so exceptions
-    reach the global error handler instead of vanishing into a dropped task, and
-    so a task still in flight is awaited on shutdown rather than killed
-    mid-write. Passing `update` is what gives that error handler its context.
-    """
-    return context.application.create_task(coro, update=update, name=name)
 
 
 # --- ERROR REPORTING HELPERS --- #
@@ -273,163 +236,20 @@ async def handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE
 # mentioned in passing. That only holds if the incoming text is stripped first,
 # which handle_message does — otherwise a trailing space from a phone keyboard
 # would defeat every command instead of just `B`.
-
-# Accepts a dot or a comma decimal separator. Italian keyboards produce commas
-# by reflex, and the old \d+\.?\d* matched "2" out of "2,20" and dropped the
-# rest, recording EUR 2.00 as a success.
-AMOUNT = r"(?P<amount>\d+(?:[.,]\d+)?)"
-
-
-def parse_amount(raw: str):
-    """Parse an amount written with either separator. Returns (amount, error)."""
-    try:
-        value = float(raw.replace(",", "."))
-    except ValueError:
-        return None, f"❌ Error: '{raw}' is not a valid amount."
-    if value <= 0:
-        return None, f"❌ Error: amount must be greater than zero, got {value:g}."
-    return value, None
+#
+# AMOUNT is imported from bot/expenses.py rather than defined here, so the
+# pattern and parse_amount(), which reads the group it captures, cannot drift
+# apart across two files.
 
 
-def resolve_category(raw):
-    """Map a category shortcut to its Notion name. Returns (category, error).
+async def cmd_help(update, context, args):
+    """`h` — the only command handler still in this file, and it belongs here.
 
-    An ABSENT category falls back to the default. A SUPPLIED but unrecognised one
-    is an error — otherwise a typo silently files the expense under Food, which
-    is indistinguishable from having meant the default. Mirrors how genre already
-    behaves.
+    It renders the registry below it. Moving it to bot/ would mean bot/
+    importing david for COMMANDS while david imports bot/ for every other
+    handler — a cycle, to move four lines away from the list they describe.
     """
-    if raw is None or not raw.strip():
-        return DEFAULT_CATEGORY, None
-    category = CATEGORY_MAP.get(raw.strip().lower())
-    if category is None:
-        return None, (f"❌ Error: unknown category '{raw.strip()}'. "
-                      f"Please use: {category_help()}")
-    return category, None
-
-
-# --- COMMAND HANDLERS --- #
-#
-# One per registry entry, all with the same shape: (update, context, args),
-# where `args` is the match's groupdict(). They are the bodies of what used to be
-# the branches of one long if/elif chain in handle_message.
-#
-# Every downstream call below is resolved through david's own module namespace at
-# call time (`add_Expenses(...)`, not a reference captured into the registry),
-# which is what keeps the spies in tests/test_router.py pointed at the code the
-# bot actually runs.
-
-async def _cmd_help(update, context, args):
     await reply(update, build_help())
-
-
-async def _cmd_undo(update, context, args):
-    notify, notify_md = for_update(update)
-    await expenses.run_undo(context.user_data, notify=notify, notify_md=notify_md)
-
-
-async def _cmd_budget(update, context, args):
-    result_text = await asyncio.to_thread(budget)
-    if result_text:
-        # format_budget escapes the Notion category names it interpolates.
-        await reply(update, result_text)
-    else:
-        await update.message.reply_text("❌ Error: Could not calculate budget.")
-
-
-async def _cmd_diag(update, context, args):
-    await handle_diag(update)
-
-
-async def _cmd_dbs(update, context, args):
-    await handle_dbs(update)
-
-
-async def _cmd_month(update, context, args):
-    await handle_month(update)
-
-
-async def _cmd_find(update, context, args):
-    await handle_find(update, args["query"])
-
-
-async def _cmd_get(update, context, args):
-    await handle_get(update, args["text"])
-
-
-async def _cmd_remind(update, context, args):
-    await handle_remind(update, args["text"])
-
-
-async def _cmd_add_book(update, context, args):
-    notify, notify_md = for_update(update)
-    await books.run_add_book(
-        args["name"].strip(), args["author"].strip(), args["genre"].strip(),
-        notify=notify, notify_md=notify_md)
-
-
-async def _cmd_add_quote(update, context, args):
-    notify, notify_md = for_update(update)
-    await books.run_add_quote(
-        args["book"].strip(), args["title"].strip(), args["body"].strip(),
-        notify=notify, notify_md=notify_md)
-
-
-async def _cmd_learn(update, context, args):
-    # Detached: fetch + Claude can run for minutes. See run_detached.
-    run_detached(context, update, handle_learn(update, args["text"]), "learn")
-
-
-async def _cmd_implement(update, context, args):
-    # Detached: the Claude merge alone is tens of seconds, under a page lock.
-    run_detached(context, update, handle_implement(update, args["text"]), "implement")
-
-
-async def _cmd_update_expense(update, context, args):
-    name = args["name"].strip()
-
-    amount, err = parse_amount(args["amount"])
-    if err:
-        await update.message.reply_text(err)
-        return
-
-    category, err = resolve_category(args["category"])
-    if err:
-        await update.message.reply_text(err)
-        return
-
-    notify, notify_md = for_update(update)
-    await expenses.run_destructive(
-        context.user_data, expense_safety.UPDATE, name,
-        amount=amount, category=category, notify=notify, notify_md=notify_md)
-
-
-async def _cmd_delete_expense(update, context, args):
-    notify, notify_md = for_update(update)
-    await expenses.run_destructive(
-        context.user_data, expense_safety.DELETE, args["name"].strip(),
-        notify=notify, notify_md=notify_md)
-
-
-async def _cmd_add_expense(update, context, args):
-    name = args["name"].strip()
-
-    amount, err = parse_amount(args["amount"])
-    if err:
-        await update.message.reply_text(err)
-        return
-
-    # --- IF NAME = C -> CARREFOUR (case-insensitive, like the command itself)
-    if name.lower() == "c": name = "Carrefour"
-
-    # --- CATEGORY: absent -> default, supplied but unknown -> error
-    category, err = resolve_category(args["category"])
-    if err:
-        await update.message.reply_text(err)
-        return
-
-    notify, notify_md = for_update(update)
-    await expenses.run_add(name, amount, category, notify=notify, notify_md=notify_md)
 
 
 # --- THE COMMAND REGISTRY --- #
@@ -529,7 +349,7 @@ COMMANDS = [
     Command(
         name="Add b",
         pattern=re.compile(r"add b (?P<name>.+?) - (?P<author>.+?) - (?P<genre>.+)", re.I),
-        handler=_cmd_add_book,
+        handler=cmd_add_book,
         help=Help("📖 *ADD BOOK*",
                   usage=("Add b [Name] - [Author] - [Genre]",),
                   notes=(f"Genres: {genre_help()}",)),
@@ -540,7 +360,7 @@ COMMANDS = [
         # that only mean something on an attached PDF — the handler tells the
         # second apart and explains the upload flow.
         pattern=re.compile(r"add q (?P<book>.+?) - (?P<title>.+?) - (?P<body>[\s\S]+)", re.I),
-        handler=_cmd_add_quote,
+        handler=cmd_add_quote,
         help=Help("🖋️ *ADD QUOTE*",
                   usage=("Add q [Book] - [Title] - [Full quote]",
                          "Add q [Book] - [Title] - [Begin text] / [End text]"),
@@ -553,7 +373,7 @@ COMMANDS = [
         # handle_remind's job, so a malformed one still reaches it and gets a
         # usage message instead of "I didn't get that".
         pattern=re.compile(r"(?P<text>remind\s+.+)", re.I),
-        handler=_cmd_remind,
+        handler=cmd_remind,
         help=Help("📅 *REMINDER*",
                   usage=("Remind [Name] [DD.MM] - [HH.MM]",
                          "Remind [Name] [DD.MM.YYYY] - [HH.MM]",
@@ -568,7 +388,7 @@ COMMANDS = [
     Command(
         name="Add e",
         pattern=re.compile(rf"add e (?P<name>.+?) {AMOUNT}(?:\s+(?P<category>\w+))?", re.I),
-        handler=_cmd_add_expense,
+        handler=cmd_add_expense,
         help=Help("💵 *ADD EXPENSE*",
                   usage=("Add e [Name] [Amount] [Category]",),
                   inline=True, group="expense"),
@@ -576,7 +396,7 @@ COMMANDS = [
     Command(
         name="U e",
         pattern=re.compile(rf"u e (?P<name>.+?) {AMOUNT}(?:\s+(?P<category>\w+))?", re.I),
-        handler=_cmd_update_expense,
+        handler=cmd_update_expense,
         help=Help("✏️ *UPDATE EXPENSE*",
                   usage=("U e [Name] [Amount] [Category]",),
                   inline=True, group="expense"),
@@ -585,7 +405,7 @@ COMMANDS = [
     Command(
         name="D e",
         pattern=re.compile(r"d e (?P<name>.+)", re.I),
-        handler=_cmd_delete_expense,
+        handler=cmd_delete_expense,
         help=Help("🗑️ *DELETE EXPENSE*",
                   usage=("D e [Name]",),
                   inline=True, group="expense"),
@@ -594,14 +414,14 @@ COMMANDS = [
     Command(
         name="undo",
         pattern=re.compile(r"undo", re.I),
-        handler=_cmd_undo,
+        handler=cmd_undo,
         help=Help("↩️ *UNDO*", usage=("undo",), inline=True,
                   notes=("Reverses the last delete or update",)),
     ),
     Command(
         name="B",
         pattern=re.compile(r"b", re.I),
-        handler=_cmd_budget,
+        handler=cmd_budget,
         help=Help("💰 *BUDGET*", usage=("B",), inline=True),
     ),
     Command(
@@ -609,39 +429,39 @@ COMMANDS = [
         # Idempotent, so sending it twice is harmless; the scheduled job runs the
         # exact same call at 00:05 every night.
         pattern=re.compile(r"month", re.I),
-        handler=_cmd_month,
+        handler=cmd_month,
         help=Help("🗓️ *MONTH PAGE*", usage=("Month",), inline=True,
                   notes=("Rolls over automatically on the 1st; this forces a check",)),
     ),
     Command(
         name="Diag",
         pattern=re.compile(r"diag", re.I),
-        handler=_cmd_diag,
+        handler=cmd_diag,
         help=Help("", usage=("Diag",), group="notion_ids"),
     ),
     Command(
         name="Find",
         pattern=re.compile(r"find\s+(?P<query>.+)", re.I),
-        handler=_cmd_find,
+        handler=cmd_find,
         help=Help("", usage=("Find [name]",), group="notion_ids"),
     ),
     Command(
         name="DBs",
         pattern=re.compile(r"dbs", re.I),
-        handler=_cmd_dbs,
+        handler=cmd_dbs,
         help=Help("", usage=("DBs",), group="notion_ids"),
     ),
     Command(
         name="Learn",
         pattern=re.compile(r"(?P<text>learn\s+\w+[\s\S]*)", re.I),
-        handler=_cmd_learn,
+        handler=cmd_learn,
         help=Help("🧠 *LEARN*", usage=_LEARN_USAGE,
                   notes=("Learn pdf needs the file attached, with the command as the caption",)),
     ),
     Command(
         name="Implement",
         pattern=re.compile(r"(?P<text>implement\s+.+\s*-\s*.+)", re.I),
-        handler=_cmd_implement,
+        handler=cmd_implement,
         help=Help("🔧 *IMPLEMENT*",
                   usage=("Implement [Page Name] - [Area]",),
                   notes=("Merges a Learn page into an Area Manual",
@@ -660,7 +480,7 @@ COMMANDS = [
         # toggle manual (Diet), where build_index walks the tree one request per
         # heading.
         pattern=re.compile(r"(?P<text>get\s+.+\s+-\s+.+)", re.I),
-        handler=_cmd_get,
+        handler=cmd_get,
         help=Help("🔎 *GET*",
                   usage=("Get [Topic] - [Area]", "Get ? - [Area]"),
                   notes=("? in place of the topic lists every topic in that area",)),
@@ -668,7 +488,7 @@ COMMANDS = [
     Command(
         name="h",
         pattern=re.compile(r"h|help|aiuto", re.I),
-        handler=_cmd_help,
+        handler=cmd_help,
         help=Help("❓ *HELP*", usage=("h", "help", "aiuto"), inline=True),
     ),
 ]
@@ -756,9 +576,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if expense_safety.has_pending(context.user_data):
         selection = expense_safety.parse_selection(user_text)
         if selection is not None:
-            notify, notify_md = for_update(update)
-            await expenses.run_selection(context.user_data, selection,
-                                         notify=notify, notify_md=notify_md)
+            await handle_selection(update, context, selection)
             return
 
     # fullmatch, never search: a partial match must fail loudly rather than
@@ -770,78 +588,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
-
-
-# --- UPLOAD WORK (run detached; see run_detached) --- #
-# The slow half of an upload — a download capped at 2 minutes, PyPDF2 parsing,
-# and for Learn a full Claude summarisation — runs as a background task, while
-# the cheap validation below stays inline and rejects a bad file immediately.
-# Both halves now live with their command: bot/learn.py and services/books.py.
-
-
-# --- HANDLER FUNCTION FOR PDF ---
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle file uploads. Dispatches based on the message caption.
-
-    Supported captions:
-      Learn pdf                                          → summarise PDF, save to Learn DB
-      Add q [Book] - [Title] - [Begin text] / [End text] → extract quote from attached PDF
-    """
-    # Same correlation tagging as handle_message — a PDF upload is a command too,
-    # and it is the one most likely to run detached and interleave with another.
-    set_correlation_id(getattr(update, "update_id", None))
-    record_command()
-
-    doc     = update.message.document
-    caption = (update.message.caption or "").strip()
-    logger.info("Received document with caption: %s", caption)
-
-    # ── Learn pdf ──────────────────────────────────────────────────────────────
-    if re.match(r"(?i)learn\s+pdf", caption):
-        # Validated inline — it is pure and network-free, so a wrong file type or
-        # an oversized upload is refused immediately rather than from a task.
-        # download_pdf_attachment checks again; calling it twice costs nothing.
-        err = validate_pdf_attachment(doc)
-        if err:
-            await update.message.reply_text(err)
-            return
-        run_detached(context, update,
-                     learn_pdf_upload(update, context, doc, caption), "learn-pdf")
-        return
-
-    # ── Add q [Book] - [Title] - [Begin] / [End]  (extract quote from PDF) ────
-    quote_pdf_match = re.match(r"(?i)add q (.+?) - (.+?) - (.+?) / (.+)", caption)
-    if quote_pdf_match:
-        # Checked before the Notion lookup so a wrong-format file costs no API call.
-        err = validate_pdf_attachment(doc)
-        if err:
-            await update.message.reply_text(err)
-            return
-
-        # The download is BOUND, not performed: services/books.py decides when
-        # (after the book is found, so a caption naming a book you do not own
-        # costs no bytes) without ever seeing a PTB context of its own.
-        notify, notify_md = for_update(update)
-        run_detached(
-            context, update,
-            books.run_quote_from_pdf(
-                quote_pdf_match.group(1).strip(),   # book name
-                quote_pdf_match.group(2).strip(),   # quote title
-                quote_pdf_match.group(3).strip(),   # begin text
-                quote_pdf_match.group(4).strip(),   # end text
-                download=partial(download_pdf_attachment, context, doc),
-                notify=notify, notify_md=notify_md,
-            ),
-            "quote-pdf")
-        return
-
-    # ── Unknown caption ────────────────────────────────────────────────────────
-    await reply(
-        update,
-        "📎 File received. Supported captions:\n\n"
-        "`Learn pdf` — summarise and save to Learn DB\n"
-        "`Add q [Book] - [Title] - [Begin] / [End]` — extract quote from this PDF",
-    )
 
 
 # --- START THE BOT ---

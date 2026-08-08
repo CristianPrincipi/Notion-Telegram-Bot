@@ -27,6 +27,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import bot.commands
+import bot.implement
+import bot.learn
 import david
 from services import books, expenses
 import expense_safety
@@ -439,7 +442,7 @@ def test_a_pending_list_does_not_swallow_other_commands(monkeypatch):
     context = FakeContext()
 
     send("D e Coffee", context)
-    monkeypatch.setattr(david, "budget", lambda: "MOCK BUDGET")
+    monkeypatch.setattr(bot.commands, "budget", lambda: "MOCK BUDGET")
     update = send("B", context)
 
     assert update.message.replied_with("MOCK BUDGET")

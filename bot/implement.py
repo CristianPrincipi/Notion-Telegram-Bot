@@ -9,7 +9,13 @@ from the router.
 """
 
 from bot.notify import for_update
+from bot.tasks import run_detached
 from services.implement import run_implement
+
+
+async def cmd_implement(update, context, args):
+    # Detached: the Claude merge alone is tens of seconds, under a page lock.
+    run_detached(context, update, handle_implement(update, args["text"]), "implement")
 
 
 async def handle_implement(update, user_text: str):

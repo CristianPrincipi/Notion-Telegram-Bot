@@ -36,6 +36,9 @@ import page_lock
 import pkm
 import proactive.scheduler as scheduler
 import reminder
+import bot.commands
+import bot.implement
+import bot.learn
 from services import books, expenses
 from conftest import FakeContext, FakeDocument, FakeUpdate, run, with_update
 
@@ -89,9 +92,13 @@ def david_stubs(monkeypatch):
     service — which is also the module the handler resolves the name through at
     call time.
     """
-    stubs = stub_module(monkeypatch, david, {
-        "budget":         lambda: "MOCK BUDGET",
-    })
+    # ONE object installed in BOTH importers. `B` calls it through
+    # bot.commands, the Sunday recap through david, and the assertions below
+    # compare function identity — so a second lambda would make one of the two
+    # tests fail against a stub that is correct.
+    budget_stub = lambda: "MOCK BUDGET"          # noqa: E731
+    stubs = stub_module(monkeypatch, david, {"budget": budget_stub})
+    stub_module(monkeypatch, bot.commands, {"budget": budget_stub})
     stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
         "find_Book_Page": lambda book_name: "book-page-id",
@@ -510,7 +517,7 @@ def test_a_slow_command_no_longer_freezes_the_bot():
     async def main():
         update = FakeUpdate(text="B")
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(david, "budget", slow_budget)
+            mp.setattr(bot.commands, "budget", slow_budget)
             await asyncio.gather(
                 david.handle_message(update, FakeContext()),
                 other_traffic(),

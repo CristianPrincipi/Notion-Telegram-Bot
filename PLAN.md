@@ -125,11 +125,16 @@ registry is staying per the brief. The `_cmd_*` bodies move to `bot/`.
 
 ## Milestone 4: Stage 4 — reduce david.py
 
-- [ ] `bot/` gains the command handlers, `handle_document`'s caption router, `run_detached`
-- [ ] `david.py` keeps: `__main__` bootstrap, `COMMANDS` + `handle_message`, `build_help`,
-      `register_jobs`, `register_handlers`, the owner filter, `on_error` / `notify_error`
-- [ ] `concurrent_updates` still absent (`test_async_io` inspects david's source)
-- [ ] green, commit, show the diff
+- [x] `bot/tasks.py` (`run_detached`), `bot/expenses.py` (+ the `AMOUNT` grammar and its
+      parser), `bot/books.py`, `bot/commands.py` (the delegators whose feature module still
+      takes `update`), `bot/documents.py` (the caption router), and the `cmd_*` entries in
+      `bot/learn.py` / `bot/implement.py`
+- [x] `david.py` keeps: `__main__` bootstrap, `COMMANDS` + `handle_message`, `build_help`
+      (+ `cmd_help`, which renders the registry — moving it would make `bot/` import
+      `david`, a cycle), `register_jobs`, `register_handlers`, the owner filter,
+      `on_error` / `notify_error`. **1504 → 628 lines.**
+- [x] `concurrent_updates` still absent (`test_async_io` inspects david's source)
+- [x] green (741 passed), commit
 
 ## Milestone 5: documentation
 
