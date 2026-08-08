@@ -1060,8 +1060,12 @@ COMMANDS = [
         handler=_cmd_remind,
         help=Help("📅 *REMINDER*",
                   usage=("Remind [Name] [DD.MM] - [HH.MM]",
-                         "Remind [Name] [DD.MM.YYYY] - [HH.MM]"),
-                  notes=("e.g. Remind Dentist 12.06 - 14.30 (time is 24h)",
+                         "Remind [Name] [DD.MM.YYYY] - [HH.MM]",
+                         "Remind [Name] t [HH]"),
+                  notes=("e.g. Remind Dentist 12.06 - 14.30, or Remind Dentist t 10 "
+                         "for tomorrow at 10:00",
+                         "t (or tomorrow) is the day after today; a bare hour means "
+                         "o'clock; the dash is optional",
                          "Without a year: a date over a day past means next year, and "
                          "one inside that window is queried rather than guessed")),
     ),

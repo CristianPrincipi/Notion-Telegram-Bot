@@ -137,10 +137,48 @@ def _localize(naive: datetime, date_str: str, time_str: str):
                       f"Pick a time before 02:00 or from 03:00.")
 
 
-def parse_date_time(date_str: str, time_str: str):
-    """Parse 'DD.MM' or 'DD.MM.YYYY' + 'HH.MM' (24h) into an aware datetime.
+# The shorthand for "the day after today". `t` is the one that gets typed; the
+# long form is accepted because a shorthand nobody remembers is worse than none.
+#
+# "today" deliberately does NOT match either of them. It starts with a `t`, and
+# resolving it to TOMORROW would be a silent one-day error on a command whose
+# whole recent history is about not guessing dates — so the date token requires
+# the shorthand to end where the word does, and "today" falls through to the
+# usage message instead.
+TOMORROW_TOKENS = {"t", "tomorrow"}
 
-    Returns (datetime, error). The datetime is localized to Europe/Rome.
+
+def _parse_clock(time_str: str):
+    """'HH.MM' or a bare 'HH'. Returns (hour, minute, error).
+
+    A bare hour means o'clock, which is how times are said out loud: `t 10` is
+    tomorrow at ten, and typing `10.00` for that is three characters of ceremony.
+    """
+    parts = time_str.split(".")
+    try:
+        if len(parts) == 1:
+            hour, minute = int(parts[0]), 0
+        elif len(parts) == 2:
+            hour, minute = (int(p) for p in parts)
+        else:
+            raise ValueError
+    except (ValueError, TypeError):
+        return None, None, (f"Invalid time format '{time_str}'. Use HH.MM 24h "
+                            f"(e.g. 14.30) or a bare hour (e.g. 10).")
+    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+        return None, None, f"Invalid time '{time_str}'. Hour 0-23, minute 0-59."
+    return hour, minute, None
+
+
+def parse_date_time(date_str: str, time_str: str):
+    """Parse a date + time into an aware Europe/Rome datetime. Returns (dt, error).
+
+    Accepted date forms:
+      DD.MM         the current year, with the rollover rules below
+      DD.MM.YYYY    that year, taken at face value
+      t / tomorrow  the day after today
+
+    Accepted time forms: HH.MM, or a bare HH meaning o'clock.
 
     With no year, the current one is assumed and a date more than PAST_GRACE in
     the past rolls to next year. A date inside that window is REFUSED rather than
@@ -148,7 +186,23 @@ def parse_date_time(date_str: str, time_str: str):
     say which one you meant; an explicit year is taken at face value, past or not,
     because it is no longer a guess at that point.
     """
-    # Date — the year is optional, and its presence changes everything below.
+    hour, minute, err = _parse_clock(time_str)
+    if err:
+        return None, err
+
+    now = datetime.now(TIMEZONE)
+
+    # ── `t` / `tomorrow` ───────────────────────────────────────────────────────
+    # No rollover question to answer and no past-date question either: tomorrow
+    # is a future calendar day by construction, so the earliest instant this can
+    # produce is still ahead of `now`. It goes through _localize like everything
+    # else, so asking for 02.30 on the night the clocks change is still refused.
+    if date_str.strip().lower() in TOMORROW_TOKENS:
+        tomorrow = (now + timedelta(days=1)).date()
+        return _localize(datetime(tomorrow.year, tomorrow.month, tomorrow.day,
+                                  hour, minute), date_str, time_str)
+
+    # ── DD.MM, optionally with a year ──────────────────────────────────────────
     parts = date_str.split(".")
     try:
         if len(parts) == 3:
@@ -161,20 +215,10 @@ def parse_date_time(date_str: str, time_str: str):
         else:
             raise ValueError
     except (ValueError, TypeError):
-        return None, (f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06) "
-                      f"or DD.MM.YYYY (e.g. 12.06.2027).")
+        return None, (f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06), "
+                      f"DD.MM.YYYY (e.g. 12.06.2027), or `t` for tomorrow.")
     if not (1 <= month <= 12) or not (1 <= day <= 31):
         return None, f"Invalid date '{date_str}'. Day 1-31, month 1-12."
-
-    # Time
-    try:
-        hour, minute = (int(p) for p in time_str.split("."))
-    except (ValueError, TypeError):
-        return None, f"Invalid time format '{time_str}'. Use HH.MM 24h (e.g. 14.30)."
-    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
-        return None, f"Invalid time '{time_str}'. Hour 0-23, minute 0-59."
-
-    now = datetime.now(TIMEZONE)
 
     # Build the datetime; catch impossible dates like 31.02
     try:
