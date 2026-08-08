@@ -98,7 +98,7 @@ def _get_service():
 PAST_GRACE = timedelta(hours=24)
 
 
-def _localize(naive: datetime, date_str: str, time_str: str):
+def _localize(naive: datetime, time_str: str):
     """Attach Europe/Rome to a naive datetime. Returns (datetime, error).
 
     is_dst=None, so pytz RAISES on the two local times that are not a single
@@ -125,14 +125,18 @@ def _localize(naive: datetime, date_str: str, time_str: str):
     fold=1 explicitly. Worth knowing before anyone starts that migration
     expecting an exception. Not doing it here.
     """
+    # The message names the DATE THIS RESOLVED TO, not the token that was typed.
+    # `t` is a legal date token, and "02.30 doesn't exist on t" tells you nothing
+    # about which night is the problem — the whole point of the message.
+    on = naive.strftime("%d.%m.%Y")
     try:
         return TIMEZONE.localize(naive, is_dst=None), None
     except pytz.exceptions.NonExistentTimeError:
-        return None, (f"{time_str} doesn't exist on {date_str} — the clocks go forward "
+        return None, (f"{time_str} doesn't exist on {on} — the clocks go forward "
                       f"that night and the hour from 02:00 to 03:00 is skipped. "
                       f"Pick a time before 02:00 or from 03:00.")
     except pytz.exceptions.AmbiguousTimeError:
-        return None, (f"{time_str} happens twice on {date_str} — the clocks go back "
+        return None, (f"{time_str} happens twice on {on} — the clocks go back "
                       f"that night, so 02:00 to 03:00 runs through a second time. "
                       f"Pick a time before 02:00 or from 03:00.")
 
@@ -200,7 +204,7 @@ def parse_date_time(date_str: str, time_str: str):
     if date_str.strip().lower() in TOMORROW_TOKENS:
         tomorrow = (now + timedelta(days=1)).date()
         return _localize(datetime(tomorrow.year, tomorrow.month, tomorrow.day,
-                                  hour, minute), date_str, time_str)
+                                  hour, minute), time_str)
 
     # ── DD.MM, optionally with a year ──────────────────────────────────────────
     parts = date_str.split(".")
@@ -226,7 +230,7 @@ def parse_date_time(date_str: str, time_str: str):
     except ValueError:
         return None, f"'{date_str}' is not a real date."
 
-    dt, err = _localize(naive, date_str, time_str)
+    dt, err = _localize(naive, time_str)
     if err:
         return None, err
 
@@ -250,7 +254,7 @@ def parse_date_time(date_str: str, time_str: str):
         return None, (f"'{date_str}' does not exist in {now.year + 1}. "
                       f"Send it with the year you meant.")
 
-    return _localize(naive_next, date_str, time_str)
+    return _localize(naive_next, time_str)
 
 
 # ─── EVENT CREATION ────────────────────────────────────────────────────────────
