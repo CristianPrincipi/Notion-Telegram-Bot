@@ -138,10 +138,13 @@ registry is staying per the brief. The `_cmd_*` bodies move to `bot/`.
 
 ## Milestone 5: documentation
 
-- [ ] CLAUDE.md module map rewritten for the new structure, with the decisive rule and
-      the module that enforces it
-- [ ] README updated where it names a moved file
-- [ ] `## Noticed, not fixed` written up
+- [x] CLAUDE.md: a new "The layers" section (the rule, the arrows, the notify contract),
+      the module map rewritten for `bot/` `services/` `clients/`, every moved-file
+      reference updated, the Testing section extended with SPY_HOMES and the widened
+      source scans, and a "Left by the layering split, deliberately" block under Open
+      questions
+- [x] README: a Layout section and the moved-file references
+- [x] `## Noticed, not fixed` written up (below, and in CLAUDE.md's Open questions)
 
 ## Test edits this refactor forces
 
@@ -181,7 +184,34 @@ change — each is the test's ADDRESS for something that moved:
 
 ## Noticed, not fixed
 
-_(filled in as I go; nothing here is touched in this PR)_
+Seen while moving code, deliberately left alone — a fix hidden inside a refactor is a
+fix nobody reviewed. Also recorded in CLAUDE.md's Open questions so it survives this
+file.
+
+1. **Five modules never got the treatment.** `month.py`, `budget.py`, `pkm.py`,
+   `reminder.py`, `notion_ids.py`. All but `budget.py` still take `update` and reply
+   themselves, so none of them can be driven from a job or tested without a fake
+   Update — the same welding this PR removed everywhere else. `bot/commands.py` holds
+   their one-line adapters in the meantime. Scoped out by Q1.
+2. **`escape_md` drags PTB into `services/`.** Correct that a service escapes at the
+   interpolation site; awkward that the function lives in a module importing
+   `telegram.error`. The guard permits it by name. A telegram-free `text` module would
+   close it and touch every call site.
+3. **The PDF parse cap is named after the download** (`DOWNLOAD_TIMEOUT_SECONDS` bounds
+   `extract_quote_from_pdf`). Right duration, wrong name; kept as one live value.
+4. **`LEARN_ID` / `DIET_ID` / `BRAIN_ID` / `FINANCE_ID` in david.py have no reader** and
+   predate this work. Left with `DATABASE_ID`.
+5. **`test_a_slow_command_no_longer_freezes_the_bot` can HANG the suite instead of
+   failing it** — its watcher spins on `while not in_flight.is_set()` with no timeout, so
+   a stall that never starts (a mis-targeted patch, which is what happened in Stage 4)
+   means pytest never returns. A bound there turns it into an ordinary red.
+6. **`tests/test_anthropic_client.py` fails when run alone** —
+   `test_every_call_logs_its_token_counts`, green in the full suite, red as a single
+   file, both at HEAD and at the pre-refactor commit. An order dependency that predates
+   this branch.
+7. **`implement.apply_section_updates` still truncates its skipped list at 8 with no
+   total** — the fix `implement_diet` already got (`_report_lines`). Was already on the
+   previous plan's open questions.
 
 ## Changelog
 

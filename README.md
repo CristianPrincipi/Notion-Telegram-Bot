@@ -52,7 +52,7 @@ fine without them and loses the feature named below.
 | `DATABASE_ID` | Unused | Read in `david.py` but never referenced anywhere. Left in place; safe to drop. |
 
 `Implement [Page] - [Area]` and `Get [Topic] - [Area]` both resolve their target
-from `{AREA}_ID` (see `get_area_db_id` in `implement.py`), so adding a new area
+from `{AREA}_ID` (see `get_area_db_id` in `services/implement.py`), so adding a new area
 means adding the matching environment variable.
 
 ## Commands
@@ -237,7 +237,7 @@ clean Telegram message when it fires.
 Only **reads** are capped that way. `wait_for` cancels the waiting coroutine but
 cannot cancel the worker thread, so timing out a write would report a failure
 while it was still in flight. Notion calls are already bounded by
-`notion_client.notion_request`'s per-request timeout and its bounded retries.
+`clients.notion_client.notion_request`'s per-request timeout and its bounded retries.
 
 Notion requests reuse a pooled `requests.Session`, one per worker thread —
 `requests.Session` is not thread-safe, and a shared one can hand the same socket
@@ -312,3 +312,20 @@ every push.
 `input → handler → parsed args` covering every command. Rows marked `known_bug`
 assert current, wrong behaviour on purpose; fixing one of those bugs is expected
 to turn its row red, and the row should be updated in the same commit.
+
+### Layout
+
+```
+david.py     entry point: the command registry, its dispatch loop, the generated
+             help, job + handler registration, the global error handler
+bot/         Telegram adapters — parse the update, call a service, send the reply
+services/    the work itself: expenses, books, learn, implement, implement_diet
+clients/     the wire: Notion, Google Calendar, Anthropic, Telegram file download
+config.py    constants, schedules, timeouts and the environment contract
+```
+
+Nothing under `services/` may import `telegram` or take an `update` — services
+report progress through a `notify` callback that the bot layer binds to
+`reply_text`, a test binds to a list's `append`, and a job could bind to a
+logger. `tests/test_layering.py` fails if that is ever broken, so the rule holds
+by test rather than by habit.
