@@ -53,7 +53,7 @@ formats. `david.py` owns the queries, the writes and the routing.
 import time
 from typing import NamedTuple
 
-from notion_client import get_page_title
+from clients.notion_client import get_page_title
 from telegram_text import escape_md
 
 # How long a printed list of matches stays answerable. See the module docstring —

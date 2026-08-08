@@ -20,7 +20,7 @@ from telegram import User as TelegramUser
 from telegram.ext import ApplicationBuilder
 
 import budget as budget_module
-import calendar_client
+from clients import calendar_client
 import config
 import david
 import learn

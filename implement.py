@@ -42,11 +42,11 @@ import asyncio
 import os
 import re
 
-from anthropic_client import complete_json
+from clients.anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md, reply
-from notion_client import (
+from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
     delete_block, create_page, get_page_title, update_page, extract_rich_text,
     paragraph as _paragraph, heading2 as _heading2, heading3 as _heading3,

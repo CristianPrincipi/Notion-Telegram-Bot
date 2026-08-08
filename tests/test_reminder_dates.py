@@ -27,7 +27,7 @@ from datetime import datetime
 
 import pytest
 
-import calendar_client
+from clients import calendar_client
 import david
 import reminder
 from conftest import FakeUpdate, run

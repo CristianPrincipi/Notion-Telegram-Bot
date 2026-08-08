@@ -4,12 +4,12 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-from anthropic_client import complete_json
+from clients.anthropic_client import complete_json
 from config import (
     ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, LEARN_TYPES,
     PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
 )
-from notion_client import (
+from clients.notion_client import (
     create_page,
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
     quote as _quote, bullet as _bullet, divider as _divider,

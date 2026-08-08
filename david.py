@@ -13,7 +13,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from learn import SUPPORTED_TYPES, handle_learn
 from implement import handle_implement
 from reminder import handle_remind
-from calendar_client import now_local
+from clients.calendar_client import now_local
 from notion_ids import handle_diag, handle_find, handle_dbs
 import PyPDF2
 
@@ -25,7 +25,7 @@ from config import (
     PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help,
 )
 from month import current_month_id, handle_month
-from notion_client import (
+from clients.notion_client import (
     CREATED_DESC, body_excerpt, notion_request, query_database, set_archived, update_page,
 )
 from pkm import handle_get

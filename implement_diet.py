@@ -2,11 +2,11 @@ import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from anthropic_client import complete_json
+from clients.anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md, reply
-from notion_client import (
+from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text,
     append_children, delete_block, create_page, extract_rich_text, rich,
     update_page,

@@ -9,9 +9,9 @@ your 101st expense, then silently drops everything past the first page.
 import pytest
 import responses
 
-import notion_client
+from clients import notion_client
 from conftest import NOTION_BASE
-from notion_client import (
+from clients.notion_client import (
     append_children,
     get_children,
     notion_request,

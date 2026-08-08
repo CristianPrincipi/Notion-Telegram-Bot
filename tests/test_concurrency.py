@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import calendar_client
+from clients import calendar_client
 import david
 import page_lock
 import reminder
