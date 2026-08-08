@@ -30,16 +30,14 @@ import pytest
 import responses
 
 import david
-import implement
-import implement_diet
-import learn
+from services import implement, implement_diet, learn
 import month
 import page_lock
 import pkm
 import proactive.scheduler as scheduler
 import reminder
 from services import books, expenses
-from conftest import FakeContext, FakeDocument, FakeUpdate, run
+from conftest import FakeContext, FakeDocument, FakeUpdate, run, with_update
 
 
 # ─── THE RECORDER ──────────────────────────────────────────────────────────────
@@ -188,7 +186,7 @@ LEARN_COMMANDS = [
 def test_learn_runs_fetch_claude_and_notion_off_the_loop(offloaded, learn_stubs, text, expected):
     update = FakeUpdate(text=text)
 
-    run(learn.handle_learn(update, text))
+    run(learn.run_learn(text, **with_update(update)))
 
     assert offloaded == expect(learn_stubs, *expected)
     assert update.message.replied_with("Saved to Notion")
@@ -198,7 +196,7 @@ def test_learn_pdf_parses_off_the_loop(offloaded, learn_stubs):
     """PyPDF2 is CPU-bound, which pins the loop just as hard as a network call."""
     update = FakeUpdate(text="Learn pdf")
 
-    run(learn.handle_learn(update, "Learn pdf", file_bytes=b"%PDF-1.4 fake"))
+    run(learn.run_learn("Learn pdf", file_bytes=b"%PDF-1.4 fake", **with_update(update)))
 
     assert offloaded == expect(learn_stubs, "extract_pdf",
                                "summarize_with_claude", "create_learn_page")
@@ -249,7 +247,7 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
     """
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
 
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
 
     assert offloaded == expect(
         implement_stubs,
@@ -290,7 +288,7 @@ def diet_stubs(monkeypatch):
 def test_implement_diet_runs_every_call_off_the_loop(offloaded, diet_stubs):
     update = FakeUpdate(text="Implement Protein Basics - Diet")
 
-    run(implement_diet.handle_implement_diet(update, "Protein Basics"))
+    run(implement_diet.run_implement_diet("Protein Basics", **with_update(update)))
 
     assert offloaded == expect(
         diet_stubs,
@@ -393,7 +391,7 @@ def test_a_slow_claude_call_times_out_in_learn(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "summarize_with_claude", stalls)
     update = FakeUpdate(text="Learn book Sapiens")
 
-    run(learn.handle_learn(update, "Learn book Sapiens"))
+    run(learn.run_learn("Learn book Sapiens", **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("Nothing was saved")
@@ -404,7 +402,7 @@ def test_a_slow_transcript_fetch_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_youtube", stalls)
     update = FakeUpdate(text="Learn video https://youtu.be/abc")
 
-    run(learn.handle_learn(update, "Learn video https://youtu.be/abc"))
+    run(learn.run_learn("Learn video https://youtu.be/abc", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -416,7 +414,7 @@ def test_a_slow_article_fetch_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_article", stalls)
     update = FakeUpdate(text="Learn article https://example.com/post")
 
-    run(learn.handle_learn(update, "Learn article https://example.com/post"))
+    run(learn.run_learn("Learn article https://example.com/post", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -426,7 +424,7 @@ def test_a_slow_pdf_parse_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_pdf", stalls)
     update = FakeUpdate(text="Learn pdf")
 
-    run(learn.handle_learn(update, "Learn pdf", file_bytes=b"%PDF-1.4 fake"))
+    run(learn.run_learn("Learn pdf", file_bytes=b"%PDF-1.4 fake", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -440,7 +438,7 @@ def test_a_slow_merge_times_out_and_says_nothing_was_written(implement_stubs, mo
                         lambda page_id, updates, sections, new_paths=None: written.append(updates))
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
 
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("unchanged")
@@ -455,7 +453,7 @@ def test_a_slow_diet_analysis_times_out_and_says_nothing_was_written(diet_stubs,
                         lambda updates, block_map: applied.append(updates) or (0, []))
     update = FakeUpdate(text="Implement Protein Basics - Diet")
 
-    run(implement_diet.handle_implement_diet(update, "Protein Basics"))
+    run(implement_diet.run_implement_diet("Protein Basics", **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("unchanged")
@@ -469,7 +467,7 @@ def test_the_merge_timeout_releases_the_page_lock(implement_stubs, monkeypatch):
 
     async def main():
         update = FakeUpdate(text="Implement Memory Techniques - Brain")
-        await implement.handle_implement(update, update.message.text)
+        await implement.run_implement(update.message.text, **with_update(update))
         # Must be free immediately — a short timeout, so a still-held lock fails
         # here rather than hanging the suite.
         async with page_lock.page_lock("area-db-1", timeout=0.01):

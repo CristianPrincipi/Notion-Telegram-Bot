@@ -408,7 +408,8 @@ ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID"}
 
 # Repo-relative paths, not bare filenames: locking code lives in packages now,
 # and two files in different packages can share a name.
-LOCKING_MODULES = ["services/expenses.py", "implement.py", "implement_diet.py", "reminder.py"]
+LOCKING_MODULES = ["services/expenses.py", "services/implement.py",
+                   "services/implement_diet.py", "reminder.py"]
 
 # Every directory David's own code lives in. The scan below used to be
 # REPO.glob("*.py"), which stopped at the repo root — so a module that moved

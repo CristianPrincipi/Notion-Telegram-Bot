@@ -14,10 +14,9 @@ import time
 
 import pytest
 
-import implement
-import implement_diet
+from services import implement, implement_diet
 import page_lock
-from conftest import FakeUpdate, run
+from conftest import FakeUpdate, run, with_update
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +115,7 @@ def wired_manual(manual_spy, monkeypatch):
 
 def run_implement():
     update_obj = FakeUpdate(text="Implement Memory Techniques - Brain")
-    run(implement.handle_implement(update_obj, update_obj.message.text))
+    run(implement.run_implement(update_obj.message.text, **with_update(update_obj)))
     return update_obj
 
 
@@ -379,7 +378,7 @@ def test_implement_refuses_a_concurrent_manual_update(monkeypatch):
             update_obj = FakeUpdate(text="Implement Memory Techniques - Brain")
             # wait_for so a regression to queueing FAILS here rather
             # than deadlocking the suite.
-            await asyncio.wait_for(implement.handle_implement(update_obj, update_obj.message.text), timeout=5)
+            await asyncio.wait_for(implement.run_implement(update_obj.message.text, **with_update(update_obj)), timeout=5)
             return update_obj
 
     result = run(main())
@@ -407,7 +406,7 @@ def test_implement_diet_refuses_a_concurrent_update(monkeypatch):
             update_obj = FakeUpdate(text="Implement Protein Basics - Diet")
             # wait_for so a regression to queueing FAILS here rather
             # than deadlocking the suite.
-            await asyncio.wait_for(implement_diet.handle_implement_diet(update_obj, "Protein Basics"), timeout=5)
+            await asyncio.wait_for(implement_diet.run_implement_diet("Protein Basics", **with_update(update_obj)), timeout=5)
             return update_obj
 
     result = run(main())
@@ -464,7 +463,7 @@ def test_two_overlapping_diet_runs_create_only_one_diet_page(monkeypatch):
 
     async def one_run():
         update_obj = FakeUpdate(text="Implement Protein Basics - Diet")
-        await implement_diet.handle_implement_diet(update_obj, "Protein Basics")
+        await implement_diet.run_implement_diet("Protein Basics", **with_update(update_obj))
         return update_obj
 
     async def main():

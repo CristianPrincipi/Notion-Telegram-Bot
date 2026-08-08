@@ -26,8 +26,8 @@ cheaper, it is broken.
 
 import pytest
 
-import implement_diet
-from conftest import FakeUpdate, run
+from services import implement_diet
+from conftest import FakeUpdate, run, with_update
 
 # ─── A POPULATED DIET PAGE ─────────────────────────────────────────────────────
 # Content carries a distinctive marker per section so a test can assert exactly
@@ -143,7 +143,7 @@ def writes(monkeypatch):
 def drive(claude, monkeypatch):
     monkeypatch.setattr(implement_diet, "complete_json", claude)
     update = FakeUpdate(text="Implement Creatine - Diet")
-    run(implement_diet.handle_implement_diet(update, "Creatine"))
+    run(implement_diet.run_implement_diet("Creatine", **with_update(update)))
     return update
 
 

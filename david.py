@@ -9,13 +9,13 @@ from datetime import time
 from functools import partial
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from learn import SUPPORTED_TYPES, handle_learn
-from implement import handle_implement
 from reminder import handle_remind
 from notion_ids import handle_diag, handle_find, handle_dbs
 
 import config
 import expense_safety
+from bot.implement import handle_implement
+from bot.learn import handle_learn, learn_pdf_upload
 from bot.notify import for_update
 from budget import budget
 from clients.telegram_files import download_pdf_attachment, validate_pdf_attachment
@@ -28,6 +28,7 @@ from pkm import handle_get
 from observability import record_command, record_error, set_correlation_id, setup_logging
 from proactive.scheduler import register_all
 from services import books, expenses
+from services.learn import SUPPORTED_TYPES
 from telegram_text import reply, send
 
 # Configured at import so config.validate() can still be the first statement in
@@ -772,19 +773,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- UPLOAD WORK (run detached; see run_detached) --- #
-# Split out of handle_document so the slow half — a download capped at 2 minutes,
-# PyPDF2 parsing, and for Learn a full Claude summarisation — can run as a
-# background task while the cheap validation stays inline and rejects a bad file
-# immediately.
-
-async def _learn_pdf_upload(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                            doc, caption: str):
-    await update.message.reply_text("⏳ Downloading your PDF…")
-    file_bytes, err = await download_pdf_attachment(context, doc)
-    if err:
-        await update.message.reply_text(err)
-        return
-    await handle_learn(update, caption, file_bytes=file_bytes)
+# The slow half of an upload — a download capped at 2 minutes, PyPDF2 parsing,
+# and for Learn a full Claude summarisation — runs as a background task, while
+# the cheap validation below stays inline and rejects a bad file immediately.
+# Both halves now live with their command: bot/learn.py and services/books.py.
 
 
 # --- HANDLER FUNCTION FOR PDF ---
@@ -814,7 +806,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(err)
             return
         run_detached(context, update,
-                     _learn_pdf_upload(update, context, doc, caption), "learn-pdf")
+                     learn_pdf_upload(update, context, doc, caption), "learn-pdf")
         return
 
     # ── Add q [Book] - [Title] - [Begin] / [End]  (extract quote from PDF) ────

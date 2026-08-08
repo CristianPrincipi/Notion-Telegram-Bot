@@ -24,7 +24,7 @@ from clients import calendar_client
 import config
 import david
 from services import books, expenses
-import learn
+from services import learn
 from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run
 
 QUERY_URL = f"{NOTION_BASE}/databases/{EXPENSES_ID}/query"

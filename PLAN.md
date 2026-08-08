@@ -106,14 +106,22 @@ registry is staying per the brief. The `_cmd_*` bodies move to `bot/`.
 
 ## Milestone 3: Stage 3 — learn / implement / implement_diet become services
 
-- [ ] `git mv learn.py services/learn.py`; every `update.message.reply_text` → `notify`,
-      every `reply(update, …)` → `notify_md`
-- [ ] `git mv implement.py services/implement.py`, same conversion
-- [ ] `git mv implement_diet.py services/implement_diet.py`, same conversion
-- [ ] `bot/learn.py`, `bot/implement.py` — the `update`-taking wrappers
-- [ ] Preserved verbatim: append-then-delete ordering, the page locks and their refusal
-      messages, `asyncio.wait_for` on reads only, the section-routing split
-- [ ] green, commit, show the diff
+- [x] `git mv learn.py services/learn.py`; every `update.message.reply_text` → `notify`,
+      every `reply(update, …)` → `notify_md`. `handle_learn` → `run_learn`.
+- [x] `git mv implement.py services/implement.py`, same conversion. `handle_implement` →
+      `run_implement`, and `_first_run` / `_sectioned_run` take the pair too.
+- [x] `git mv implement_diet.py services/implement_diet.py`, same conversion.
+      `handle_implement_diet` → `run_implement_diet`.
+- [x] `bot/learn.py` (also owns the `Learn pdf` upload, which needs a `context.bot`),
+      `bot/implement.py`. Both keep the `handle_*` names david already called, so the
+      router spies did not move.
+- [x] Preserved verbatim: append-then-delete ordering, the page locks and their refusal
+      messages, `asyncio.wait_for` on reads only, the section-routing split. Verified by
+      diffing every string literal in the three files before and after: **zero** changed.
+- [x] `tests/conftest.py` grows `with_update(update)` — the notify kwargs, built by calling
+      `bot.notify.for_update` itself rather than a reimplementation, so a test cannot pass
+      against a binding production does not use
+- [x] green (741 passed), commit
 
 ## Milestone 4: Stage 4 — reduce david.py
 

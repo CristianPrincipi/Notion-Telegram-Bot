@@ -8,6 +8,7 @@ file, which needs `responses` rather than a plain spy.
 import pytest
 import responses
 
+import bot.learn
 import david
 from clients import telegram_files
 from services import books
@@ -45,7 +46,10 @@ def spies(monkeypatch):
     monkeypatch.setattr(books, "find_Book_Page", find_Book_Page)
     monkeypatch.setattr(books, "add_Quote", add_Quote)
     monkeypatch.setattr(books, "extract_quote_from_pdf", extract_quote_from_pdf)
-    monkeypatch.setattr(david, "handle_learn", handle_learn)
+    # Patched on bot.learn, not david: the caption path runs through
+    # bot.learn.learn_pdf_upload, which resolves the name in its own module.
+    # The TEXT command still goes through david's namespace — see test_router.
+    monkeypatch.setattr(bot.learn, "handle_learn", handle_learn)
     return calls
 
 

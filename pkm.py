@@ -27,7 +27,7 @@ import re
 from difflib import SequenceMatcher
 
 from clients.notion_client import get_children, search_page_in_db, extract_rich_text
-from implement import get_area_db_id
+from services.implement import get_area_db_id
 from telegram_text import escape_md, reply
 
 

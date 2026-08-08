@@ -45,7 +45,7 @@ import re
 from clients.anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
     delete_block, create_page, get_page_title, update_page, extract_rich_text,
@@ -71,7 +71,7 @@ def get_area_db_id(area_name: str) -> str | None:
 
 
 # ─── 2. NOTION HELPERS ─────────────────────────────────────────────────────────
-# All of them BLOCK. handle_implement reaches every one through
+# All of them BLOCK. run_implement reaches every one through
 # asyncio.to_thread — calling one directly from the event loop stalls the whole
 # bot for the length of the round trip.
 #
@@ -561,9 +561,9 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
 
 # ─── 8. MAIN HANDLER ───────────────────────────────────────────────────────────
 
-async def handle_implement(update, user_text: str):
+async def run_implement(user_text: str, *, notify, notify_md=None):
     """
-    Entry point called from david.py.
+    Entry point. `bot/implement.py` binds the callbacks; nothing here sends.
 
     Command format:  Implement [Page Name] - [Target Area]
     Example:         Implement Memory Techniques - Brain
@@ -575,12 +575,11 @@ async def handle_implement(update, user_text: str):
          · Manual exists → route (names only) → merge (affected only) → write back
       C) Tick the source page's 'Implemented' checkbox
     """
+    notify_md = notify_md or notify
 
     match = re.match(r"(?i)implement\s+(.+?)\s*-\s*(.+)", user_text.strip())
     if not match:
-        await reply(
-            update,
-            "🔧 *Implement command usage:*\n"
+        await notify_md("🔧 *Implement command usage:*\n"
             "`Implement [Page Name] - [Target Area]`\n\n"
             "Example: `Implement Memory Techniques - Brain`\n\n"
             "The page must exist in your Learn database.\n"
@@ -593,29 +592,25 @@ async def handle_implement(update, user_text: str):
 
     # ── Diet uses a dedicated structured handler (nested toggles + surgical updates) ──
     if area_name.lower() == "diet":
-        from implement_diet import handle_implement_diet
-        await handle_implement_diet(update, page_name)
+        from services.implement_diet import run_implement_diet
+        await run_implement_diet(page_name, notify=notify, notify_md=notify_md)
         return
 
     area_db_id = get_area_db_id(area_name)
     if not area_db_id:
         env_key = f"{area_name.upper().replace(' ', '_')}_ID"
-        await reply(
-            update,
-            f"❌ Area *{escape_md(area_name)}* is not configured.\n"
+        await notify_md(f"❌ Area *{escape_md(area_name)}* is not configured.\n"
             f"Add `{env_key}` to your Railway environment variables,\n"
             f"pointing to the Notion database ID for that area.",
         )
         return
 
     # ── Step A: Retrieve source page from Learn DB ─────────────────────────────
-    await reply(update, f"🔍 Searching for *{escape_md(page_name)}* in Learn database…")
+    await notify_md(f"🔍 Searching for *{escape_md(page_name)}* in Learn database…")
 
     source_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, page_name)
     if err:
-        await reply(
-            update,
-            f"❌ Could not find *{escape_md(page_name)}* in your Learn database.\n\n"
+        await notify_md(f"❌ Could not find *{escape_md(page_name)}* in your Learn database.\n\n"
             f"Make sure you used `Learn` to save it first, and that the title matches.",
         )
         return
@@ -625,12 +620,12 @@ async def handle_implement(update, user_text: str):
 
     source_blocks, err = await asyncio.to_thread(get_children, source_page_id)
     if err:
-        await update.message.reply_text(f"❌ Could not retrieve content of source page: {err}")
+        await notify(f"❌ Could not retrieve content of source page: {err}")
         return
 
     source_text = blocks_to_text(source_blocks)
     if not source_text.strip():
-        await update.message.reply_text("❌ Source page appears to be empty.")
+        await notify("❌ Source page appears to be empty.")
         return
 
     # ── Steps B–D run under a per-area lock ────────────────────────────────────
@@ -638,22 +633,22 @@ async def handle_implement(update, user_text: str):
     # if it was computed from a Manual nobody else is mutating.
     try:
         async with page_lock(area_db_id):
-            await reply(update, f"📂 Looking for Manual in *{escape_md(area_name)}*…")
+            await notify_md(f"📂 Looking for Manual in *{escape_md(area_name)}*…")
             manual_page, _ = await asyncio.to_thread(
                 search_page_in_db, area_db_id, "Manual", exact=True)
 
             if manual_page is None:
-                done = await _first_run(update, area_db_id, area_name,
-                                        page_name, source_text, source_title)
+                done = await _first_run(area_db_id, area_name,
+                                        page_name, source_text, source_title,
+                                        notify=notify, notify_md=notify_md)
             else:
-                done = await _sectioned_run(update, manual_page["id"], area_name,
-                                            page_name, source_text, source_title)
+                done = await _sectioned_run(manual_page["id"], area_name,
+                                            page_name, source_text, source_title,
+                                            notify=notify, notify_md=notify_md)
             if not done:
                 return
     except PageBusy:
-        await reply(
-            update,
-            f"⏳ An update to the *{escape_md(area_name)}* Manual is already in progress.\n"
+        await notify_md(f"⏳ An update to the *{escape_md(area_name)}* Manual is already in progress.\n"
             "Wait for it to finish, then try again.",
         )
         return
@@ -662,9 +657,10 @@ async def handle_implement(update, user_text: str):
     await asyncio.to_thread(update_page, source_page_id, {"Implemented": {"checkbox": True}})
 
 
-async def _first_run(update, area_db_id, area_name, page_name, source_text, source_title) -> bool:
+async def _first_run(area_db_id, area_name, page_name, source_text, source_title,
+                     *, notify, notify_md) -> bool:
     """No Manual yet — build the whole page from this one source. Returns True on success."""
-    await update.message.reply_text("🧠 First run for this area — Claude is building the Manual…")
+    await notify("🧠 First run for this area — Claude is building the Manual…")
 
     try:
         manual, err = await asyncio.wait_for(
@@ -673,25 +669,23 @@ async def _first_run(update, area_db_id, area_name, page_name, source_text, sour
             timeout=ANTHROPIC_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        await update.message.reply_text(
+        await notify(
             f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
             "Nothing was written."
         )
         return False
     if err:
-        await update.message.reply_text(f"❌ Build failed: {err}")
+        await notify(f"❌ Build failed: {err}")
         return False
 
     page_id, err = await asyncio.to_thread(
         create_manual_page, area_db_id, build_manual_blocks(manual))
     if not page_id:
-        await update.message.reply_text(f"❌ Could not create Manual page: {err}")
+        await notify(f"❌ Could not create Manual page: {err}")
         return False
 
     # manual['title'] is Claude's, source_title is Notion's — both escaped.
-    await reply(
-        update,
-        f"✅ Manual created ✨\n\n"
+    await notify_md(f"✅ Manual created ✨\n\n"
         f"📋 *{escape_md(manual.get('title', 'Manual'))}*\n"
         f"📍 Area: {escape_md(area_name)}\n\n"
         f"⚙️ {len(manual.get('routine', []))} process steps\n"
@@ -701,22 +695,22 @@ async def _first_run(update, area_db_id, area_name, page_name, source_text, sour
     return True
 
 
-async def _sectioned_run(update, manual_page_id, area_name, page_name,
-                         source_text, source_title) -> bool:
+async def _sectioned_run(manual_page_id, area_name, page_name,
+                         source_text, source_title, *, notify, notify_md) -> bool:
     """Route → merge → write back only the affected sections. Returns True on success."""
     sections, err = await asyncio.to_thread(read_manual_sections, manual_page_id)
     if err:
-        await update.message.reply_text(f"❌ Could not read the existing Manual: {err}")
+        await notify(f"❌ Could not read the existing Manual: {err}")
         return False
     if not sections:
-        await update.message.reply_text(
+        await notify(
             "❌ The Manual has no headings to update. Rename its sections, or delete "
             "the page and re-run to rebuild it."
         )
         return False
 
     # ── Routing: names only ────────────────────────────────────────────────────
-    await update.message.reply_text(
+    await notify(
         f"🧭 Checking which of the {len(sections)} sections this affects…")
     try:
         routing, err = await asyncio.wait_for(
@@ -725,22 +719,20 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
             timeout=ANTHROPIC_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        await update.message.reply_text(
+        await notify(
             f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
             "Your Manual is unchanged — nothing was written."
         )
         return False
     if err:
-        await update.message.reply_text(f"❌ Routing failed: {err}")
+        await notify(f"❌ Routing failed: {err}")
         return False
 
     affected  = [a for a in routing.get("affected", []) if a.get("path")]
     new_steps = [s for s in routing.get("new_steps", []) if s.get("name")]
 
     if not affected and not new_steps:
-        await reply(
-            update,
-            f"ℹ️ *{escape_md(page_name)}* doesn't map to anything in the "
+        await notify_md(f"ℹ️ *{escape_md(page_name)}* doesn't map to anything in the "
             f"*{escape_md(area_name)}* Manual — nothing was changed.",
         )
         return True
@@ -754,12 +746,12 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
     targets += [{"path": p, "style": "bullet", "text": ""} for p in new_paths]
 
     if not targets:
-        await update.message.reply_text(
+        await notify(
             "⚠️ Claude named sections I couldn't find in the Manual — nothing was changed."
         )
         return True
 
-    await reply(update, _format_plan(affected, new_steps, len(sections)))
+    await notify_md(_format_plan(affected, new_steps, len(sections)))
 
     # ── Merge: only the affected sections ──────────────────────────────────────
     try:
@@ -768,16 +760,16 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
             timeout=ANTHROPIC_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        await update.message.reply_text(
+        await notify(
             f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
             "Your Manual is unchanged — nothing was written."
         )
         return False
     if err:
-        await update.message.reply_text(f"❌ Merge failed: {err}")
+        await notify(f"❌ Merge failed: {err}")
         return False
 
-    await update.message.reply_text("📝 Writing the updated sections to Notion…")
+    await notify("📝 Writing the updated sections to Notion…")
     applied, skipped = await asyncio.to_thread(
         apply_section_updates, manual_page_id, merged.get("updates", []), sections, new_paths)
 
@@ -792,7 +784,7 @@ async def _sectioned_run(update, manual_page_id, area_name, page_name,
         # "path (notion error)", so both halves need escaping.
         msg += ("\n\n⚠️ Skipped — these are unchanged:\n"
                 + "\n".join(f"• {escape_md(s)}" for s in skipped[:8]))
-    await reply(update, msg)
+    await notify_md(msg)
     return True
 
 

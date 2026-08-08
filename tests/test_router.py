@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 import pytest
 
 import david
-import learn
+from services import learn
 from services import books, expenses
 from conftest import FakeContext, FakeUpdate, run
 
