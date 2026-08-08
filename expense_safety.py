@@ -27,7 +27,9 @@ Three separate things make that safe, and they are deliberately independent:
 
 WHERE THE STATE LIVES
 ---------------------
-`context.user_data`, which python-telegram-bot keeps per user in memory. That is
+`user_data` — the plain dict python-telegram-bot keeps per user in memory,
+handed in by the bot layer rather than reached through a `context`, so this
+module needs nothing from PTB and a test needs nothing but a dict. That is
 the right lifetime for both: a pending choice is meaningless after a restart
 (you would have to be re-shown the list anyway, since the rows may have moved),
 and an undo you can no longer perform is better absent than stale. Nothing here
@@ -47,7 +49,8 @@ is "which list did I just print". A dict with a deadline is the smaller thing
 that fails in more obvious ways.
 
 This module holds NO Notion calls and no Telegram sends: it decides and it
-formats. `david.py` owns the queries, the writes and the routing.
+formats. `services/expenses.py` owns the queries, the writes and the locking;
+`bot/` owns the routing and hands the dict down.
 """
 
 import time
@@ -65,7 +68,7 @@ PENDING_TTL_SECONDS = 120
 DELETE = "delete"
 UPDATE = "update"
 
-# Keys in context.user_data. Prefixed so they cannot collide with anything PTB
+# Keys in user_data. Prefixed so they cannot collide with anything PTB
 # or a future feature keeps there.
 PENDING_KEY = "expense_pending_choice"
 UNDO_KEY    = "expense_last_destructive"
@@ -160,7 +163,7 @@ def previous_properties(page: dict) -> dict:
 
 # ─── THE PENDING CHOICE ────────────────────────────────────────────────────────
 
-def remember_pending(context, action: str, query: str, pages: list,
+def remember_pending(user_data, action: str, query: str, pages: list,
                      amount: float | None = None, category: str | None = None,
                      now: float | None = None) -> Pending:
     """Park a destructive command until it is told which row it meant.
@@ -179,41 +182,41 @@ def remember_pending(context, action: str, query: str, pages: list,
         choices=tuple(choice_from_page(page) for page in pages),
         expires_at=now + PENDING_TTL_SECONDS,
     )
-    context.user_data[PENDING_KEY] = (pending, pages)
+    user_data[PENDING_KEY] = (pending, pages)
     return pending
 
 
-def has_pending(context, now: float | None = None) -> bool:
+def has_pending(user_data, now: float | None = None) -> bool:
     """True when a live list of matches is waiting for a number.
 
     Used by the router to decide whether a bare number is a selection or just an
     unrecognised message. An EXPIRED pending answers False and is dropped here,
     so a lapsed prompt cannot be answered by a later one being printed.
     """
-    entry = context.user_data.get(PENDING_KEY)
+    entry = user_data.get(PENDING_KEY)
     if entry is None:
         return False
     pending, _ = entry
     if pending.expired(now):
-        context.user_data.pop(PENDING_KEY, None)
+        user_data.pop(PENDING_KEY, None)
         return False
     return True
 
 
-def take_pending(context, selection: int, now: float | None = None):
+def take_pending(user_data, selection: int, now: float | None = None):
     """Resolve a reply to the printed list. Returns (pending, page, error).
 
     Consumes the pending choice on every outcome except an out-of-range number:
     a mistyped `5` against three options should let you type `2` next, not force
     the whole command to be retyped.
     """
-    entry = context.user_data.get(PENDING_KEY)
+    entry = user_data.get(PENDING_KEY)
     if entry is None:
         return None, None, "There is nothing waiting to be chosen."
 
     pending, pages = entry
     if pending.expired(now):
-        context.user_data.pop(PENDING_KEY, None)
+        user_data.pop(PENDING_KEY, None)
         return None, None, (
             f"That list expired after {PENDING_TTL_SECONDS // 60} minutes. "
             "Send the command again if you still want it."
@@ -224,12 +227,12 @@ def take_pending(context, selection: int, now: float | None = None):
             f"Pick a number between 1 and {len(pending.choices)}."
         )
 
-    context.user_data.pop(PENDING_KEY, None)
+    user_data.pop(PENDING_KEY, None)
     return pending, pages[selection - 1], None
 
 
-def clear_pending(context) -> None:
-    context.user_data.pop(PENDING_KEY, None)
+def clear_pending(user_data) -> None:
+    user_data.pop(PENDING_KEY, None)
 
 
 def parse_selection(text: str):
@@ -245,7 +248,7 @@ def parse_selection(text: str):
 
 # ─── THE UNDO RECORD ───────────────────────────────────────────────────────────
 
-def remember_undo(context, action: str, page_id: str, name: str,
+def remember_undo(user_data, action: str, page_id: str, name: str,
                   properties: dict | None = None) -> None:
     """Record how to reverse a destructive write.
 
@@ -256,11 +259,11 @@ def remember_undo(context, action: str, page_id: str, name: str,
     reports success. `previous_properties` is built from the page object the
     lookup already returned, which is why that ordering is possible at all.
     """
-    context.user_data[UNDO_KEY] = Undo(action=action, page_id=page_id,
+    user_data[UNDO_KEY] = Undo(action=action, page_id=page_id,
                                        name=name, properties=properties)
 
 
-def take_undo(context):
+def take_undo(user_data):
     """The last reversible action, consumed. Returns (undo, error).
 
     Consumed rather than kept so `undo` twice cannot re-run the same reversal.
@@ -268,7 +271,7 @@ def take_undo(context):
     after you have deliberately re-edited the row would quietly undo that edit
     too.
     """
-    undo = context.user_data.pop(UNDO_KEY, None)
+    undo = user_data.pop(UNDO_KEY, None)
     if undo is None:
         return None, "Nothing to undo — I have not deleted or updated an expense yet."
     return undo, None

@@ -23,6 +23,7 @@ import budget as budget_module
 from clients import calendar_client
 import config
 import david
+from services import books, expenses
 import learn
 from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run
 
@@ -57,19 +58,19 @@ def two_pages_of_expenses(first=100, second=50, each=1.0):
 def notion_writes(monkeypatch):
     """Record what would be written to Notion, without writing it."""
     calls = []
-    monkeypatch.setattr(david, "add_Expenses",
+    monkeypatch.setattr(expenses, "add_Expenses",
                         lambda name, amount, category:
                         calls.append({"name": name, "amount": amount,
                                       "category": category}) or True)
-    monkeypatch.setattr(david, "add_New_Book",
+    monkeypatch.setattr(books, "add_New_Book",
                         lambda name, author, genre:
                         calls.append({"name": name, "author": author,
                                       "genre": genre}) or "book-id")
     # The quote path must be stubbed too, or the mid-sentence `Add q` case below
     # reaches find_Book_Page and makes a REAL request to api.notion.com — which
     # would pass for the wrong reason and break the suite's offline guarantee.
-    monkeypatch.setattr(david, "find_Book_Page", lambda book_name: "book-page-id")
-    monkeypatch.setattr(david, "add_Quote",
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: "book-page-id")
+    monkeypatch.setattr(books, "add_Quote",
                         lambda page_id, quote_title, quote_text:
                         calls.append({"quote_title": quote_title,
                                       "quote_text": quote_text}) or True)
@@ -109,7 +110,7 @@ def test_book_lookup_searches_past_the_first_page():
                   status=200, json={"results": [{"id": "found-on-page-2"}],
                                     "has_more": False, "next_cursor": None})
 
-    assert david.find_Book_Page("Dune") == "found-on-page-2"
+    assert books.find_Book_Page("Dune") == "found-on-page-2"
 
 
 # ─── BUG 2: COMMA DECIMALS AND UNANCHORED MATCHING ─────────────────────────────
@@ -191,10 +192,10 @@ def test_expense_is_dated_in_rome_not_utc(midnight_in_rome, monkeypatch):
     # Pinned so the assertion is about the DATE. The month page is cached in
     # memory only, so an unpinned first call would resolve it from Notion and put
     # a schema request in front of the page create inspected below.
-    monkeypatch.setattr(david, "current_month_id", lambda: "test-month-id")
+    monkeypatch.setattr(expenses, "current_month_id", lambda: "test-month-id")
     responses.add(responses.POST, PAGES_URL, status=200, json={"id": "new-page"})
 
-    david.add_Expenses("Late night kebab", 8.50, "Food")
+    expenses.add_Expenses("Late night kebab", 8.50, "Food")
 
     body = responses.calls[0].request.body
     sent = body.decode() if isinstance(body, bytes) else body
@@ -253,7 +254,8 @@ def test_weekdays_are_named_not_bare_integers():
     for page_lock: a guard that only looks where the bug WAS is not a guard.
     """
     root = pathlib.Path(__file__).resolve().parent.parent
-    sources = list(root.glob("*.py")) + list((root / "proactive").glob("*.py"))
+    sources = [path for directory in ("", "bot", "clients", "services", "proactive")
+               for path in sorted((root / directory).glob("*.py"))]
 
     offenders = [f"{path.name}:{line}: days=({arg})"
                  for path in sources for line, arg in _bare_weekday_integers(path)]
@@ -293,7 +295,8 @@ def test_every_constant_that_reaches_days_is_a_named_weekday():
     stops guarding.
     """
     root = pathlib.Path(__file__).resolve().parent.parent
-    sources = list(root.glob("*.py")) + list((root / "proactive").glob("*.py"))
+    sources = [path for directory in ("", "bot", "clients", "services", "proactive")
+               for path in sorted((root / directory).glob("*.py"))]
 
     names = set()
     for path in sources:

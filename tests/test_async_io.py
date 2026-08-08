@@ -38,6 +38,7 @@ import page_lock
 import pkm
 import proactive.scheduler as scheduler
 import reminder
+from services import books, expenses
 from conftest import FakeContext, FakeDocument, FakeUpdate, run
 
 
@@ -83,11 +84,22 @@ def expect(stubs: dict, *names):
 
 @pytest.fixture
 def david_stubs(monkeypatch):
-    return stub_module(monkeypatch, david, {
+    """The blocking calls one command makes, wherever they now live.
+
+    `budget` is still reached through david's namespace (the `B` command calls
+    it directly); everything else moved to services/, so the stub goes on the
+    service — which is also the module the handler resolves the name through at
+    call time.
+    """
+    stubs = stub_module(monkeypatch, david, {
         "budget":         lambda: "MOCK BUDGET",
+    })
+    stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
         "find_Book_Page": lambda book_name: "book-page-id",
         "add_Quote":      lambda page_id, quote_title, quote_text: True,
+    })
+    stubs |= stub_module(monkeypatch, expenses, {
         "add_Expenses":   lambda name, amount, category: True,
         # The destructive pair is find-then-write, and BOTH halves are blocking
         # Notion calls — the lookup is a database query, not a local decision.
@@ -95,6 +107,7 @@ def david_stubs(monkeypatch):
         "update_Expense": lambda page_id, amount, category: (True, None),
         "delete_Expense": lambda page_id: (True, None),
     })
+    return stubs
 
 
 DAVID_COMMANDS = [
@@ -132,7 +145,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     """The upload path: download, parse and both Notion calls all get offloaded."""
     responses.add(responses.GET, "https://api.telegram.org/file/bot-token/doc.pdf",
                   body=b"%PDF-1.4 fake", status=200)
-    monkeypatch.setattr(david, "extract_quote_from_pdf",
+    monkeypatch.setattr(books, "extract_quote_from_pdf",
                         lambda pdf, begin, end: ("the quote", None))
     update = FakeUpdate(
         caption="Add q Dune - On Fear - Fear is / the mind-killer",
@@ -141,7 +154,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     run(david.handle_document(update, FakeContext()))
 
     assert david_stubs["find_Book_Page"] in offloaded
-    assert david.extract_quote_from_pdf in offloaded
+    assert books.extract_quote_from_pdf in offloaded
     assert david_stubs["add_Quote"] in offloaded
     assert update.message.replied_with("Quote added")
 
@@ -516,9 +529,11 @@ def test_a_slow_command_no_longer_freezes_the_bot():
 # ─── 7. GUARDS ─────────────────────────────────────────────────────────────────
 
 OFFLOADED_FUNCTIONS = [
-    david.budget, david.add_Expenses, david.add_New_Book, david.find_Book_Page,
-    david.add_Quote, david.find_expense_matches, david.update_Expense, david.delete_Expense,
-    david.extract_quote_from_pdf,
+    david.budget,
+    expenses.add_Expenses, expenses.find_expense_matches,
+    expenses.update_Expense, expenses.delete_Expense,
+    books.add_New_Book, books.find_Book_Page, books.add_Quote,
+    books.extract_quote_from_pdf,
     learn.extract_youtube, learn.extract_article, learn.extract_pdf,
     learn.summarize_with_claude, learn.create_learn_page,
     implement.search_page_in_db, implement.get_children,

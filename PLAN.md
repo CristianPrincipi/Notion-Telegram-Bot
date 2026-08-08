@@ -81,18 +81,28 @@ registry is staying per the brief. The `_cmd_*` bodies move to `bot/`.
 
 ## Milestone 2: Stage 2 — services/expenses.py + services/books.py
 
-- [ ] `services/expenses.py` — `add_Expenses`, `find_expense_matches`, `update_Expense`,
+- [x] `services/expenses.py` — `add_Expenses`, `find_expense_matches`, `update_Expense`,
       `delete_Expense`, and the async find-choose-write cycle converted to `notify`
-- [ ] `services/books.py` — `add_New_Book`, `find_Book_Page`, `add_Quote`, `chunk_text`,
+- [x] `services/books.py` — `add_New_Book`, `find_Book_Page`, `add_Quote`, `chunk_text`,
       `extract_quote_from_pdf`, and the quote-from-PDF flow
-- [ ] `clients/telegram_files.py` — `validate_pdf_attachment` + `download_pdf_attachment`
-      (the one place that stays Telegram-aware, by definition — it downloads from Telegram)
-- [ ] `expense_safety`: `context` → `user_data` (D3)
-- [ ] `david.py` handlers become thin wrappers that build `notify` and call the service
-- [ ] Preserved verbatim: the lookup INSIDE the expense lock, `sorts=CREATED_DESC`, the
+- [x] `clients/telegram_files.py` — `validate_pdf_attachment` + `download_pdf_attachment`
+      (the one place that stays Telegram-aware, by definition — it downloads from Telegram).
+      It imports no `telegram`: `context.bot` arrives built and `file_path` is a plain URL,
+      so a service can read its constants without dragging PTB into `services/`.
+- [x] `bot/notify.py` — `for_update(update) -> (notify, notify_md)`, the one place the two
+      channels are bound
+- [x] `expense_safety`: `context` → `user_data` (D3). No test touched: the suite only ever
+      reached it through the handlers, or through `context.user_data[PENDING_KEY]`, which
+      is the same dict either way.
+- [x] `david.py` handlers become thin wrappers that build `notify` and call the service
+- [x] Preserved verbatim: the lookup INSIDE the expense lock, `sorts=CREATED_DESC`, the
       month-scoped refusal, more-than-one-match-writes-nothing, the undo snapshot taken
-      from the LOOKUP's page object, `PageBusy` → `BUSY_EXPENSE_MESSAGE`
-- [ ] green, commit, show the diff
+      from the LOOKUP's page object, `PageBusy` → `BUSY_EXPENSE_MESSAGE`, and every
+      message string
+- [x] Guard extended: a service may import `escape_md` (it builds its own Markdown, and
+      escaping belongs at the interpolation site) but NOT `telegram_text.reply` / `send`.
+      Mutation-checked on the real `services/expenses.py`.
+- [x] green (741 passed), commit
 
 ## Milestone 3: Stage 3 — learn / implement / implement_diet become services
 

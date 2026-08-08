@@ -39,6 +39,7 @@ import pytest
 
 import david
 import learn
+from services import books, expenses
 from conftest import FakeContext, FakeUpdate, run
 
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
@@ -67,8 +68,14 @@ UNINTERESTING_ARGS = {"_update", "page_id"}
 
 
 # ─── SPY LAYER ─────────────────────────────────────────────────────────────────
-# (attribute in david's namespace, positional arg names, return value, is_async)
+# (attribute name, positional arg names, return value, is_async)
 # Arg names starting with "_" are recorded then dropped — see UNINTERESTING_ARGS.
+#
+# WHERE EACH ONE IS PATCHED. A spy only works if it is installed on the module
+# whose namespace the caller resolves the name through at CALL time. The
+# handlers that used to do the work themselves live in services/ now, so the
+# book and expense calls are patched there; SPY_HOMES is that mapping, and
+# anything absent from it is still reached through david.
 
 SPY_TARGETS = [
     ("budget",           (),                                        BUDGET_TEXT,          False),
@@ -90,6 +97,16 @@ SPY_TARGETS = [
     ("update_Expense",   ("page_id", "amount", "category"),         (True, None),         False),
     ("delete_Expense",   ("page_id",),                              (True, None),         False),
 ]
+
+SPY_HOMES = {
+    "add_New_Book":         books,
+    "find_Book_Page":       books,
+    "add_Quote":            books,
+    "add_Expenses":         expenses,
+    "find_expense_matches": expenses,
+    "update_Expense":       expenses,
+    "delete_Expense":       expenses,
+}
 
 
 class Router:
@@ -121,7 +138,7 @@ class Router:
 
 @pytest.fixture
 def router(monkeypatch):
-    """Replace every side-effecting call in david.py with a recorder."""
+    """Replace every side-effecting call a command makes with a recorder."""
     spy = Router()
 
     for attr, argnames, result, is_async in SPY_TARGETS:
@@ -134,14 +151,15 @@ def router(monkeypatch):
             return record
 
         record = make()
+        home = SPY_HOMES.get(attr, david)
         if is_async:
             def as_async(record=record):
                 async def wrapper(*args, **kwargs):
                     return record(*args, **kwargs)
                 return wrapper
-            monkeypatch.setattr(david, attr, as_async())
+            monkeypatch.setattr(home, attr, as_async())
         else:
-            monkeypatch.setattr(david, attr, record)
+            monkeypatch.setattr(home, attr, record)
 
     return spy
 
@@ -649,7 +667,7 @@ def test_the_readme_lists_exactly_the_learn_types_learn_supports():
 # call behind a route fails — the other half of "did this command work?".
 
 def test_quote_reports_a_book_that_is_not_in_the_library(router, monkeypatch):
-    monkeypatch.setattr(david, "find_Book_Page", lambda book_name: None)
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: None)
     update = FakeUpdate(text="Add q Missing - Ch 1 - some text")
 
     run(david.handle_message(update, FakeContext()))
@@ -659,7 +677,7 @@ def test_quote_reports_a_book_that_is_not_in_the_library(router, monkeypatch):
 
 
 def test_book_reports_a_failed_notion_write(router, monkeypatch):
-    monkeypatch.setattr(david, "add_New_Book", lambda name, author, genre: None)
+    monkeypatch.setattr(books, "add_New_Book", lambda name, author, genre: None)
     update = FakeUpdate(text="Add b Dune - Herbert - s")
 
     run(david.handle_message(update, FakeContext()))
@@ -668,7 +686,7 @@ def test_book_reports_a_failed_notion_write(router, monkeypatch):
 
 
 def test_expense_reports_a_failed_notion_write(router, monkeypatch):
-    monkeypatch.setattr(david, "add_Expenses", lambda name, amount, category: False)
+    monkeypatch.setattr(expenses, "add_Expenses", lambda name, amount, category: False)
     update = FakeUpdate(text="Add e Carrefour 2.20")
 
     run(david.handle_message(update, FakeContext()))
@@ -683,20 +701,20 @@ def test_update_expense_distinguishes_the_three_lookup_outcomes(router, monkeypa
     found" reads as "there was nothing there anyway", which is the collapse of
     error into empty that this codebase keeps paying for.
     """
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], None))
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: ([], None))
     update = FakeUpdate(text="U e Ghost 1.00")
     run(david.handle_message(update, FakeContext()))
     assert update.message.replied_with("no expense matching 'Ghost'")
 
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
     update = FakeUpdate(text="U e Ghost 1.00")
     run(david.handle_message(update, FakeContext()))
     assert update.message.replied_with("Could not look up")
     assert not update.message.replied_with("no expense matching")
 
     # Lookup restored to one match, so the failure under test is the WRITE.
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: (ONE_MATCH, None))
-    monkeypatch.setattr(david, "update_Expense",
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: (ONE_MATCH, None))
+    monkeypatch.setattr(expenses, "update_Expense",
                         lambda page_id, amount, category: (False, "Notion 400: bad request"))
     update = FakeUpdate(text="U e Ghost 1.00")
     run(david.handle_message(update, FakeContext()))
@@ -704,20 +722,20 @@ def test_update_expense_distinguishes_the_three_lookup_outcomes(router, monkeypa
 
 
 def test_delete_expense_distinguishes_the_three_lookup_outcomes(router, monkeypatch):
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], None))
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: ([], None))
     update = FakeUpdate(text="D e Ghost")
     run(david.handle_message(update, FakeContext()))
     assert update.message.replied_with("no expense matching 'Ghost'")
 
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: ([], "Notion 502: bad gateway"))
     update = FakeUpdate(text="D e Ghost")
     run(david.handle_message(update, FakeContext()))
     assert update.message.replied_with("Could not look up")
     assert not update.message.replied_with("no expense matching")
 
     # Lookup restored to one match, so the failure under test is the WRITE.
-    monkeypatch.setattr(david, "find_expense_matches", lambda name: (ONE_MATCH, None))
-    monkeypatch.setattr(david, "delete_Expense",
+    monkeypatch.setattr(expenses, "find_expense_matches", lambda name: (ONE_MATCH, None))
+    monkeypatch.setattr(expenses, "delete_Expense",
                         lambda page_id: (False, "Notion 400: bad request"))
     update = FakeUpdate(text="D e Ghost")
     run(david.handle_message(update, FakeContext()))

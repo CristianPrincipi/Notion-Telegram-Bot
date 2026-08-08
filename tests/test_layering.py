@@ -32,6 +32,13 @@ WHAT EACH CHECK CATCHES, and why it is not redundant with the others:
   / `.reply_text(...)`   that reaches into `whatever.message.reply_text` is
                          sending, not reporting, whatever it calls its argument.
 
+  telegram_text.reply    the escape hatch the other three leave open. A service
+  / .send                MAY import escape_md — it builds its own Markdown, and
+                         escaping has to happen at the interpolation site, which
+                         is inside the service (see telegram_text.py). It may
+                         NOT import the senders that sit next to it, because
+                         those take an update and put a message on the wire.
+
   layer direction        services must not import bot, and clients must not
                          import services or bot. Without this the package names
                          are decoration: a "service" that imports a handler is
@@ -101,6 +108,21 @@ def _telegram_sends(tree: ast.AST):
                 yield node.lineno, node.func.attr
 
 
+def _imported_senders(tree: ast.AST):
+    """(line, name) for every telegram_text SENDER imported.
+
+    `escape_md` is fine and expected — a service formats its own Markdown, and
+    the escaping belongs at the interpolation site. `reply` and `send` are not:
+    they take an update or a bot and put a message on the wire, which is the one
+    thing a service must leave to its caller.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "telegram_text":
+            for alias in node.names:
+                if alias.name in ("reply", "send"):
+                    yield node.lineno, alias.name
+
+
 def layering_offences(path: pathlib.Path, forbidden_imports=("telegram",)) -> list:
     """Every way `path` breaks the rule, as readable strings."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -109,6 +131,8 @@ def layering_offences(path: pathlib.Path, forbidden_imports=("telegram",)) -> li
     for line, root in _imported_roots(tree):
         if root in forbidden_imports:
             found.append(f"{path.name}:{line}: imports {root}")
+    for line, sender in _imported_senders(tree):
+        found.append(f"{path.name}:{line}: imports telegram_text.{sender}")
     for line, func in _parameter_named(tree, "update"):
         found.append(f"{path.name}:{line}: {func}() takes `update`")
     for line, call in _telegram_sends(tree):
@@ -157,6 +181,8 @@ def test_the_services_scan_is_looking_at_real_files():
     ("def run(*, update=None):\n    pass\n",                 "takes `update`"),
     ("async def run(u):\n    await u.message.reply_text('hi')\n",
      "calls reply_text() directly"),
+    ("from telegram_text import escape_md, reply\n",  "imports telegram_text.reply"),
+    ("from telegram_text import send\n",              "imports telegram_text.send"),
 ])
 def test_the_guard_can_actually_detect_an_offender(tmp_path, source, expected):
     """A guard that cannot fail is not a guard.

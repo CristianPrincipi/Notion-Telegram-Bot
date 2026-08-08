@@ -209,7 +209,8 @@ def test_no_module_speaks_markdown_to_telegram_except_telegram_text():
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent
-    sources = list(root.glob("*.py")) + list((root / "proactive").glob("*.py"))
+    sources = [path for directory in ("", "bot", "clients", "services", "proactive")
+               for path in sorted((root / directory).glob("*.py"))]
 
     offenders = []
     for path in sources:
