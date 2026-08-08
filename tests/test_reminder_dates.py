@@ -292,7 +292,7 @@ def test_the_help_advertises_only_date_forms_the_parser_accepts(monkeypatch):
     freeze(monkeypatch, year=2026, month=1, day=15, hour=10)
     remind = next(c for c in david.COMMANDS if c.name == "Remind")
     values = {"[Name]": "Dentist", "[DD.MM.YYYY]": "12.06.2027",
-              "[DD.MM]": "12.06", "[HH.MM]": "14.30"}
+              "[DD.MM]": "12.06", "[HH.MM]": "14.30", "[HH]": "10"}
 
     for usage in remind.help.usage:
         example = usage
@@ -308,6 +308,191 @@ def test_the_help_advertises_only_date_forms_the_parser_accepts(monkeypatch):
         assert parsed, (
             f"the help advertises {example!r}, which the reminder pattern rejects")
 
-        _, err = calendar_client.parse_date_time(parsed.group(2), parsed.group(3))
+        _, err = calendar_client.parse_date_time(parsed["date"], parsed["time"])
         assert err is None, (
             f"the help advertises {example!r}, which the parser rejects: {err}")
+
+
+# ─── `t` FOR TOMORROW, AND A BARE HOUR ─────────────────────────────────────────
+# `Remind Dentist t 10` — the shorthand that gets typed in practice. Three things
+# have to give at once for it: the date token, the bare hour, and the dash.
+
+def parse_command(text):
+    """Route a whole Remind command the way handle_remind does."""
+    match = re.match(reminder.REMIND_PATTERN, text.strip())
+    if not match:
+        return None, None, "no match"
+    dt, err = calendar_client.parse_date_time(match["date"], match["time"])
+    return match["name"], dt, err
+
+
+def test_t_and_a_bare_hour_book_tomorrow_at_oclock(monkeypatch):
+    """THE REQUESTED FORM, end to end through the real pattern and parser."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
+
+    name, dt, err = parse_command("Remind Dentist t 10")
+
+    assert err is None
+    assert name == "Dentist"
+    assert (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (2026, 8, 7, 10, 0)
+
+
+@pytest.mark.parametrize("text, expected_hour, expected_minute", [
+    ("Remind Dentist t 10",        10, 0),    # the short form
+    ("Remind Dentist tomorrow 10", 10, 0),    # the long one, for anyone who forgets `t`
+    ("Remind Dentist t 10.30",     10, 30),   # shorthand date, full time
+    ("Remind Dentist t - 10",      10, 0),    # the dash still works if you type it
+    ("Remind Dentist T 10",        10, 0),    # case-insensitive like every command
+])
+def test_the_accepted_tomorrow_forms(monkeypatch, text, expected_hour, expected_minute):
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
+
+    _, dt, err = parse_command(text)
+
+    assert err is None, f"{text!r} was rejected: {err}"
+    assert (dt.day, dt.hour, dt.minute) == (7, expected_hour, expected_minute)
+
+
+def test_a_multi_word_name_still_stops_at_the_shorthand(monkeypatch):
+    """The name is non-greedy, so it has to give up exactly at the date token —
+    not at the first space, and not swallow the date."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
+
+    name, dt, err = parse_command("Remind Call the plumber t 9")
+
+    assert err is None
+    assert name == "Call the plumber"
+    assert (dt.day, dt.hour) == (7, 9)
+
+
+def test_a_bare_hour_works_with_a_full_date_too(monkeypatch):
+    """The two shorthands are independent — neither requires the other."""
+    freeze(monkeypatch, year=2026, month=1, day=15, hour=10)
+
+    _, dt, err = parse_command("Remind Dentist 12.06 14")
+
+    assert err is None
+    assert (dt.month, dt.day, dt.hour, dt.minute) == (6, 12, 14, 0)
+
+
+def test_the_long_form_is_untouched(monkeypatch):
+    """The regression that matters: the shorthand must not cost the old syntax."""
+    freeze(monkeypatch, year=2026, month=1, day=15, hour=10)
+
+    for text, expected in [("Remind Dentist 12.06 - 14.30", (2026, 6, 12, 14, 30)),
+                           ("Remind Dentist 12.06.2027 - 14.30", (2027, 6, 12, 14, 30))]:
+        _, dt, err = parse_command(text)
+        assert err is None, f"{text!r} broke: {err}"
+        assert (dt.year, dt.month, dt.day, dt.hour, dt.minute) == expected
+
+
+# ─── WHAT THE SHORTHAND MUST NOT SWALLOW ───────────────────────────────────────
+
+def test_today_does_not_silently_become_tomorrow(monkeypatch):
+    """"today" starts with a `t`, and must not be read as the shorthand.
+
+    It is rejected because the time group cannot match the "oday" the token
+    leaves behind — not by the lookahead, which was verified by removing the
+    lookahead and watching this test still pass. The case is worth pinning
+    anyway: a one-day silent error is the same shape as the year bug this
+    module was just fixed for, and the next person to touch the pattern should
+    find out here rather than in the calendar.
+    """
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    name, dt, err = parse_command("Remind Dentist today 10")
+
+    assert (name, dt) == (None, None)
+    assert err == "no match", "the `t` shorthand swallowed the start of 'today'"
+
+
+def test_a_t_inside_the_name_does_not_become_the_date(monkeypatch):
+    """THE LOOKAHEAD AFTER THE DATE, and the case that actually needs it.
+
+    Without it, `t` matches the leading letter of any t-word and the remainder
+    is skipped as separator noise. `Remind Bus t4 to town 10` then parses as
+    name "Bus", tomorrow, 04:00 — a reminder with the wrong name AND the wrong
+    time, confirmed as though it were what was asked for.
+
+    Refusing costs the run-together form (`t10` is not accepted, `t 10` is).
+    A space is one keystroke; a wrong booking is invisible.
+    """
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    name, dt, err = parse_command("Remind Bus t4 to town 10")
+
+    assert (name, dt) == (None, None)
+    assert err == "no match", "a `t` inside the name was taken as the date"
+
+
+def test_the_shorthand_needs_its_space(monkeypatch):
+    """The accepted cost of the rule above, pinned so it is a decision rather
+    than a surprise."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    assert parse_command("Remind Dentist t10")[2] == "no match"
+    assert parse_command("Remind Dentist t 10")[2] is None
+
+
+def test_a_run_together_time_is_refused_rather_than_truncated(monkeypatch):
+    """THE LOOKAHEAD AFTER THE TIME. `1030` is a typo for 10.30, and a bare-hour
+    pattern will happily match its first two digits and book 10:00 — an event
+    half an hour early, confirmed as though it were asked for."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    name, dt, err = parse_command("Remind Dentist t 1030")
+
+    assert (name, dt) == (None, None)
+    assert err == "no match", "a bare hour matched the leading digits of a typo"
+
+
+def test_a_shorthand_with_no_time_is_not_a_command(monkeypatch):
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    assert parse_command("Remind Dentist t")[2] == "no match"
+
+
+def test_an_out_of_range_bare_hour_is_reported(monkeypatch):
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+
+    dt, err = calendar_client.parse_date_time("t", "25")
+
+    assert dt is None
+    assert "Hour 0-23" in err
+
+
+# ─── THE SHORTHAND GOES THROUGH THE SAME GUARDS ────────────────────────────────
+
+def test_tomorrow_is_dst_checked_like_any_other_date(monkeypatch):
+    """29.03.2026 is the spring-forward day, so on the 28th `t 02.30` names an
+    hour that does not exist. The shorthand is a shortcut for typing a date, not
+    for skipping the checks that make a date trustworthy."""
+    freeze(monkeypatch, year=2026, month=3, day=28, hour=10)
+
+    _, dt, err = parse_command("Remind Dentist t 02.30")
+
+    assert dt is None
+    assert "doesn't exist" in err
+
+
+def test_tomorrow_is_never_in_the_past_so_it_is_never_queried(monkeypatch):
+    """Late at night, `t 00.30` is barely half an hour away — still tomorrow, and
+    still future, so the PAST_GRACE question never arises for this form."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=23, minute=50)
+
+    _, dt, err = parse_command("Remind Dentist t 00.30")
+
+    assert err is None
+    assert (dt.day, dt.hour, dt.minute) == (7, 0, 30)
+
+
+def test_the_confirmation_spells_out_the_day_the_shorthand_resolved_to(monkeypatch, calendar):
+    """`t` is terse enough to mistype or misremember, so the safeguard is the
+    confirmation the year work already added: it names the weekday and the full
+    date, which is exactly what makes a wrong day obvious at a glance."""
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
+    update = FakeUpdate(text="Remind Dentist t 10")
+
+    run(reminder.handle_remind(update, update.message.text))
+
+    assert update.message.replied_with("Friday 07 August 2026 at 10:00")

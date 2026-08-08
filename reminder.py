@@ -1,8 +1,9 @@
 """
 Reminder system for David — replaces the old Task functionality.
 
-Command:  Remind [Appointment Name] [Date] - [Time]
-Example:  Remind Dentist 12.06 - 14.30
+Command:  Remind [Appointment Name] [Date] [Time]
+Examples: Remind Dentist 12.06 - 14.30
+          Remind Dentist t 10          (tomorrow at 10:00)
 
 Google Calendar is the single source of truth. Creating a reminder makes a
 calendar event (with native Google popup alerts). A daily polling job reads the
@@ -21,14 +22,42 @@ from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from telegram_text import escape_md, reply
 from datetime import timedelta
 
-# Remind [Name] [DD.MM] - [HH.MM]   (or DD.MM.YYYY)
-# Name is non-greedy so it stops at the date; date and time are dot-separated.
+# Remind [Name] [Date] [- ][Time]
+#
+#   Remind Dentist 12.06 - 14.30      the long form
+#   Remind Dentist 12.06.2027 - 14.30 with the year spelled out
+#   Remind Dentist t 10               tomorrow at 10:00
+#
+# Name is non-greedy so it stops at the date.
 #
 # The year is OPTIONAL and is what makes the past-date refusal actionable: with
 # no year, a date inside the last day is ambiguous and calendar_client refuses to
 # guess (see PAST_GRACE), so spelling the year out is how you answer it.
-REMIND_PATTERN = (r"(?i)remind\s+(.+?)\s+(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)"
-                  r"\s*-\s*(\d{1,2}\.\d{1,2})")
+#
+# THE TWO LOOKAHEADS ARE LOAD-BEARING, not decoration. Both were checked by
+# removing them and watching a test go red, because a lookahead that guards
+# nothing is worse than none — it reads like protection.
+#
+#   after the date — the token has to END where the word does. `t` otherwise
+#     matches the leading letter of ANY word starting with t, and the rest of
+#     that word is skipped as separator noise: `Remind Bus t4 to town 10`
+#     silently becomes "Bus", tomorrow, 04:00. It costs the run-together form —
+#     `t10` is refused and `t 10` is required — and that is the right trade: a
+#     space is one keystroke, a wrong booking is invisible.
+#
+#   after the time — a bare hour must not match the leading digits of a typo,
+#     so `1030` fails the command rather than quietly booking 10:00.
+#
+# ("today" is rejected by neither of these, incidentally — the time group cannot
+# match the "oday" left behind. That is luck rather than design, so the date
+# lookahead is what the intent rests on.)
+#
+# The separator is optional because `t 10` reads naturally without one; the
+# dash still works everywhere it did before.
+REMIND_PATTERN = (r"(?i)remind\s+(?P<name>.+?)\s+"
+                  r"(?P<date>tomorrow|t|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)(?![\w.])"
+                  r"\s*(?:-\s*)?"
+                  r"(?P<time>\d{1,2}(?:\.\d{1,2})?)(?!\d)")
 
 
 def _format_conflict_warning(new_name: str, start_dt, end_dt, conflicts: list) -> str:
@@ -62,16 +91,19 @@ async def handle_remind(update, user_text: str):
         await reply(
             update,
             "📅 *Reminder usage:*\n"
-            "`Remind [Name] [Date] - [Time]`\n\n"
-            "Example: `Remind Dentist 12.06 - 14.30`\n"
-            "_Date is DD.MM, time is HH.MM in 24-hour format._\n"
+            "`Remind [Name] [Date] [Time]`\n\n"
+            "Examples:\n"
+            "`Remind Dentist 12.06 - 14.30`\n"
+            "`Remind Dentist t 10`  _(tomorrow at 10:00)_\n\n"
+            "_Date is DD.MM, or `t` for tomorrow. Time is HH.MM in 24-hour "
+            "format, or a bare hour._\n"
             "_Add the year — `12.06.2027` — to book a specific one._",
         )
         return
 
-    name      = match.group(1).strip()
-    date_str  = match.group(2).strip()
-    time_str  = match.group(3).strip()
+    name      = match["name"].strip()
+    date_str  = match["date"].strip()
+    time_str  = match["time"].strip()
 
     # Validate + parse into a Europe/Rome datetime
     start_dt, err = parse_date_time(date_str, time_str)
