@@ -496,3 +496,20 @@ def test_the_confirmation_spells_out_the_day_the_shorthand_resolved_to(monkeypat
     run(reminder.handle_remind(update, update.message.text))
 
     assert update.message.replied_with("Friday 07 August 2026 at 10:00")
+
+
+def test_a_dst_refusal_names_the_date_not_the_token(monkeypatch):
+    """`t` is a legal date token, so the message must not echo it back.
+
+    "02.30 doesn't exist on t" says nothing about WHICH night is the problem,
+    which is the only thing the message is for. It names the date the token
+    resolved to instead — which is also what makes the refusal checkable against
+    a calendar.
+    """
+    freeze(monkeypatch, year=2026, month=3, day=28, hour=10)
+
+    _, dt, err = parse_command("Remind Dentist t 02.30")
+
+    assert dt is None
+    assert "29.03.2026" in err, f"the refusal did not name the date: {err}"
+    assert "on t " not in err, f"the refusal echoed the raw token: {err}"
