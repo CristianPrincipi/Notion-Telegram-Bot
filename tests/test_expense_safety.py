@@ -315,6 +315,26 @@ def test_a_single_match_still_runs_straight_through(monkeypatch):
     assert not update.message.replied_with("Reply with a number")
 
 
+def test_the_confirmation_goes_out_as_markdown(monkeypatch):
+    """The end-to-end half of the notify-binding guard (see test_telegram_text).
+
+    `🗑️ Deleted *Coffee*` is built by services/expenses.py with the name escaped
+    at the interpolation site, so it only renders if the bot layer sent it down
+    the Markdown channel. The unit test proves for_update() returns the pair the
+    right way round; this proves the HANDLER passes them to the service in that
+    order — a swap there would put an escaped, unformatted string on the wire and
+    every text assertion in this file would still pass.
+    """
+    install(monkeypatch, [expense_row("exp-1", "Coffee", 3.0)])
+
+    update = send("D e Coffee", FakeContext())
+
+    confirmations = [kwargs for text, kwargs in update.message.replies
+                     if "Deleted" in text]
+    assert confirmations == [{"parse_mode": "Markdown"}], (
+        f"the delete confirmation was not sent as Markdown: {update.message.replies}")
+
+
 # ─── 4. UNDO ───────────────────────────────────────────────────────────────────
 
 def test_undo_restores_a_deleted_expense(monkeypatch):

@@ -182,6 +182,20 @@ change — each is the test's ADDRESS for something that moved:
   an assertion or an expected value may not. A test whose expectations would have to
   change is reported, not edited.
 
+## Milestone 6: the gap the refactor itself opened
+
+- [x] Measured, not assumed: swapping `bot/notify.py`'s two channels in memory left all
+      **741 tests passing** — every message would have gone out with the wrong parse mode
+      and CI would have stayed green. `replied_with()` reads only the text, and parse_mode
+      was asserted nowhere except the three error reporters and the scheduler.
+- [x] `test_the_two_notify_channels_are_not_interchangeable` (test_telegram_text.py) —
+      asserts the exact replies list, because the text is identical either way
+- [x] `test_the_confirmation_goes_out_as_markdown` (test_expense_safety.py) — the
+      end-to-end half, catching a HANDLER that passes the pair in the wrong order
+- [x] Both mutation-checked against the real `bot/notify.py`: red on the swap, green
+      restored, file byte-identical afterwards
+- [x] 741 -> **743 passed**, ruff clean
+
 ## Noticed, not fixed
 
 Seen while moving code, deliberately left alone — a fix hidden inside a refactor is a

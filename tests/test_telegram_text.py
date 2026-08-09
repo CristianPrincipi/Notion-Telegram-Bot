@@ -11,6 +11,7 @@ import pytest
 from telegram.error import BadRequest
 
 import telegram_text
+from bot.notify import for_update
 from telegram_text import escape_md, reply, send
 from conftest import FakeUpdate, run
 
@@ -171,6 +172,37 @@ def test_the_module_exposes_only_the_intended_surface():
     assert callable(telegram_text.escape_md)
     assert callable(telegram_text.reply)
     assert callable(telegram_text.send)
+
+
+# ─── THE BINDING: bot/notify.py ────────────────────────────────────────────────
+#
+# A service reports through `notify` (plain) and `notify_md` (Markdown), and
+# bot/notify.py is the single place those two names are attached to a message.
+# Which one is which is invisible to every other test in the suite: the fakes
+# record the text and `replied_with` only reads the text, so swapping the pair
+# changes the parse mode of EVERY message David sends and turns nothing red.
+#
+# That was measured, not assumed — the channels were swapped in memory and all
+# 741 tests still passed. In production the same swap is not silent at all: it
+# is confirmations arriving unformatted, and `Uber\*airport` with the backslash
+# showing. These two tests are the only thing standing between those.
+
+def test_the_two_notify_channels_are_not_interchangeable():
+    """Plain must be plain and Markdown must carry parse_mode.
+
+    Asserted on the exact replies list rather than on the text, because the text
+    is identical either way — the parse mode is the entire difference.
+    """
+    update = FakeUpdate(text="irrelevant")
+
+    notify, notify_md = for_update(update)
+    run(notify("plain"))
+    run(notify_md("*bold*"))
+
+    assert update.message.replies == [
+        ("plain",   {}),
+        ("*bold*",  {"parse_mode": "Markdown"}),
+    ]
 
 
 # ─── the architectural guard ───────────────────────────────────────────────────
