@@ -27,7 +27,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import bot.commands
+import bot.implement
+import bot.learn
 import david
+from services import books, expenses
 import expense_safety
 import page_lock
 from conftest import EXPENSES_ID, FakeContext, FakeUpdate, run
@@ -95,11 +99,11 @@ class FakeNotion:
 
 def install(monkeypatch, rows, month_id=MONTH_PAGE):
     fake = FakeNotion(rows)
-    monkeypatch.setattr(david, "query_database", fake.query_database)
-    monkeypatch.setattr(david, "notion_request", fake.notion_request)
-    monkeypatch.setattr(david, "set_archived", fake.set_archived)
-    monkeypatch.setattr(david, "update_page", fake.update_page)
-    monkeypatch.setattr(david, "current_month_id", lambda: month_id)
+    monkeypatch.setattr(expenses, "query_database", fake.query_database)
+    monkeypatch.setattr(expenses, "notion_request", fake.notion_request)
+    monkeypatch.setattr(expenses, "set_archived", fake.set_archived)
+    monkeypatch.setattr(expenses, "update_page", fake.update_page)
+    monkeypatch.setattr(expenses, "current_month_id", lambda: month_id)
     return fake
 
 
@@ -135,9 +139,9 @@ def test_the_book_lookup_is_sorted_too(monkeypatch):
         captured["sorts"] = sorts
         return [{"id": "book-1"}], None
 
-    monkeypatch.setattr(david, "query_database", query_database)
+    monkeypatch.setattr(books, "query_database", query_database)
 
-    david.find_Book_Page("Dune")
+    books.find_Book_Page("Dune")
 
     assert captured["sorts"] == [{"timestamp": "created_time", "direction": "descending"}]
 
@@ -154,7 +158,7 @@ def test_the_lookup_is_confined_to_the_current_month(monkeypatch):
     assert db_id == EXPENSES_ID
     conditions = filter_obj["and"]
     assert {"property": "Name", "title": {"contains": "Coffee"}} in conditions
-    assert {"property": david.EXPENSE_MONTH_RELATION,
+    assert {"property": expenses.EXPENSE_MONTH_RELATION,
             "relation": {"contains": MONTH_PAGE}} in conditions
 
 
@@ -181,8 +185,8 @@ def test_a_failed_lookup_is_not_reported_as_nothing_found(monkeypatch):
     reactions — retry versus stop looking — so they must not produce the same
     message.
     """
-    monkeypatch.setattr(david, "current_month_id", lambda: MONTH_PAGE)
-    monkeypatch.setattr(david, "query_database",
+    monkeypatch.setattr(expenses, "current_month_id", lambda: MONTH_PAGE)
+    monkeypatch.setattr(expenses, "query_database",
                         lambda *a, **kw: ([], "Notion 502: bad gateway"))
 
     update = send("D e Coffee", FakeContext())
@@ -311,6 +315,26 @@ def test_a_single_match_still_runs_straight_through(monkeypatch):
     assert not update.message.replied_with("Reply with a number")
 
 
+def test_the_confirmation_goes_out_as_markdown(monkeypatch):
+    """The end-to-end half of the notify-binding guard (see test_telegram_text).
+
+    `🗑️ Deleted *Coffee*` is built by services/expenses.py with the name escaped
+    at the interpolation site, so it only renders if the bot layer sent it down
+    the Markdown channel. The unit test proves for_update() returns the pair the
+    right way round; this proves the HANDLER passes them to the service in that
+    order — a swap there would put an escaped, unformatted string on the wire and
+    every text assertion in this file would still pass.
+    """
+    install(monkeypatch, [expense_row("exp-1", "Coffee", 3.0)])
+
+    update = send("D e Coffee", FakeContext())
+
+    confirmations = [kwargs for text, kwargs in update.message.replies
+                     if "Deleted" in text]
+    assert confirmations == [{"parse_mode": "Markdown"}], (
+        f"the delete confirmation was not sent as Markdown: {update.message.replies}")
+
+
 # ─── 4. UNDO ───────────────────────────────────────────────────────────────────
 
 def test_undo_restores_a_deleted_expense(monkeypatch):
@@ -390,12 +414,12 @@ def test_a_failed_undo_stays_available(monkeypatch):
     context = FakeContext()
 
     send("D e Coffee", context)
-    monkeypatch.setattr(david, "set_archived", lambda pid, archived: (False, "Notion 502"))
+    monkeypatch.setattr(expenses, "set_archived", lambda pid, archived: (False, "Notion 502"))
 
     first = send("undo", context)
     assert first.message.replied_with("Could not undo")
 
-    monkeypatch.setattr(david, "set_archived", fake.set_archived)
+    monkeypatch.setattr(expenses, "set_archived", fake.set_archived)
     second = send("undo", context)
     assert second.message.replied_with("Restored")
 
@@ -438,7 +462,7 @@ def test_a_pending_list_does_not_swallow_other_commands(monkeypatch):
     context = FakeContext()
 
     send("D e Coffee", context)
-    monkeypatch.setattr(david, "budget", lambda: "MOCK BUDGET")
+    monkeypatch.setattr(bot.commands, "budget", lambda: "MOCK BUDGET")
     update = send("B", context)
 
     assert update.message.replied_with("MOCK BUDGET")

@@ -32,7 +32,7 @@ import asyncio
 from config import EXPENSE_MONTH_RELATION
 from month import canonical_title, current_month_id
 from telegram_text import escape_md, reply
-from notion_client import (
+from clients.notion_client import (
     NOTION_BASE, notion_request, extract_rich_text, get_database, get_page_title,
 )
 

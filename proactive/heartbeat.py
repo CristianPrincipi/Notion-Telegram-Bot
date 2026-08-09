@@ -21,9 +21,9 @@ The report is PLAIN TEXT. It is diagnostics, and it exists to be readable when
 things are broken — it must not be able to fail on formatting.
 """
 
-from calendar_client import get_events_for_day, now_local
+from clients.calendar_client import get_events_for_day, now_local
 from month import canonical_title, current_month_id
-from notion_client import get_database
+from clients.notion_client import get_database
 from observability import snapshot
 
 EXPENSES_ID_MISSING = "EXPENSES_ID is not set"

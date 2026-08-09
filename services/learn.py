@@ -4,17 +4,17 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-from anthropic_client import complete_json
+from clients.anthropic_client import complete_json
 from config import (
     ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, LEARN_TYPES,
     PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
 )
-from notion_client import (
+from clients.notion_client import (
     create_page,
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
     quote as _quote, bullet as _bullet, divider as _divider,
 )
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 
 # ─── CONTENT TYPES ─────────────────────────────────────────────────────────────
 # The types, their icons and their target databases are declared once, in
@@ -27,7 +27,7 @@ SUPPORTED_TYPES = list(LEARN_TYPES)
 
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
 # Everything from here to the end of section 4 is SYNCHRONOUS and blocking —
-# HTTP requests and PyPDF2 parsing. handle_learn calls all of it through
+# HTTP requests and PyPDF2 parsing. run_learn calls all of it through
 # asyncio.to_thread; none of it may be awaited directly from the event loop.
 
 def extract_youtube(url: str) -> tuple[str | None, str | None]:
@@ -242,9 +242,10 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict],
 
 # ─── 5. MAIN HANDLER ───────────────────────────────────────────────────────────
 
-async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
+async def run_learn(user_text: str, file_bytes: bytes | None = None,
+                    *, notify, notify_md=None):
     """
-    Entry point called from david.py handle_message.
+    Entry point. `bot/learn.py` binds the callbacks; nothing here sends.
 
     Supported commands:
       Learn video   https://youtube.com/watch?v=...
@@ -253,13 +254,12 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
       Learn book    Atomic Habits          ← summarised from Claude's knowledge
       Learn pdf     <send a PDF file>      ← attach file, send "Learn pdf" as caption
     """
+    notify_md = notify_md or notify
 
     # ── Parse command ──────────────────────────────────────────────────────────
     match = re.match(r"(?i)learn\s+(\w+)(?:\s+(.+))?", user_text.strip())
     if not match:
-        await reply(
-            update,
-            "📚 *Learn command usage:*\n"
+        await notify_md("📚 *Learn command usage:*\n"
             "• `Learn video https://youtu.be/...`\n"
             "• `Learn article https://...`\n"
             "• `Learn podcast https://...`\n"
@@ -274,14 +274,12 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     if content_type not in SUPPORTED_TYPES:
         # content_type comes from a \w+ group, so it cannot contain a backtick and
         # is safe inside the code span.
-        await reply(
-            update,
-            f"❌ Unknown type `{content_type}`. Supported: {', '.join(SUPPORTED_TYPES)}",
+        await notify_md(f"❌ Unknown type `{content_type}`. Supported: {', '.join(SUPPORTED_TYPES)}",
         )
         return
 
     # ── Extract raw text ───────────────────────────────────────────────────────
-    await update.message.reply_text(f"⏳ Fetching {content_type}…")
+    await notify(f"⏳ Fetching {content_type}…")
 
     text    = ""
     title   = ""
@@ -289,7 +287,7 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
 
     if content_type == "video":
         if not source.startswith("http"):
-            await update.message.reply_text("❌ Please provide a YouTube URL.")
+            await notify("❌ Please provide a YouTube URL.")
             return
         try:
             text, err = await asyncio.wait_for(
@@ -297,19 +295,19 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
                 timeout=SOURCE_FETCH_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            await update.message.reply_text(
+            await notify(
                 f"❌ Fetching the transcript timed out after {SOURCE_FETCH_TIMEOUT}s.\n"
                 "Supadata may be slow or down — try again in a minute."
             )
             return
         if err:
-            await update.message.reply_text(f"❌ Could not get transcript: {err}\n\nTip: paste the transcript manually.")
+            await notify(f"❌ Could not get transcript: {err}\n\nTip: paste the transcript manually.")
             return
         title = source
 
     elif content_type in ("article", "podcast"):
         if not source.startswith("http"):
-            await update.message.reply_text("❌ Please provide a URL.")
+            await notify("❌ Please provide a URL.")
             return
         # The newspaper3k branch of extract_article calls download() with no
         # timeout of its own, so this outer cap is the only bound on it.
@@ -319,13 +317,13 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
                 timeout=SOURCE_FETCH_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            await update.message.reply_text(
+            await notify(
                 f"❌ Fetching that page timed out after {SOURCE_FETCH_TIMEOUT}s.\n"
                 "The site may be slow or blocking us."
             )
             return
         if err:
-            await update.message.reply_text(f"❌ Could not extract content: {err}")
+            await notify(f"❌ Could not extract content: {err}")
             return
         text   = result["text"]
         title  = result["title"]
@@ -333,16 +331,16 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
 
     elif content_type == "book":
         if not source:
-            await reply(update, "❌ Provide the book title: `Learn book Atomic Habits`")
+            await notify_md("❌ Provide the book title: `Learn book Atomic Habits`")
             return
         # No scraping needed — Claude summarises from its own knowledge
         text  = f"Please summarise the book: {source}"
         title = source
-        await update.message.reply_text("📖 Summarising from knowledge base…")
+        await notify("📖 Summarising from knowledge base…")
 
     elif content_type == "pdf":
         if file_bytes is None:
-            await reply(update, "❌ Attach a PDF file and use `Learn pdf` as the *caption*.")
+            await notify_md("❌ Attach a PDF file and use `Learn pdf` as the *caption*.")
             return
         # PyPDF2 walks every page; on a long book that is seconds to minutes of
         # pure CPU, which would pin the event loop just as hard as a network call.
@@ -352,22 +350,22 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
                 timeout=PDF_PARSE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            await update.message.reply_text(
+            await notify(
                 f"❌ Reading that PDF timed out after {PDF_PARSE_TIMEOUT}s.\n"
                 "Try a shorter document."
             )
             return
         if err:
-            await update.message.reply_text(f"❌ Could not read PDF: {err}")
+            await notify(f"❌ Could not read PDF: {err}")
             return
         title = source or "PDF Document"
 
     if not text:
-        await update.message.reply_text("❌ No content could be extracted.")
+        await notify("❌ No content could be extracted.")
         return
 
     # ── Claude summarization ───────────────────────────────────────────────────
-    await update.message.reply_text("🧠 Claude is reading and summarising…")
+    await notify("🧠 Claude is reading and summarising…")
 
     # THE call this whole change exists for: a long transcript can hold Claude
     # for minutes, and until now that froze every other command and every
@@ -378,13 +376,13 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
             timeout=ANTHROPIC_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        await update.message.reply_text(
+        await notify(
             f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
             "Nothing was saved — try again, or use a shorter source."
         )
         return
     if err:
-        await update.message.reply_text(f"❌ Summarization failed: {err}")
+        await notify(f"❌ Summarization failed: {err}")
         return
 
     final_title  = summary.get("title") or title or source[:80]
@@ -394,7 +392,7 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
     blocks = build_notion_blocks(summary, source)
 
     # ── Save to Notion ─────────────────────────────────────────────────────────
-    await update.message.reply_text("📝 Saving to Notion…")
+    await notify("📝 Saving to Notion…")
 
     # No wait_for: this WRITES. A wait_for cannot cancel the worker thread, so
     # timing out here would report failure while the page was still being
@@ -410,11 +408,9 @@ async def handle_learn(update, user_text: str, file_bytes: bytes | None = None):
         # both are escaped — a title with an underscore used to lose the whole
         # confirmation even though the page had been written.
         tldr_preview = summary.get("tldr", "")[:220]
-        await reply(
-            update,
-            f"✅ Saved to Notion!\n\n"
+        await notify_md(f"✅ Saved to Notion!\n\n"
             f"{_emoji(content_type)} *{escape_md(final_title)}*\n\n"
             f"💡 {escape_md(tldr_preview)}",
         )
     else:
-        await update.message.reply_text(f"❌ Could not save to Notion: {result}")
+        await notify(f"❌ Could not save to Notion: {result}")

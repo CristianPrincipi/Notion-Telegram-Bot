@@ -14,7 +14,7 @@ events — so reminders survive Railway restarts (nothing is held in memory).
 import asyncio
 import re
 
-from calendar_client import (
+from clients.calendar_client import (
     parse_date_time, create_event, now_local,
     find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )

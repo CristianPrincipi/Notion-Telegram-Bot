@@ -29,7 +29,7 @@ are kept apart all the way to the text.
 
 from datetime import timedelta
 
-from calendar_client import get_events_for_day, now_local
+from clients.calendar_client import get_events_for_day, now_local
 from budget import compute_budget
 
 

@@ -1,108 +1,232 @@
-# Plan: Diet routing/merge split (F-24) + reminder year rollover (F-17)
-_Last updated: 2026-08-07_
+# Plan: separate business logic from the Telegram transport layer
 
-Branch: `diet-routing`, off `main` at `54f65e3`. Two commits.
-Baseline before any change: **668 passed**, `ruff check .` clean.
+_Last updated: 2026-08-08_
 
-## Decision: routing stays on `config.ANTHROPIC_MODEL`
+Branch: `layering`, off `main` at `56ae2bf`.
+Baseline before any change: **727 passed**, `ruff check .` clean.
 
-Measured, not assumed. Routing input is ~1,375 tokens (the 66 paths are ~525 of it;
-the summary is the other ~850), so it is not the few-hundred-token call the cheap-model
-idea assumes. Haiku would save ~$0.004/run against a split that already saves ~$0.010/run.
-Against that: a routing miss is SILENT (the section is never fetched, never merged, never
-written, and the confirmation still reports success), the spend guard bills every model at
-flat Sonnet rates so the saving would not even register, and `implement.route_sections`
-routes on the default model — diverging only for Diet means two answers, no measurement.
-`complete_json` already takes `model=`, so this is reversible behind a recall benchmark.
+**This is a pure refactor. Zero behaviour change.** Anything that looks like a bug
+gets written down under `## Noticed, not fixed` and shipped in a separate PR.
 
-## Milestone 1: split routing from merging (F-24) — commit 1
+## Target structure
 
-### The shape change
+```
+bot/        thin Telegram adapters — parse input, call a service, format the reply
+services/   business logic — pure, testable, NO telegram imports
+clients/    notion, calendar, anthropic, telegram file download
+config.py   constants + validation (stays where it is)
+david.py    stays at the repo root — Procfile runs `python david.py`
+```
 
-- [x] `read_diet_tree` → `read_diet_structure(page_id) -> (tree, block_map, error)`.
-      Renamed because it no longer reads content, and a function named "tree" that
-      returns no content is the kind of name that misleads the next reader.
-- [x] Normalise the tree to ONE node shape at every level: every node is a dict of its
-      children, a leaf is `{}`. No more `str` for a leaf H2 and `dict` for an H2 with H3s.
-- [x] Structure read covers levels 1-3 only. Level 4 (H3 leaf content, ~45 of the ~67
-      requests) becomes lazy — fetched after routing, for affected paths only.
-- [x] Content is NEVER carried in the structure. A `""` that might mean "empty" or might
-      mean "not fetched yet" is the empty-vs-unknown collapse this module already paid for
-      once (`_children_of_many`). The structure does not claim to know content at all.
-- [x] `read_section_contents(paths, block_map) -> ({path: content}, error)` — explicit,
-      for a known set of paths, errors propagate (any failure fails the whole fetch).
+## The decisive rule
 
-### The two calls
+> Nothing under `services/` may import `telegram`, and no service function may take
+> `update` as a parameter.
 
-- [x] `route_sections(paths, summary_text, summary_title)` — the taxonomy (content-bearing
-      paths only: H3s and leaf H2s, NOT H1 containers or H2s that hold H3s, which cannot
-      take content) plus the summary. Returns the affected paths.
-- [x] `merge_sections(targets, summary_text, summary_title)` — only the routed sections'
-      content plus the summary. Returns the same `updates` shape `apply_updates` already
-      takes, so the write path is untouched.
-- [x] Both through `anthropic_client.complete_json`, both under `ANTHROPIC_TIMEOUT` via
-      `asyncio.to_thread`, matching every other Claude call in the codebase.
-- [x] `apply_updates` UNCHANGED: append-then-delete ordering and the merge/replace
-      unification from the safe-writes work are not touched. `tests/test_safe_writes.py`
-      is the proof and must stay green without edits.
+Enforced mechanically by `tests/test_layering.py` (added in Stage 1, before there is
+anything under `services/` to break it) — an ast walk over every file in `services/`
+that fails on `import telegram`, `from telegram…`, any parameter named `update`, and
+any attribute chain reaching `message.reply_text`. It carries its own
+can-this-guard-actually-fail test, the way `test_telegram_text` and
+`test_data_integrity` already do — a guard that cannot go red is not a guard.
 
-### No silent drops
+## Decisions taken before writing code
 
-- [x] Every stage that can lose a path REPORTS it: a routed path not in `block_map`
-      (hallucinated), a path whose content read failed, a path routing named that merge
-      declined to return. None of these may vanish into a success message.
-- [x] Fix the skipped-paths report: currently `skipped[:8]` with no total, so beyond eight
-      the rest are silently invisible. Show the total and an explicit "+N more".
-- [x] TEST: a summary that legitimately touches several sections — assert every routed
-      path survives into the merge payload and into the write.
-- [x] TEST: the routing payload contains the paths and NO section content.
-- [x] Report before/after token counts — re-measured through the SHIPPED prompt builders:
-      23,346 -> 9,893 chars (**58% fewer**), ~5,836 -> ~2,473 est. tokens, $0.0175 -> $0.0074
-      input per run. Notion reads for the page: 67 -> 25.
+**D1 — the clients keep their filenames.** `git mv notion_client.py
+clients/notion_client.py`, not `clients/notion.py`. A rename inside a move makes the
+diff a delete-plus-add for the reader even when git records it, and `notion_client`
+also happens to be a real PyPI package name — moving it into a package removes a
+shadowing hazard rather than creating a naming question.
 
-## Milestone 2: reminder year rollover (F-17) — commit 2
+**D2 — the notify contract carries two channels, not one.** The stated signature is
+`notify: Callable[[str], Awaitable[None]]`. The services being extracted send BOTH
+plain messages (`update.message.reply_text`) and Markdown ones
+(`telegram_text.reply`, which escapes at the interpolation site and retries plain on
+`BadRequest`). Collapsing those into one callback changes behaviour in one direction
+or the other, so services take:
 
-- [x] `parse_date_time`: roll to year+1 ONLY when the parsed datetime is more than
-      `PAST_GRACE` (24h) in the past. Inside that window, return an error asking for
-      confirmation instead of guessing — the 10:00-for-a-09:00-meeting case that currently
-      books August 2027 and looks normal.
-- [x] Make the year prominent in the confirmation (`reminder.handle_remind`).
-- [x] `TIMEZONE.localize(..., is_dst=None)` so a nonexistent (spring-forward) or ambiguous
-      (fall-back) local time raises instead of being silently shifted. Handle
-      `NonExistentTimeError` and `AmbiguousTimeError` separately, each with a message that
-      says what to send instead. Applies to the year+1 branch too.
-- [x] Comment on the pytz → zoneinfo migration. **Written accurately**: zoneinfo does NOT
-      raise on these times, it resolves them via `fold`. What it removes is the
-      `localize()` footgun itself (tzinfo attaches at construction, arithmetic is
-      DST-aware). Detecting nonexistent/ambiguous times there still needs an explicit
-      fold-offset comparison. Saying "handles it natively" without that caveat would
-      mislead whoever does the migration.
-- [x] Tests per case: inside the grace window, outside it, the boundary either side,
-      explicit year (future, past, two-digit), nonexistent time, ambiguous time, an
-      ordinary time unaffected, the rollover DST-checked, 29.02 into a non-leap year,
-      and the confirmation's year. Mutation-checked: reverting PAST_GRACE turns 3 red,
-      reverting is_dst=None turns 3 red.
-- [x] ADDED, not in the ticket: an optional year in the command (`DD.MM.YYYY`). Without
-      it the refusal is a dead end — "confirm rather than guess" needs a way to answer,
-      and re-sending the same bare date just hits the same refusal. Documented in the
-      README row and the usage message.
+```python
+async def run_x(..., *, notify, notify_md=None)   # notify_md defaults to notify
+```
 
-## Open questions
+`notify` is the plain channel and the only required one — a test passes `list.append`,
+a job passes `logger.info`, and everything arrives as text. `notify_md` is what the bot
+layer binds to `telegram_text.reply` so today's Markdown messages stay Markdown. See
+the question raised for you below.
 
-- `implement.apply_section_updates` has the SAME `skipped[:8]` truncation. Out of scope
-  for F-24 (this ticket names implement_diet), so it is flagged here, not changed.
-- The summary is sent twice after the split — once to route, once to merge. That is why
-  the saving is ~56% and not ~90%. Unavoidable without a summary-caching scheme that is
-  not worth its complexity at this volume.
-- The `[:30000]` tree slice disappears with the split rather than being raised. On the
-  measured page the tree JSON is already 19,921 chars; ~1.5x more content per section
-  would have started silently truncating the tail of the page out of the prompt.
+**D3 — services receive `user_data`, not `context`.** The expense state machine reads
+`context.user_data` and nothing else off the PTB context. `expense_safety`'s functions
+change parameter `context` → `user_data` (mechanical; it already imports no telegram),
+and the bot layer passes `context.user_data`. `context.application.create_task`
+(`run_detached`) stays in the bot layer, where it belongs.
+
+**D4 — `handle_message` stays in `david.py`.** It IS the dispatch loop, and the
+registry is staying per the brief. The `_cmd_*` bodies move to `bot/`.
+
+## Milestone 1: Stage 1 — directory structure + clients
+
+- [x] `clients/__init__.py`, `services/__init__.py`, `bot/__init__.py`
+- [x] `git mv` notion_client.py / calendar_client.py / anthropic_client.py into `clients/`
+- [x] Update every import site (david, budget, month, learn, implement, implement_diet,
+      pkm, reminder, notion_ids, expense_safety, proactive/*) and the test imports —
+      24 lines, no other change
+- [x] `tests/test_layering.py` — the mechanical guard: `import telegram`, a parameter
+      named `update`, a direct `reply_text`/`send_message`, and the layer direction.
+      Mutation-checked by dropping a real offender into `services/` and watching
+      `test_no_service_touches_telegram` name all three offences, then go green again.
+      Carries its own offender test (6 rows) and a positive control against david.py.
+- [x] Verify the entry point: `python david.py` reaches "🤖 David online!" under a fake
+      environment, so the Procfile is unchanged and correct
+- [x] `ruff check .` + `pytest` green (739 passed), commit
+
+## Milestone 2: Stage 2 — services/expenses.py + services/books.py
+
+- [x] `services/expenses.py` — `add_Expenses`, `find_expense_matches`, `update_Expense`,
+      `delete_Expense`, and the async find-choose-write cycle converted to `notify`
+- [x] `services/books.py` — `add_New_Book`, `find_Book_Page`, `add_Quote`, `chunk_text`,
+      `extract_quote_from_pdf`, and the quote-from-PDF flow
+- [x] `clients/telegram_files.py` — `validate_pdf_attachment` + `download_pdf_attachment`
+      (the one place that stays Telegram-aware, by definition — it downloads from Telegram).
+      It imports no `telegram`: `context.bot` arrives built and `file_path` is a plain URL,
+      so a service can read its constants without dragging PTB into `services/`.
+- [x] `bot/notify.py` — `for_update(update) -> (notify, notify_md)`, the one place the two
+      channels are bound
+- [x] `expense_safety`: `context` → `user_data` (D3). No test touched: the suite only ever
+      reached it through the handlers, or through `context.user_data[PENDING_KEY]`, which
+      is the same dict either way.
+- [x] `david.py` handlers become thin wrappers that build `notify` and call the service
+- [x] Preserved verbatim: the lookup INSIDE the expense lock, `sorts=CREATED_DESC`, the
+      month-scoped refusal, more-than-one-match-writes-nothing, the undo snapshot taken
+      from the LOOKUP's page object, `PageBusy` → `BUSY_EXPENSE_MESSAGE`, and every
+      message string
+- [x] Guard extended: a service may import `escape_md` (it builds its own Markdown, and
+      escaping belongs at the interpolation site) but NOT `telegram_text.reply` / `send`.
+      Mutation-checked on the real `services/expenses.py`.
+- [x] green (741 passed), commit
+
+## Milestone 3: Stage 3 — learn / implement / implement_diet become services
+
+- [x] `git mv learn.py services/learn.py`; every `update.message.reply_text` → `notify`,
+      every `reply(update, …)` → `notify_md`. `handle_learn` → `run_learn`.
+- [x] `git mv implement.py services/implement.py`, same conversion. `handle_implement` →
+      `run_implement`, and `_first_run` / `_sectioned_run` take the pair too.
+- [x] `git mv implement_diet.py services/implement_diet.py`, same conversion.
+      `handle_implement_diet` → `run_implement_diet`.
+- [x] `bot/learn.py` (also owns the `Learn pdf` upload, which needs a `context.bot`),
+      `bot/implement.py`. Both keep the `handle_*` names david already called, so the
+      router spies did not move.
+- [x] Preserved verbatim: append-then-delete ordering, the page locks and their refusal
+      messages, `asyncio.wait_for` on reads only, the section-routing split. Verified by
+      diffing every string literal in the three files before and after: **zero** changed.
+- [x] `tests/conftest.py` grows `with_update(update)` — the notify kwargs, built by calling
+      `bot.notify.for_update` itself rather than a reimplementation, so a test cannot pass
+      against a binding production does not use
+- [x] green (741 passed), commit
+
+## Milestone 4: Stage 4 — reduce david.py
+
+- [x] `bot/tasks.py` (`run_detached`), `bot/expenses.py` (+ the `AMOUNT` grammar and its
+      parser), `bot/books.py`, `bot/commands.py` (the delegators whose feature module still
+      takes `update`), `bot/documents.py` (the caption router), and the `cmd_*` entries in
+      `bot/learn.py` / `bot/implement.py`
+- [x] `david.py` keeps: `__main__` bootstrap, `COMMANDS` + `handle_message`, `build_help`
+      (+ `cmd_help`, which renders the registry — moving it would make `bot/` import
+      `david`, a cycle), `register_jobs`, `register_handlers`, the owner filter,
+      `on_error` / `notify_error`. **1504 → 628 lines.**
+- [x] `concurrent_updates` still absent (`test_async_io` inspects david's source)
+- [x] green (741 passed), commit
+
+## Milestone 5: documentation
+
+- [x] CLAUDE.md: a new "The layers" section (the rule, the arrows, the notify contract),
+      the module map rewritten for `bot/` `services/` `clients/`, every moved-file
+      reference updated, the Testing section extended with SPY_HOMES and the widened
+      source scans, and a "Left by the layering split, deliberately" block under Open
+      questions
+- [x] README: a Layout section and the moved-file references
+- [x] `## Noticed, not fixed` written up (below, and in CLAUDE.md's Open questions)
+
+## Test edits this refactor forces
+
+"Every existing test must pass unmodified except for import paths" holds for most of
+the suite. Four places need more than an import line, and none of them is an assertion
+change — each is the test's ADDRESS for something that moved:
+
+1. **`monkeypatch` / spy targets.** `tests/test_router.py::SPY_TARGETS` patches
+   `david.add_Expenses` etc., and works today only because david's handlers resolve
+   those names through david's own namespace. Once a handler lives in `bot/expenses.py`
+   the patch has to name `services.expenses.add_Expenses`. Same for `test_async_io`'s
+   `stub_module(monkeypatch, david, …)`.
+2. **Source-scanning globs.** `test_telegram_text`, `test_data_integrity` (twice) and
+   `test_concurrency` scan `root.glob("*.py") + (root/"proactive").glob("*.py")`. Moved
+   files silently drop OUT of those scans — the guards would keep passing while covering
+   less. They get widened to the new packages, which strengthens them.
+3. **`test_concurrency.LOCKING_MODULES`.** A hardcoded list of filenames that the test
+   below it asserts is exhaustive. The filenames change.
+4. **Handlers called directly.** `test_async_io` calls `learn.handle_learn(update, text)`.
+   After Stage 3 that call goes to the bot wrapper, which passes
+   `update.message.reply_text` as `notify` — so every `replied_with(...)` assertion in
+   those tests stays true, unedited.
+
+## Answered before Stage 1 started
+
+- **Q1 — how far does `services/` go?** → **Exactly the four stages.** `month.py`,
+  `budget.py`, `pkm.py`, `reminder.py`, `notion_ids.py`, `expense_safety.py`,
+  `telegram_text.py`, `page_lock.py`, `observability.py` and `proactive/` stay at the
+  repo root. Four of them (`month`, `pkm`, `reminder`, `notion_ids`) still take
+  `update` and reply directly; that is follow-up work, recorded under
+  `## Noticed, not fixed`, not silently left out.
+- **Q2 — the notify contract.** → **D2 as written**: `notify` plain and required,
+  `notify_md` optional and defaulting to it.
+- **Q3 — the test edits.** → **Mechanical only.** Addresses and glob roots may move;
+  an assertion or an expected value may not. A test whose expectations would have to
+  change is reported, not edited.
+
+## Milestone 6: the gap the refactor itself opened
+
+- [x] Measured, not assumed: swapping `bot/notify.py`'s two channels in memory left all
+      **741 tests passing** — every message would have gone out with the wrong parse mode
+      and CI would have stayed green. `replied_with()` reads only the text, and parse_mode
+      was asserted nowhere except the three error reporters and the scheduler.
+- [x] `test_the_two_notify_channels_are_not_interchangeable` (test_telegram_text.py) —
+      asserts the exact replies list, because the text is identical either way
+- [x] `test_the_confirmation_goes_out_as_markdown` (test_expense_safety.py) — the
+      end-to-end half, catching a HANDLER that passes the pair in the wrong order
+- [x] Both mutation-checked against the real `bot/notify.py`: red on the swap, green
+      restored, file byte-identical afterwards
+- [x] 741 -> **743 passed**, ruff clean
+
+## Noticed, not fixed
+
+Seen while moving code, deliberately left alone — a fix hidden inside a refactor is a
+fix nobody reviewed. Also recorded in CLAUDE.md's Open questions so it survives this
+file.
+
+1. **Five modules never got the treatment.** `month.py`, `budget.py`, `pkm.py`,
+   `reminder.py`, `notion_ids.py`. All but `budget.py` still take `update` and reply
+   themselves, so none of them can be driven from a job or tested without a fake
+   Update — the same welding this PR removed everywhere else. `bot/commands.py` holds
+   their one-line adapters in the meantime. Scoped out by Q1.
+2. **`escape_md` drags PTB into `services/`.** Correct that a service escapes at the
+   interpolation site; awkward that the function lives in a module importing
+   `telegram.error`. The guard permits it by name. A telegram-free `text` module would
+   close it and touch every call site.
+3. **The PDF parse cap is named after the download** (`DOWNLOAD_TIMEOUT_SECONDS` bounds
+   `extract_quote_from_pdf`). Right duration, wrong name; kept as one live value.
+4. **`LEARN_ID` / `DIET_ID` / `BRAIN_ID` / `FINANCE_ID` in david.py have no reader** and
+   predate this work. Left with `DATABASE_ID`.
+5. **`test_a_slow_command_no_longer_freezes_the_bot` can HANG the suite instead of
+   failing it** — its watcher spins on `while not in_flight.is_set()` with no timeout, so
+   a stall that never starts (a mis-targeted patch, which is what happened in Stage 4)
+   means pytest never returns. A bound there turns it into an ordinary red.
+6. **`tests/test_anthropic_client.py` fails when run alone** —
+   `test_every_call_logs_its_token_counts`, green in the full suite, red as a single
+   file, both at HEAD and at the pre-refactor commit. An order dependency that predates
+   this branch.
+7. **`implement.apply_section_updates` still truncates its skipped list at 8 with no
+   total** — the fix `implement_diet` already got (`_report_lines`). Was already on the
+   previous plan's open questions.
 
 ## Changelog
 
-- 2026-08-07 — plan created. Two deviations from the ticket as written, both flagged
-  above and both reversible: (1) content fetching goes lazy, which the ticket implies
-  ("fetch content for ONLY the returned paths") but which also moves ~45 Notion reads off
-  the critical path; (2) the normalised tree carries no content, because the ticket's
-  premise — that the tree is "the JSON handed to the model" — stops being true once the
-  split lands, and a content field nobody sends is a field that goes stale.
+- 2026-08-08 — plan created.

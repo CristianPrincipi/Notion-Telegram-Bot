@@ -28,7 +28,7 @@ import time
 
 import pytest
 
-import implement_diet
+from services import implement_diet
 
 
 # ─── A FAKE NOTION BLOCK TREE ──────────────────────────────────────────────────

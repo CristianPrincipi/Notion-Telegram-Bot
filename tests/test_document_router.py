@@ -8,7 +8,10 @@ file, which needs `responses` rather than a plain spy.
 import pytest
 import responses
 
+import bot.learn
 import david
+from clients import telegram_files
+from services import books
 from conftest import FakeContext, FakeDocument, FakeUpdate, run
 
 FILE_URL   = "https://api.telegram.org/file/bot-token/doc.pdf"
@@ -40,10 +43,13 @@ def spies(monkeypatch):
     async def handle_learn(update, user_text, file_bytes=None):
         calls["handle_learn"] = {"user_text": user_text, "file_bytes": file_bytes}
 
-    monkeypatch.setattr(david, "find_Book_Page", find_Book_Page)
-    monkeypatch.setattr(david, "add_Quote", add_Quote)
-    monkeypatch.setattr(david, "extract_quote_from_pdf", extract_quote_from_pdf)
-    monkeypatch.setattr(david, "handle_learn", handle_learn)
+    monkeypatch.setattr(books, "find_Book_Page", find_Book_Page)
+    monkeypatch.setattr(books, "add_Quote", add_Quote)
+    monkeypatch.setattr(books, "extract_quote_from_pdf", extract_quote_from_pdf)
+    # Patched on bot.learn, not david: the caption path runs through
+    # bot.learn.learn_pdf_upload, which resolves the name in its own module.
+    # The TEXT command still goes through david's namespace — see test_router.
+    monkeypatch.setattr(bot.learn, "handle_learn", handle_learn)
     return calls
 
 
@@ -111,7 +117,7 @@ def test_quote_caption_rejects_a_non_pdf_attachment(spies):
 
 
 def test_quote_caption_reports_a_book_that_is_not_in_the_library(spies, monkeypatch):
-    monkeypatch.setattr(david, "find_Book_Page", lambda book_name: None)
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: None)
     update = upload(QUOTE_CAPTION)
 
     run(david.handle_document(update, FakeContext()))
@@ -123,7 +129,7 @@ def test_quote_caption_reports_a_book_that_is_not_in_the_library(spies, monkeypa
 @responses.activate
 def test_quote_caption_reports_a_failed_extraction(spies, monkeypatch):
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
-    monkeypatch.setattr(david, "extract_quote_from_pdf",
+    monkeypatch.setattr(books, "extract_quote_from_pdf",
                         lambda b, s, e: (None, "Begin text not found in PDF."))
     update = upload(QUOTE_CAPTION)
 
@@ -147,7 +153,7 @@ def test_quote_caption_reports_a_failed_download(spies):
 @responses.activate
 def test_quote_caption_reports_a_failed_notion_save(spies, monkeypatch):
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
-    monkeypatch.setattr(david, "add_Quote", lambda page_id, title, text: False)
+    monkeypatch.setattr(books, "add_Quote", lambda page_id, title, text: False)
     update = upload(QUOTE_CAPTION)
 
     run(david.handle_document(update, FakeContext()))
@@ -190,7 +196,7 @@ def test_non_pdf_is_rejected_on_both_paths(spies, caption):
 @BOTH_PDF_CAPTIONS
 def test_oversized_pdf_is_rejected_before_downloading(spies, caption):
     """Telegram reports file_size up front, so an oversized file costs no bytes."""
-    oversized = FakeDocument(file_size=david.MAX_PDF_BYTES + 1)
+    oversized = FakeDocument(file_size=telegram_files.MAX_PDF_BYTES + 1)
     update = FakeUpdate(caption=caption, document=oversized)
 
     # No responses.activate: any HTTP call at all would raise ConnectionError.
@@ -204,7 +210,7 @@ def test_oversized_pdf_is_rejected_before_downloading(spies, caption):
 @responses.activate
 def test_pdf_at_the_size_limit_is_accepted(spies, caption):
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
-    at_limit = FakeDocument(file_size=david.MAX_PDF_BYTES)
+    at_limit = FakeDocument(file_size=telegram_files.MAX_PDF_BYTES)
     update = FakeUpdate(caption=caption, document=at_limit)
 
     run(david.handle_document(update, FakeContext()))
@@ -217,7 +223,7 @@ def test_pdf_at_the_size_limit_is_accepted(spies, caption):
 @responses.activate
 def test_oversized_pdf_is_rejected_when_telegram_omits_the_size(spies, caption):
     """file_size is optional in the Telegram API — the real size is re-checked."""
-    responses.add(responses.GET, FILE_URL, body=b"x" * (david.MAX_PDF_BYTES + 1), status=200)
+    responses.add(responses.GET, FILE_URL, body=b"x" * (telegram_files.MAX_PDF_BYTES + 1), status=200)
     no_size = FakeDocument(file_size=None)
     update = FakeUpdate(caption=caption, document=no_size)
 
@@ -254,8 +260,8 @@ def test_download_is_bounded_by_a_timeout_on_both_paths(spies, caption, monkeypa
     """
     import time as time_module
 
-    monkeypatch.setattr(david, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(david.requests, "get", lambda *a, **kw: time_module.sleep(0.5))
+    monkeypatch.setattr(telegram_files, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(telegram_files.requests, "get", lambda *a, **kw: time_module.sleep(0.5))
     update = upload(caption)
 
     run(david.handle_document(update, FakeContext()))
@@ -270,41 +276,41 @@ def test_download_uses_a_per_request_timeout(spies):
     """A stalled socket must fail fast rather than sit for the full 2 minutes."""
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
     seen = {}
-    real_get = david.requests.get
+    real_get = telegram_files.requests.get
 
     def spy_get(url, **kwargs):
         seen.update(kwargs)
         return real_get(url, **kwargs)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(david.requests, "get", spy_get)
+        mp.setattr(telegram_files.requests, "get", spy_get)
         run(david.handle_document(upload("Learn pdf"), FakeContext()))
 
-    assert seen.get("timeout") == david.HTTP_TIMEOUT_SECONDS
+    assert seen.get("timeout") == telegram_files.HTTP_TIMEOUT_SECONDS
 
 
 # ─── PURE HELPERS ──────────────────────────────────────────────────────────────
 
 def test_extract_quote_rejects_empty_markers():
-    quote, err = david.extract_quote_from_pdf(PDF_BYTES, "", "end")
+    quote, err = books.extract_quote_from_pdf(PDF_BYTES, "", "end")
 
     assert quote is None
     assert "cannot be empty" in err
 
 
 def test_extract_quote_reports_an_unreadable_pdf():
-    quote, err = david.extract_quote_from_pdf(b"this is not a pdf", "begin", "end")
+    quote, err = books.extract_quote_from_pdf(b"this is not a pdf", "begin", "end")
 
     assert quote is None
     assert err
 
 
 def test_chunk_text_respects_the_notion_block_limit():
-    chunks = david.chunk_text("x" * 4200)
+    chunks = books.chunk_text("x" * 4200)
 
     assert [len(c) for c in chunks] == [1800, 1800, 600]
     assert "".join(chunks) == "x" * 4200
 
 
 def test_chunk_text_leaves_a_short_quote_alone():
-    assert david.chunk_text("a short quote") == ["a short quote"]
+    assert books.chunk_text("a short quote") == ["a short quote"]

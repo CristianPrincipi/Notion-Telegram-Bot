@@ -2,11 +2,11 @@ import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from anthropic_client import complete_json
+from clients.anthropic_client import complete_json
 from config import ANTHROPIC_TIMEOUT
 from page_lock import PageBusy, page_lock
-from telegram_text import escape_md, reply
-from notion_client import (
+from telegram_text import escape_md
+from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text,
     append_children, delete_block, create_page, extract_rich_text, rich,
     update_page,
@@ -143,7 +143,7 @@ def _children_of_many(block_ids: list) -> tuple[dict, str | None]:
 def read_diet_structure(page_id: str):
     """Read the page's section TAXONOMY — levels 1-3, and no content at all.
 
-    BLOCKING — Notion requests, four at a time. handle_implement_diet runs it via
+    BLOCKING — Notion requests, four at a time. run_implement_diet runs it via
     asyncio.to_thread.
 
     Returns (tree, block_map, error) where:
@@ -316,7 +316,7 @@ def read_section_contents(sections: dict):
 # not name is never fetched, never merged, never written, and the run still
 # reports success. That is why it stays on config.ANTHROPIC_MODEL rather than
 # being moved to a cheaper model to save a fraction of a cent per run, and why
-# handle_implement_diet accounts for every path at every stage below.
+# run_implement_diet accounts for every path at every stage below.
 
 _ROUTE_SYSTEM = """You route newly learned content into a structured personal DIET page in Notion.
 
@@ -576,9 +576,9 @@ def _append_skeleton_deep(page_id: str):
 
 # ─── 6. MAIN HANDLER ───────────────────────────────────────────────────────────
 
-async def handle_implement_diet(update, summary_name: str):
+async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
     """
-    Called by implement.handle_implement when the target area is "Diet".
+    Called by implement.run_implement when the target area is "Diet".
     Command format:  Implement [Summary Name] - Diet
 
     Flow:
@@ -598,19 +598,18 @@ async def handle_implement_diet(update, summary_name: str):
     the summary had nothing to say about, and only one of those is fine.
     """
 
+    notify_md = notify_md or notify
     summary_name = summary_name.strip()
 
     if not DIET_ID:
-        await reply(update, "❌ `DIET_ID` is not set in your Railway environment variables.")
+        await notify_md("❌ `DIET_ID` is not set in your Railway environment variables.")
         return
 
     # ── Step A: find the summary in Learn DB ───────────────────────────────────
-    await reply(update, f"🔍 Searching for *{escape_md(summary_name)}* in Learn database…")
+    await notify_md(f"🔍 Searching for *{escape_md(summary_name)}* in Learn database…")
     summary_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, summary_name)
     if err:
-        await reply(
-            update,
-            f"❌ Could not find *{escape_md(summary_name)}* in your Learn database.\n"
+        await notify_md(f"❌ Could not find *{escape_md(summary_name)}* in your Learn database.\n"
             "Make sure you used `Learn` to save it and the title matches.",
         )
         return
@@ -623,11 +622,11 @@ async def handle_implement_diet(update, summary_name: str):
 
     summary_blocks, err = await asyncio.to_thread(get_children, summary_id)
     if err:
-        await update.message.reply_text(f"❌ Could not read the summary: {err}")
+        await notify(f"❌ Could not read the summary: {err}")
         return
     summary_text = blocks_to_text(summary_blocks)
     if not summary_text.strip():
-        await update.message.reply_text("❌ The summary page appears to be empty.")
+        await notify("❌ The summary page appears to be empty.")
         return
 
     # ── Steps B–E run under a lock on the Diet DATABASE ────────────────────────
@@ -650,29 +649,29 @@ async def handle_implement_diet(update, summary_name: str):
             # On a first run this also builds the whole skeleton — dozens of writes.
             page_id, was_created, err = await asyncio.to_thread(find_or_create_diet_page)
             if err:
-                await update.message.reply_text(f"❌ Could not prepare the Diet page: {err}")
+                await notify(f"❌ Could not prepare the Diet page: {err}")
                 return
             if was_created:
-                await update.message.reply_text(
+                await notify(
                     "🥗 First run — built the full Diet structure in Notion.")
 
             # ── Step C: read the taxonomy — paths only, no content ─────────────────────
-            await update.message.reply_text("📂 Reading current Diet structure…")
+            await notify("📂 Reading current Diet structure…")
             tree, block_map, err = await asyncio.to_thread(read_diet_structure, page_id)
             if err:
-                await update.message.reply_text(f"❌ Could not read the Diet structure: {err}")
+                await notify(f"❌ Could not read the Diet structure: {err}")
                 return
 
             paths = content_paths(tree)
             if not paths:
-                await update.message.reply_text(
+                await notify(
                     "❌ The Diet page has no sections to update. Delete the page and "
                     "re-run to rebuild the structure."
                 )
                 return
 
             # ── Step D: ROUTE — which sections does this inform? ───────────────────────
-            await update.message.reply_text(
+            await notify(
                 f"🧭 Checking which of the {len(paths)} sections this affects…")
             # Safe to time out: nothing has been written yet, and the source page
             # is not yet marked implemented.
@@ -682,20 +681,18 @@ async def handle_implement_diet(update, summary_name: str):
                     timeout=ANTHROPIC_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                await update.message.reply_text(
+                await notify(
                     f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
                     "Your Diet page is unchanged — nothing was written."
                 )
                 return
             if err:
-                await update.message.reply_text(f"❌ Routing failed: {err}")
+                await notify(f"❌ Routing failed: {err}")
                 return
 
             affected = [a for a in routing.get("affected", []) if a.get("path")]
             if not affected:
-                await reply(
-                    update,
-                    f"ℹ️ *{escape_md(summary_title)}* doesn't map to anything on the "
+                await notify_md(f"ℹ️ *{escape_md(summary_title)}* doesn't map to anything on the "
                     f"Diet page — nothing was changed.",
                 )
                 await asyncio.to_thread(update_page, summary_id,
@@ -713,10 +710,10 @@ async def handle_implement_diet(update, summary_name: str):
                 else:
                     unresolved.append(path)
 
-            await reply(update, _format_plan(affected, unresolved, len(paths), summary_title))
+            await notify_md(_format_plan(affected, unresolved, len(paths), summary_title))
 
             if not targets:
-                await update.message.reply_text(
+                await notify(
                     "⚠️ Claude named sections I couldn't find on the page — nothing was changed."
                 )
                 return
@@ -724,27 +721,27 @@ async def handle_implement_diet(update, summary_name: str):
             # ── Step E: read the content of ONLY those sections ────────────────────────
             contents, err = await asyncio.to_thread(read_section_contents, targets)
             if err:
-                await update.message.reply_text(
+                await notify(
                     f"❌ Could not read the sections to update: {err}\n"
                     "Nothing was written."
                 )
                 return
 
             # ── Step F: MERGE — only the routed sections ───────────────────────────────
-            await update.message.reply_text("🧠 Claude is merging the summary in…")
+            await notify("🧠 Claude is merging the summary in…")
             try:
                 result, err = await asyncio.wait_for(
                     asyncio.to_thread(merge_sections, contents, summary_text, summary_title),
                     timeout=ANTHROPIC_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                await update.message.reply_text(
+                await notify(
                     f"❌ Claude took longer than {ANTHROPIC_TIMEOUT}s and I gave up.\n"
                     "Your Diet page is unchanged — nothing was written."
                 )
                 return
             if err:
-                await update.message.reply_text(f"❌ Merge failed: {err}")
+                await notify(f"❌ Merge failed: {err}")
                 return
 
             updates = result.get("updates", [])
@@ -755,7 +752,7 @@ async def handle_implement_diet(update, summary_name: str):
             await asyncio.to_thread(update_page, summary_id, {"Implemented": {"checkbox": True}})
 
             # ── Step G: apply surgically ───────────────────────────────────────────────
-            await update.message.reply_text("📝 Applying updates to Notion…")
+            await notify("📝 Applying updates to Notion…")
             applied, skipped = await asyncio.to_thread(apply_updates, updates, block_map)
 
             # THE ACCOUNTING. Every path routing named ends in exactly one bucket,
@@ -774,9 +771,9 @@ async def handle_implement_diet(update, summary_name: str):
             lines += _report_lines("Not found on the page", unresolved, "❓")
             for conflict in result.get("conflicts", [])[:_REPORT_LIMIT]:
                 lines.append(f"\n⚖️ {escape_md(conflict)}")
-            await reply(update, "\n".join(lines))
+            await notify_md("\n".join(lines))
     except PageBusy:
-        await update.message.reply_text(
+        await notify(
             "⏳ An update to the Diet Manual is already in progress.\n"
             "Wait for it to finish, then try again."
         )

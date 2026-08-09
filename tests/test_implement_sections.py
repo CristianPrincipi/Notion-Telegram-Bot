@@ -24,8 +24,8 @@ itself.
 
 import pytest
 
-import implement
-from conftest import FakeUpdate, run
+from services import implement
+from conftest import FakeUpdate, run, with_update
 
 AREA_DB = "test-brain-id"          # BRAIN_ID in the fake environment
 
@@ -121,7 +121,7 @@ def manual(monkeypatch):
 
 def implement_it():
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
     return update
 
 
@@ -225,7 +225,7 @@ def test_a_source_that_maps_to_nothing_changes_nothing(manual):
     manual["updates"] = []
 
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
 
     assert manual["merge_targets"] is None, "ran a merge with nothing to merge"
     assert manual["appends"] == []

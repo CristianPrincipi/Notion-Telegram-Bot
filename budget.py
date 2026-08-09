@@ -23,7 +23,7 @@ import pytz
 
 from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
 from month import current_month_id
-from notion_client import query_database
+from clients.notion_client import query_database
 from telegram_text import escape_md
 
 logger = logging.getLogger(__name__)

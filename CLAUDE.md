@@ -8,29 +8,81 @@ Calendar, and summarises content with the Anthropic API. Runs as a polling worke
 spends the owner's Notion/Anthropic quota, so `OWNER_ID` gates everything through a PTB
 filter — an unauthorized update is dropped by the dispatcher and never reaches handler code.
 
+## The layers
+
+```
+bot/        Telegram adapters — parse the update, call a service, send what comes back
+services/   the work itself — no telegram, no update parameter, reports via callbacks
+clients/    the wire: Notion, Google Calendar, Anthropic, Telegram file download
+```
+
+Arrows point one way: **bot → services → clients**. A service that imports a handler
+is the same tangle `david.py` used to be, spread over more directories, so the
+direction is asserted rather than assumed (`tests/test_layering.py`).
+
+**THE RULE, and it is enforced by a test, not by discipline:**
+
+> Nothing under `services/` may import `telegram`, and no service function may take
+> `update` as a parameter.
+
+`tests/test_layering.py` walks the ast of every file under `services/` and fails on an
+`import telegram` (including `from telegram.ext …`, and one hidden inside a function),
+a parameter named `update`, a direct `reply_text`/`send_message` on any object, an
+import of `telegram_text.reply`/`send`, or an import pointing back up the stack. It
+carries its own offender rows and a positive control against `david.py`, so it cannot
+pass by scanning nothing.
+
+**How progress gets out.** A service reports by calling back:
+
+```python
+async def run_something(..., *, notify, notify_md=None) -> None
+```
+
+`notify(text)` is plain and the only channel a caller must supply — `bot/` passes
+`update.message.reply_text`, a test passes a list's `append`, a job passes something
+that logs. `notify_md(text)` is the Markdown channel and **defaults to `notify`**. Two
+channels because David already had two and the difference is load-bearing: David's own
+`*bold*` goes out with `parse_mode` and every interpolated value escaped, while a raw
+Notion error or a slice of an uploaded PDF goes out plain precisely because escaping
+cannot save it inside a `code span`. `bot/notify.py` is the only place they are bound.
+
 ## Module map
 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
-| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the `handle_document` caption router, the generated help, owner filter, job registration, expense + book + quote writes, PDF download | Feature logic, budget maths, month resolution, raw Notion HTTP |
+| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
-| `notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
-| `anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
-| `calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
+| `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
+| `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
+| `bot/expenses.py` | `Add e` / `U e` / `D e` / `undo` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo |
+| `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
+| `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
+| `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
+| `bot/commands.py` | The one-line delegators for commands whose feature module still takes `update` itself: `B`, `Month`, `Diag`, `DBs`, `Find`, `Get`, `Remind` | Anything more than the forward — see the open question |
+| `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
+| `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
+| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
+| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `services/implement_diet.py`) |
+| `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
+| `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
+| `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
+| `clients/calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
+| `clients/telegram_files.py` | Attachment validation and the bounded PDF download | What the bytes are for |
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
-| `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `context.user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `david.py` acts |
+| `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts |
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
-| `learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
-| `implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `implement_diet`) |
-| `implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
-| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `calendar_client`), and what a token MEANS — `t` becoming a date is `calendar_client`'s job |
+| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `t` becoming a date is the client's job |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
+
+`month.py`, `budget.py`, `pkm.py`, `reminder.py` and `notion_ids.py` are still at the
+root and four of them still take `update` — they were out of scope for the layering
+work and are named as follow-ups under Open questions. Everything new goes in a layer.
 
 New features get a module. `david.py` routes to them; it does not absorb them.
 
@@ -42,7 +94,7 @@ nothing here", and the two need opposite handling. That is not hypothetical: `re
 used to discard errors below the top level (`h2_blocks, _ = get_children(...)`), so a
 transient read failure made a section look **empty** — which is exactly what makes Claude
 decide to populate it, and `apply_updates` then replaced real content with content merged
-against nothing. Nothing errored. See `implement_diet._children_of_many`.
+against nothing. Nothing errored. See `services/implement_diet.py`'s `_children_of_many`.
 
 **An error is never the same value as an empty result.** The corollary of the rule
 above, and the one that cost the most. `proactive/briefing.py` used to write
@@ -78,7 +130,7 @@ costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIO
 and the README table when you introduce one.
 
 **One model name, one client.** `config.ANTHROPIC_MODEL` is the only place the model
-is named, and `anthropic_client.complete_json` is the only way to reach the API. A
+is named, and `clients.anthropic_client.complete_json` is the only way to reach the API. A
 feature module owns its system prompt and its JSON Schema; it does not own retry,
 truncation handling, or token accounting.
 
@@ -107,7 +159,7 @@ time, and the accepted forms are:
 
 The ` - ` between them is optional, so `Remind Dentist t 10` and
 `Remind Dentist 12.06 - 14.30` are both whole commands. `reminder.REMIND_PATTERN`
-decides which TOKENS are legal; `calendar_client.parse_date_time` decides what they
+decides which TOKENS are legal; `clients.calendar_client.parse_date_time` decides what they
 MEAN. Keep that split — a shorthand resolved in the regex is a date rule nothing
 can unit-test.
 
@@ -165,15 +217,15 @@ pattern, in this order, every time:
 4. only on success, delete the snapshotted IDs — from the *snapshot*, never from a re-read
    after appending, which would delete the new content too
 
-Reference implementations: `implement.apply_section_updates` (Manual sections) and
-`implement_diet.apply_updates` (Diet sections). Clear-then-append meant a 502 or a Railway
+Reference implementations: `services/implement.py`'s `apply_section_updates` (Manual
+sections) and `services/implement_diet.py`'s `apply_updates` (Diet sections). Clear-then-append meant a 502 or a Railway
 restart between the two left the page **permanently empty**, with no transaction to roll
 back and no second copy anywhere. The page briefly showing old-then-new content is the
 accepted cost of never showing neither. Locked down by `tests/test_safe_writes.py`.
 
 ### 3. Never send a section the source did not touch
 
-Everything sent to the model can come back reworded. `handle_implement` used to send
+Everything sent to the model can come back reworded. Implement used to send
 the **whole** Manual and rebuild the page from the reply, so untouched sections drifted
 a paraphrase at a time, and a Manual over 40k characters had its tail silently dropped
 from the prompt (`manual_text[:40000]`) and therefore from the rebuilt page.
@@ -195,7 +247,7 @@ Three independent guards, and they are independent on purpose — each one alone
 still leaves a way to hit the wrong row:
 
 1. **`sorts=CREATED_DESC` on every lookup that reads `results[0]`**
-   (`notion_client.CREATED_DESC`). This does not make "first" *correct*, it makes
+   (`clients/notion_client.py`'s `CREATED_DESC`). This does not make "first" *correct*, it makes
    it *defined* — the same row on two identical calls. Applies to
    `find_expense_matches`, `find_Book_Page` and `search_page_in_db`.
 2. **Expense lookups are scoped to the current month.** If the month cannot be
@@ -221,7 +273,7 @@ resolve to the same row. Locked down by `tests/test_expense_safety.py` and
 
 `concurrent_updates` is **off**. Do not enable it; `tests/test_async_io.py` fails if you do.
 Responsiveness is bought per-command instead: only the long commands (`Learn`, `Implement`,
-both PDF uploads) go through `david.run_detached`. Everything else runs inline, strictly
+both PDF uploads) go through `bot.tasks.run_detached`. Everything else runs inline, strictly
 ordered — which is what makes `Add e Carrefour 5` followed by `B` always report the new
 total. **Locks do not give that back**: they stop two cycles interleaving, they do not decide
 which runs first. That is why the decision is per-command and not a global switch.
@@ -266,10 +318,21 @@ adding a `Command`, a `SPY_TARGETS` entry, and rows; the registry tests fail unt
 table covers it. Rows marked `known_bug` assert current *wrong* behaviour on purpose;
 fixing one turns its row red, and the row is updated in the same commit.
 
+`SPY_HOMES` next to that table is not decoration: a spy only works if it is installed on
+the module whose namespace the caller resolves the name through AT CALL TIME. A stub on
+`david.add_Expenses` stopped doing anything the moment the write moved to
+`services/expenses.py`, and would have left the test passing against nothing had the
+attribute still existed. When you move a function, move its spy.
+
+**Two tests drive a service without a bot at all**, which is the point of the split:
+`conftest.with_update(update)` builds the `notify` pair by calling `bot.notify.for_update`
+itself, so a test cannot pass against a binding production does not use — and a test that
+does not need an update passes a list's `append` instead.
+
 **A command declares itself once.** Pattern, handler, help entry and the `destructive`
 flag live on one `Command`; the help message is GENERATED from that list. The
 hand-written help had already drifted — it advertised `Learn recipe`, which
-`handle_learn` rejects as an unknown type, omitted `Learn podcast`, which works, and
+`run_learn` rejects as an unknown type, omitted `Learn podcast`, which works, and
 never mentioned that `Implement … - Diet` merges into a toggle tree instead of a flat
 Manual. Nothing catches that class of error, because nothing runs the help.
 
@@ -278,6 +341,18 @@ but it is arranged for reading, since every pattern is anchored on a distinct li
 prefix and no input can satisfy two. That is asserted, not assumed
 (`test_no_input_can_be_claimed_by_two_commands`): a new command that overlaps an existing
 one turns it red and has to be positioned deliberately.
+
+`tests/test_layering.py` is the architectural gate, in the same family as
+`test_telegram_text`'s parse_mode walk, `test_data_integrity`'s weekday scan and
+`test_concurrency`'s lock-key scan. All four read the SOURCE, because no runtime
+assertion can tell a database id from a page id, or a service from a handler. All four
+carry a can-this-guard-actually-fail test, because a guard that cannot go red reads like
+protection and is not.
+
+**The source scans walk `bot/`, `clients/`, `services/` and `proactive/`, not just the
+repo root.** They used to stop at the root, which meant a file that moved into a package
+dropped silently out of the guard while it kept passing green. If you add a package, add
+it to those lists.
 
 **Every bug fix ships with a test that fails before it and passes after**, asserting against
 the shipping code path — a test that rebuilds the logic only proves it agrees with itself.
@@ -299,7 +374,7 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   `build_tomorrow_message` were here too and have been deleted — they had zero
   callers and carried a copy of the error/empty collapse that made them look like
   the bug's home. The live copy was in `briefing.py`. `david.headers` — a second
-  Notion header dict, superseded by `notion_client` and read by nothing — has been
+  Notion header dict, superseded by `clients/notion_client.py` and read by nothing — has been
   deleted along with the `NOTION_KEY` that existed only to build it.)
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
   checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
@@ -323,6 +398,43 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
     undocumented until now. Named by FUNCTION, not by line: this entry said
     `reminder.py:93` and the line had since moved to 132, which is what a line
     number in a document nobody recompiles is always eventually worth.
+
+### Left by the layering split, deliberately
+
+Each of these was seen while moving code and NOT changed, because that PR was a pure
+refactor and a fix hidden inside a move is a fix nobody reviewed.
+
+- **Five modules never got the treatment.** `month.py`, `budget.py`, `pkm.py`,
+  `reminder.py` and `notion_ids.py` are still at the root, and all but `budget.py` still
+  take `update` and reply through `telegram_text` themselves — `pkm.handle_get`,
+  `reminder.handle_remind`, `month.handle_month` and the three `notion_ids` handlers.
+  They are the same welding the split removed everywhere else: none of them can be run
+  from a scheduled job or driven from a test without a fake Update. `bot/commands.py`
+  exists to hold their one-line adapters until each is split into a service and a
+  handler, and the layering guard cannot see them because they are not under `services/`.
+- **`escape_md` drags python-telegram-bot into `services/`.** A service formats its own
+  Markdown, which is correct — escaping belongs at the interpolation site — but the
+  function lives in `telegram_text.py`, which imports `telegram.error.BadRequest` for the
+  senders' fallback. So `services/` transitively needs PTB installed for a regex. The
+  guard permits it explicitly. Splitting `escape_md` into a telegram-free module would
+  close it and would touch every call site.
+- **The PDF parse cap is named after the download.** `services/books.py` bounds
+  `extract_quote_from_pdf` with `clients.telegram_files.DOWNLOAD_TIMEOUT_SECONDS`, read
+  live off the module so the two stay one value, as they were in `david.py`. It is the
+  right duration and the wrong name.
+- **`LEARN_ID`, `DIET_ID`, `BRAIN_ID` and `FINANCE_ID` in `david.py` have no reader.**
+  They predate the split (each feature module reads its own), and they are left alongside
+  `DATABASE_ID` rather than swept up in a refactor that was supposed to move code, not
+  delete it.
+- **`test_async_io.test_a_slow_command_no_longer_freezes_the_bot` can hang the suite
+  rather than fail it.** Its watcher coroutine spins on `while not in_flight.is_set()`
+  with no timeout, so if the stall it waits for never starts — which is exactly what a
+  mis-targeted `monkeypatch` produces — pytest never returns. It cost a debugging round
+  during the split. A bound there would turn that into a normal red.
+- **`tests/test_anthropic_client.py` fails when run alone.**
+  `test_every_call_logs_its_token_counts` passes in the full suite and fails as a
+  single file, at HEAD and before the split alike — an order dependency, probably the
+  daily-spend state. Pre-existing, unrelated to layering, and worth its own look.
 
 ## Implementation Plan Tracking
 

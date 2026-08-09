@@ -28,8 +28,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import calendar_client
+from clients import calendar_client
+import bot.commands
+import bot.implement
+import bot.learn
 import david
+from services import books
+from services import expenses as expense_service
 import page_lock
 import reminder
 from conftest import FakeContext, FakeUpdate, run
@@ -93,9 +98,9 @@ def expenses(monkeypatch):
     the lock has to cover.
     """
     fake = FakeExpenses(["exp-1"])
-    monkeypatch.setattr(david, "query_database", fake.query_database)
-    monkeypatch.setattr(david, "notion_request", fake.notion_request)
-    monkeypatch.setattr(david, "current_month_id", lambda: "month-page-id")
+    monkeypatch.setattr(expense_service, "query_database", fake.query_database)
+    monkeypatch.setattr(expense_service, "notion_request", fake.notion_request)
+    monkeypatch.setattr(expense_service, "current_month_id", lambda: "month-page-id")
     return fake
 
 
@@ -166,9 +171,9 @@ def test_no_two_expense_cycles_are_ever_in_flight_together(expenses, monkeypatch
 
     # find_expense_matches is tracked too: it is the "find" half of the cycle,
     # and a second one starting before the first's write is the whole race.
-    monkeypatch.setattr(david, "find_expense_matches", tracked(david.find_expense_matches))
-    monkeypatch.setattr(david, "update_Expense", tracked(david.update_Expense))
-    monkeypatch.setattr(david, "delete_Expense", tracked(david.delete_Expense))
+    monkeypatch.setattr(expense_service, "find_expense_matches", tracked(expense_service.find_expense_matches))
+    monkeypatch.setattr(expense_service, "update_Expense", tracked(expense_service.update_Expense))
+    monkeypatch.setattr(expense_service, "delete_Expense", tracked(expense_service.delete_Expense))
 
     async def main():
         first, _ = send(commands[0])
@@ -188,7 +193,7 @@ def test_adding_an_expense_is_not_blocked_by_an_update(expenses):
     oversight: it must still go through while the expense lock is held.
     """
     async def main():
-        async with page_lock.page_lock(david.EXPENSES_ID):
+        async with page_lock.page_lock(expense_service.EXPENSES_ID):
             coro, update = send("Add e Carrefour 2.20")
             await asyncio.wait_for(coro, timeout=2)
             return update
@@ -291,17 +296,17 @@ def slow_command_stubs(monkeypatch):
     async def noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(david, "handle_learn", noop)
-    monkeypatch.setattr(david, "handle_implement", noop)
-    monkeypatch.setattr(david, "find_Book_Page", lambda name: "book-1")
-    monkeypatch.setattr(david, "add_Quote", lambda *a: True)
-    monkeypatch.setattr(david, "budget", lambda: "TOTAL")
-    monkeypatch.setattr(david, "add_Expenses", lambda *a: True)
-    monkeypatch.setattr(david, "find_expense_matches",
+    monkeypatch.setattr(bot.learn, "handle_learn", noop)
+    monkeypatch.setattr(bot.implement, "handle_implement", noop)
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
+    monkeypatch.setattr(books, "add_Quote", lambda *a: True)
+    monkeypatch.setattr(bot.commands, "budget", lambda: "TOTAL")
+    monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
+    monkeypatch.setattr(expense_service, "find_expense_matches",
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
-    monkeypatch.setattr(david, "update_Expense", lambda *a: (True, None))
-    monkeypatch.setattr(david, "delete_Expense", lambda *a: (True, None))
-    monkeypatch.setattr(david, "add_New_Book", lambda *a: "book-1")
+    monkeypatch.setattr(expense_service, "update_Expense", lambda *a: (True, None))
+    monkeypatch.setattr(expense_service, "delete_Expense", lambda *a: (True, None))
+    monkeypatch.setattr(books, "add_New_Book", lambda *a: "book-1")
 
 
 DETACHED = [
@@ -356,7 +361,7 @@ def test_detached_commands_carry_their_update_for_the_error_handler():
     with pytest.MonkeyPatch.context() as mp:
         async def noop(*a, **kw):
             return None
-        mp.setattr(david, "handle_learn", noop)
+        mp.setattr(bot.learn, "handle_learn", noop)
         run(david.handle_message(update, context))
 
     name, passed_update = context.application.tasks[0]
@@ -377,8 +382,8 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
         await asyncio.sleep(0.1)
         order.append("learn-end")
 
-    monkeypatch.setattr(david, "handle_learn", slow_learn)
-    monkeypatch.setattr(david, "budget", lambda: order.append("budget") or "TOTAL")
+    monkeypatch.setattr(bot.learn, "handle_learn", slow_learn)
+    monkeypatch.setattr(bot.commands, "budget", lambda: order.append("budget") or "TOTAL")
 
     context = FakeContext()
 
@@ -404,7 +409,20 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
 # title) would grow the lock table without bound. See page_lock.py.
 ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID"}
 
-LOCKING_MODULES = ["david.py", "implement.py", "implement_diet.py", "reminder.py"]
+# Repo-relative paths, not bare filenames: locking code lives in packages now,
+# and two files in different packages can share a name.
+LOCKING_MODULES = ["services/expenses.py", "services/implement.py",
+                   "services/implement_diet.py", "reminder.py"]
+
+# Every directory David's own code lives in. The scan below used to be
+# REPO.glob("*.py"), which stopped at the repo root — so a module that moved
+# into a package would have dropped silently out of the guard while it kept
+# passing. tests/ is deliberately absent: this file itself says "page_lock(".
+SOURCE_DIRS = [REPO, REPO / "bot", REPO / "clients", REPO / "services", REPO / "proactive"]
+
+
+def source_files():
+    return [path for directory in SOURCE_DIRS for path in sorted(directory.glob("*.py"))]
 
 
 def test_every_lock_is_keyed_on_a_database_id():
@@ -426,7 +444,7 @@ def test_every_lock_is_keyed_on_a_database_id():
 
 def test_every_locking_module_is_actually_checked():
     """Guards the list above: a new module that locks must be added to it."""
-    locking = {p.name for p in REPO.glob("*.py")
+    locking = {p.relative_to(REPO).as_posix() for p in source_files()
                if "page_lock(" in p.read_text(encoding="utf-8")
                and p.name != "page_lock.py"}
 

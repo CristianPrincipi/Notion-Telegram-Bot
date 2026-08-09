@@ -30,15 +30,17 @@ import pytest
 import responses
 
 import david
-import implement
-import implement_diet
-import learn
+from services import implement, implement_diet, learn
 import month
 import page_lock
 import pkm
 import proactive.scheduler as scheduler
 import reminder
-from conftest import FakeContext, FakeDocument, FakeUpdate, run
+import bot.commands
+import bot.implement
+import bot.learn
+from services import books, expenses
+from conftest import FakeContext, FakeDocument, FakeUpdate, run, with_update
 
 
 # ─── THE RECORDER ──────────────────────────────────────────────────────────────
@@ -83,11 +85,26 @@ def expect(stubs: dict, *names):
 
 @pytest.fixture
 def david_stubs(monkeypatch):
-    return stub_module(monkeypatch, david, {
-        "budget":         lambda: "MOCK BUDGET",
+    """The blocking calls one command makes, wherever they now live.
+
+    `budget` is still reached through david's namespace (the `B` command calls
+    it directly); everything else moved to services/, so the stub goes on the
+    service — which is also the module the handler resolves the name through at
+    call time.
+    """
+    # ONE object installed in BOTH importers. `B` calls it through
+    # bot.commands, the Sunday recap through david, and the assertions below
+    # compare function identity — so a second lambda would make one of the two
+    # tests fail against a stub that is correct.
+    budget_stub = lambda: "MOCK BUDGET"          # noqa: E731
+    stubs = stub_module(monkeypatch, david, {"budget": budget_stub})
+    stub_module(monkeypatch, bot.commands, {"budget": budget_stub})
+    stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
         "find_Book_Page": lambda book_name: "book-page-id",
         "add_Quote":      lambda page_id, quote_title, quote_text: True,
+    })
+    stubs |= stub_module(monkeypatch, expenses, {
         "add_Expenses":   lambda name, amount, category: True,
         # The destructive pair is find-then-write, and BOTH halves are blocking
         # Notion calls — the lookup is a database query, not a local decision.
@@ -95,6 +112,7 @@ def david_stubs(monkeypatch):
         "update_Expense": lambda page_id, amount, category: (True, None),
         "delete_Expense": lambda page_id: (True, None),
     })
+    return stubs
 
 
 DAVID_COMMANDS = [
@@ -132,7 +150,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     """The upload path: download, parse and both Notion calls all get offloaded."""
     responses.add(responses.GET, "https://api.telegram.org/file/bot-token/doc.pdf",
                   body=b"%PDF-1.4 fake", status=200)
-    monkeypatch.setattr(david, "extract_quote_from_pdf",
+    monkeypatch.setattr(books, "extract_quote_from_pdf",
                         lambda pdf, begin, end: ("the quote", None))
     update = FakeUpdate(
         caption="Add q Dune - On Fear - Fear is / the mind-killer",
@@ -141,7 +159,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     run(david.handle_document(update, FakeContext()))
 
     assert david_stubs["find_Book_Page"] in offloaded
-    assert david.extract_quote_from_pdf in offloaded
+    assert books.extract_quote_from_pdf in offloaded
     assert david_stubs["add_Quote"] in offloaded
     assert update.message.replied_with("Quote added")
 
@@ -175,7 +193,7 @@ LEARN_COMMANDS = [
 def test_learn_runs_fetch_claude_and_notion_off_the_loop(offloaded, learn_stubs, text, expected):
     update = FakeUpdate(text=text)
 
-    run(learn.handle_learn(update, text))
+    run(learn.run_learn(text, **with_update(update)))
 
     assert offloaded == expect(learn_stubs, *expected)
     assert update.message.replied_with("Saved to Notion")
@@ -185,7 +203,7 @@ def test_learn_pdf_parses_off_the_loop(offloaded, learn_stubs):
     """PyPDF2 is CPU-bound, which pins the loop just as hard as a network call."""
     update = FakeUpdate(text="Learn pdf")
 
-    run(learn.handle_learn(update, "Learn pdf", file_bytes=b"%PDF-1.4 fake"))
+    run(learn.run_learn("Learn pdf", file_bytes=b"%PDF-1.4 fake", **with_update(update)))
 
     assert offloaded == expect(learn_stubs, "extract_pdf",
                                "summarize_with_claude", "create_learn_page")
@@ -236,7 +254,7 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
     """
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
 
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
 
     assert offloaded == expect(
         implement_stubs,
@@ -277,7 +295,7 @@ def diet_stubs(monkeypatch):
 def test_implement_diet_runs_every_call_off_the_loop(offloaded, diet_stubs):
     update = FakeUpdate(text="Implement Protein Basics - Diet")
 
-    run(implement_diet.handle_implement_diet(update, "Protein Basics"))
+    run(implement_diet.run_implement_diet("Protein Basics", **with_update(update)))
 
     assert offloaded == expect(
         diet_stubs,
@@ -380,7 +398,7 @@ def test_a_slow_claude_call_times_out_in_learn(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "summarize_with_claude", stalls)
     update = FakeUpdate(text="Learn book Sapiens")
 
-    run(learn.handle_learn(update, "Learn book Sapiens"))
+    run(learn.run_learn("Learn book Sapiens", **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("Nothing was saved")
@@ -391,7 +409,7 @@ def test_a_slow_transcript_fetch_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_youtube", stalls)
     update = FakeUpdate(text="Learn video https://youtu.be/abc")
 
-    run(learn.handle_learn(update, "Learn video https://youtu.be/abc"))
+    run(learn.run_learn("Learn video https://youtu.be/abc", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -403,7 +421,7 @@ def test_a_slow_article_fetch_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_article", stalls)
     update = FakeUpdate(text="Learn article https://example.com/post")
 
-    run(learn.handle_learn(update, "Learn article https://example.com/post"))
+    run(learn.run_learn("Learn article https://example.com/post", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -413,7 +431,7 @@ def test_a_slow_pdf_parse_times_out(learn_stubs, monkeypatch):
     monkeypatch.setattr(learn, "extract_pdf", stalls)
     update = FakeUpdate(text="Learn pdf")
 
-    run(learn.handle_learn(update, "Learn pdf", file_bytes=b"%PDF-1.4 fake"))
+    run(learn.run_learn("Learn pdf", file_bytes=b"%PDF-1.4 fake", **with_update(update)))
 
     assert update.message.replied_with("timed out")
 
@@ -427,7 +445,7 @@ def test_a_slow_merge_times_out_and_says_nothing_was_written(implement_stubs, mo
                         lambda page_id, updates, sections, new_paths=None: written.append(updates))
     update = FakeUpdate(text="Implement Memory Techniques - Brain")
 
-    run(implement.handle_implement(update, update.message.text))
+    run(implement.run_implement(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("unchanged")
@@ -442,7 +460,7 @@ def test_a_slow_diet_analysis_times_out_and_says_nothing_was_written(diet_stubs,
                         lambda updates, block_map: applied.append(updates) or (0, []))
     update = FakeUpdate(text="Implement Protein Basics - Diet")
 
-    run(implement_diet.handle_implement_diet(update, "Protein Basics"))
+    run(implement_diet.run_implement_diet("Protein Basics", **with_update(update)))
 
     assert update.message.replied_with("gave up")
     assert update.message.replied_with("unchanged")
@@ -456,7 +474,7 @@ def test_the_merge_timeout_releases_the_page_lock(implement_stubs, monkeypatch):
 
     async def main():
         update = FakeUpdate(text="Implement Memory Techniques - Brain")
-        await implement.handle_implement(update, update.message.text)
+        await implement.run_implement(update.message.text, **with_update(update))
         # Must be free immediately — a short timeout, so a still-held lock fails
         # here rather than hanging the suite.
         async with page_lock.page_lock("area-db-1", timeout=0.01):
@@ -499,7 +517,7 @@ def test_a_slow_command_no_longer_freezes_the_bot():
     async def main():
         update = FakeUpdate(text="B")
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(david, "budget", slow_budget)
+            mp.setattr(bot.commands, "budget", slow_budget)
             await asyncio.gather(
                 david.handle_message(update, FakeContext()),
                 other_traffic(),
@@ -516,9 +534,11 @@ def test_a_slow_command_no_longer_freezes_the_bot():
 # ─── 7. GUARDS ─────────────────────────────────────────────────────────────────
 
 OFFLOADED_FUNCTIONS = [
-    david.budget, david.add_Expenses, david.add_New_Book, david.find_Book_Page,
-    david.add_Quote, david.find_expense_matches, david.update_Expense, david.delete_Expense,
-    david.extract_quote_from_pdf,
+    david.budget,
+    expenses.add_Expenses, expenses.find_expense_matches,
+    expenses.update_Expense, expenses.delete_Expense,
+    books.add_New_Book, books.find_Book_Page, books.add_Quote,
+    books.extract_quote_from_pdf,
     learn.extract_youtube, learn.extract_article, learn.extract_pdf,
     learn.summarize_with_claude, learn.create_learn_page,
     implement.search_page_in_db, implement.get_children,

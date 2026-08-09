@@ -26,8 +26,8 @@ import anthropic
 import httpx
 import pytest
 
-import anthropic_client
-from anthropic_client import ANSWER_TOOL, complete_json
+from clients import anthropic_client
+from clients.anthropic_client import ANSWER_TOOL, complete_json
 
 SCHEMA = {
     "type": "object",

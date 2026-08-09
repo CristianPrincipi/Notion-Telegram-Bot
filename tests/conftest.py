@@ -76,6 +76,23 @@ def run(coro):
     return asyncio.run(_run_then_drain())
 
 
+def with_update(update) -> dict:
+    """The notify kwargs a bot handler builds, for driving a service directly.
+
+    Services take `notify` / `notify_md` rather than an update (see
+    services/__init__.py), so a test that wants to assert on `update.message`
+    binds the same pair the bot layer does — through bot/notify.py itself, not a
+    reimplementation of it, so the test cannot pass against a binding production
+    does not use.
+
+        run(implement.run_implement(text, **with_update(update)))
+    """
+    from bot.notify import for_update
+
+    notify, notify_md = for_update(update)
+    return {"notify": notify, "notify_md": notify_md}
+
+
 # ─── TELEGRAM DOUBLES ──────────────────────────────────────────────────────────
 
 class FakeDocument:

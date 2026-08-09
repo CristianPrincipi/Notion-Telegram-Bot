@@ -76,9 +76,9 @@ import os
 import threading
 from typing import NamedTuple
 
-from calendar_client import now_local
+from clients.calendar_client import now_local
 from config import EXPENSE_MONTH_RELATION
-from notion_client import (
+from clients.notion_client import (
     create_page, get_database, get_page_title, query_database, rich, update_page,
 )
 from telegram_text import escape_md, reply
