@@ -4,7 +4,7 @@ _Last updated: 2026-08-10_
 
 Branch: `article-extraction`, off `main` at `7024892`.
 Baseline before any change: **743 passed**, `ruff check .` clean.
-After: **765 passed**, `ruff check .` clean.
+After: **770 passed**, `ruff check .` clean.
 
 Learn's article output feeds Implement, which feeds the Manual. Extraction quality is
 not a leaf concern — it propagates, and it surfaces months later as a thin Manual entry
@@ -104,6 +104,15 @@ something it did not say before.
   string before joining. Replaced with `" ".join(get_text().split())`, which keeps the
   word boundary the markup implies and still collapses titles laid out over several
   lines. Caught by `test_a_title_with_a_nested_tag_does_not_crash_extraction`.
+- **The nested `<title>` arrives in TWO shapes, and the first fix only covered one.**
+  CI went red on a test that was green locally: same beautifulsoup4 (4.15.0), different
+  CPython patch release. `html.parser` treats `<title>` as RCDATA — the HTML5-spec
+  behaviour — as of 3.12.13, so the element arrives as ONE string still containing
+  `<em>name</em>`; on 3.12.3 it arrives as a tag with children. The first shape raises
+  `AttributeError` on `.string.strip()`; the second raises nothing and silently makes
+  the raw markup the Notion page's name. `_TAG_RE` now flattens the second, and a test
+  builds that shape by hand so it is covered whatever the runner is running. Recorded
+  because "it passes locally" was actively misleading here.
 - **The first test fixture measured trafilatura's deduplicator, not the code.** Building
   a long body by repeating one paragraph 20 times produced 54 characters of extracted
   text, because trafilatura drops duplicate blocks — so the "no truncation" assertions

@@ -107,22 +107,42 @@ def _extract_trafilatura(html: bytes, url: str) -> dict | None:
     return {"title": title, "author": author, "text": text}
 
 
+# A tag-like run, for flattening markup a parser handed back as literal text.
+# Requires a letter or a slash after the "<" so that a title legitimately reading
+# "Why 3 < 5 matters" keeps its "<".
+_TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
+
+
 def _title_from_html(soup: BeautifulSoup) -> str:
     """The document's <title>, normalised. "" when there is not one worth having.
 
-    get_text(), NOT .string. `.string` is None whenever the element has more than
-    one child — which `<title>Post <em>name</em></title>` does — and the .strip()
-    that followed it then raised AttributeError. The broad except in
-    extract_article turned that into "could not extract content", a message that
-    reads as the site's fault and sent every investigation to the wrong place.
+    `<title>Post <em>name</em></title>` is ordinary markup and it reaches us in
+    TWO different shapes, which is the whole reason this function exists:
 
-    And NOT get_text(strip=True), which is the obvious spelling and is wrong
-    here: it strips each string BEFORE joining them, so the same title comes back
-    as "Postname". Splitting on whitespace and rejoining keeps the word boundary
-    the markup implies while still collapsing the newlines and runs of spaces
-    that titles laid out over several lines carry.
+    * As a tag with children, on parsers that treat <title> as normal content.
+      `.string` is None for any element with more than one child, so the old
+      `.string.strip()` raised AttributeError — swallowed by the broad except in
+      extract_article and reported as "could not extract content", a message that
+      reads as the site's fault and sent every investigation to the wrong place.
+    * As ONE string still containing "<em>name</em>", on parsers that treat
+      <title> as RCDATA, which is what the HTML5 spec calls for. Here nothing
+      raises and nothing looks wrong — the raw markup just becomes the Notion
+      page's name.
+
+    CPython's html.parser changed from the first to the second within 3.12 patch
+    releases, so the very same page produced a crash on one machine and a
+    polluted title on another. Handling only the shape in front of you is how
+    this stays half-fixed. get_text() covers the first, _TAG_RE the second.
+
+    NOT get_text(strip=True), which is the obvious spelling and is wrong here: it
+    strips each string BEFORE joining them, so the tag-with-children shape comes
+    back as "Postname". Splitting on whitespace and rejoining keeps the word
+    boundary the markup implies while still collapsing the newlines and runs of
+    spaces that titles laid out over several lines carry.
     """
-    return " ".join(soup.title.get_text().split()) if soup.title else ""
+    if not soup.title:
+        return ""
+    return " ".join(_TAG_RE.sub(" ", soup.title.get_text()).split())
 
 
 def _extract_bs4(html: bytes, url: str) -> dict:

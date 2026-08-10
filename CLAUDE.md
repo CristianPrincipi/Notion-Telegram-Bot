@@ -415,6 +415,16 @@ later test's schema lookup, so a test asserting the schema IS fetched passes
 without it being fetched, and the refusal tests silently depend on file order.
 `test_notion_client.forget_title_properties` clears it on the way in *and* out.
 
+**A test that only exercises the shape YOUR machine produces guards half a bug.**
+`<title>Post <em>name</em></title>` reaches `_title_from_html` as a tag with
+children on CPython 3.12.3 and as one RCDATA string still containing
+`<em>name</em>` on 3.12.13 — same beautifulsoup4, different `html.parser`. The
+first raises `AttributeError`; the second raises nothing and puts raw markup in
+a Notion page title. A fixture parsed from markup tests whichever shape the
+runner produces and silently leaves the other unguarded, which is exactly how
+that reached CI green from a laptop. `test_the_rcdata_title_shape_is_covered_on_every_machine`
+builds the other shape by hand.
+
 **Fixtures that build bulk text must not repeat themselves.** The first version of
 `test_article_extraction.paragraphs` made a long body by repeating one paragraph
 twenty times, and trafilatura — which drops duplicate blocks — extracted 54

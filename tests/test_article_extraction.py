@@ -92,6 +92,60 @@ def test_the_bs4_fallback_alone_survives_a_nested_title():
     assert result["title"] == "Post name"
 
 
+@pytest.mark.parametrize("title_markup", [
+    "Post <em>name</em>",          # nested tag
+    "Post <em>name</em> ",         # nested tag, trailing space
+    "Post\n  <em>name</em>",       # laid out over two lines
+])
+def test_a_nested_title_flattens_the_same_way_on_either_parser(title_markup):
+    """The SAME page reaches this code in two different shapes.
+
+    A parser that treats <title> as normal content gives a tag with children, so
+    `.string` is None and the old code raised. A parser that treats it as RCDATA
+    — which is what the HTML5 spec asks for — gives ONE string still containing
+    "<em>name</em>", where nothing raises and the raw markup simply becomes the
+    Notion page's name.
+
+    CPython's html.parser changed from the first to the second WITHIN 3.12 patch
+    releases: this suite was green on 3.12.3 and red on 3.12.13 for exactly this
+    reason. Asserting on the outcome rather than on either shape is what keeps
+    that from deciding whether the test passes.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(f"<html><head><title>{title_markup}</title></head></html>",
+                         "html.parser")
+
+    assert learn._title_from_html(soup) == "Post name"
+
+
+def test_the_rcdata_title_shape_is_covered_on_every_machine():
+    """The test above only exercises whatever shape THIS parser produces.
+
+    Which means it proves one of the two cases on any given machine and quietly
+    leaves the other one unguarded — the precise way this bug reached CI green
+    from a laptop. Building the RCDATA shape by hand covers it regardless of the
+    CPython patch release the runner happens to have.
+    """
+    from bs4 import BeautifulSoup, NavigableString
+
+    soup = BeautifulSoup("<html><head><title>x</title></head></html>", "html.parser")
+    soup.title.string.replace_with(NavigableString("Post <em>name</em>"))
+    assert soup.title.contents == ["Post <em>name</em>"], "not the RCDATA shape"
+
+    assert learn._title_from_html(soup) == "Post name"
+
+
+def test_a_title_may_still_contain_a_less_than_sign():
+    """The flattening must not eat punctuation. "3 < 5" is not a tag."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup("<html><head><title>Why 3 < 5 matters</title></head></html>",
+                         "html.parser")
+
+    assert learn._title_from_html(soup) == "Why 3 < 5 matters"
+
+
 @responses.activate
 def test_an_empty_title_falls_back_to_the_url():
     """A present-but-empty <title> must not become an empty page name in Notion."""
