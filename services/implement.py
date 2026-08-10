@@ -43,7 +43,7 @@ import os
 import re
 
 from clients.anthropic_client import complete_json
-from config import ANTHROPIC_TIMEOUT
+from config import ANTHROPIC_TIMEOUT, is_unverified_source
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -502,8 +502,8 @@ def build_manual(source_text: str, topic: str, source_title: str = ""):
 # ─── 7. SURGICAL WRITE-BACK ────────────────────────────────────────────────────
 
 def apply_section_updates(page_id: str, updates: list, sections: list,
-                          new_paths: set | None = None) -> tuple[int, list]:
-    """Rewrite only the named sections. Returns (applied_count, skipped).
+                          new_paths: set | None = None) -> tuple[int, list, list]:
+    """Rewrite only the named sections. Returns (applied_count, skipped, partial).
 
     BLOCKING — several Notion round trips per section touched. Run via
     asyncio.to_thread.
@@ -514,9 +514,15 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
 
     Sections absent from `updates` are never touched, which is what keeps them
     byte-identical run over run.
+
+    THREE buckets, not two. A failed append used to go in `skipped`, which the
+    reply prints under "these are unchanged" — true when the append failed on its
+    first batch and FALSE when it failed on a later one, because those earlier
+    batches are on the page and the stale content is still there underneath them.
+    A section in `partial` is the one state a re-run cannot fix by itself.
     """
     new_paths = new_paths or set()
-    applied, skipped = 0, []
+    applied, skipped, partial = 0, [], []
 
     for upd in updates:
         path  = (upd.get("path") or "").strip()
@@ -537,26 +543,38 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
                 continue
             name = path.split(">")[-1].strip()
             blocks = [_heading3(f"→ {name}")] + render_lines(lines, "bullet")
-            _, err = append_children(page_id, blocks, after=anchor.tail_id)
+            written, err = append_children(page_id, blocks, after=anchor.tail_id)
             if err:
-                skipped.append(f"{path} ({err})")
+                # A new step has no stale content to lose, so a half-written one
+                # is a half-written ADDITION rather than a mangled section — but
+                # it is still not "unchanged".
+                (partial if written.partial else skipped).append(f"{path} ({err})")
                 continue
             applied += 1
             continue
 
         # ── An existing section: replace its content in place ────────────────────
         stale_ids = list(section.content_ids)
-        _, err = append_children(
+        written, err = append_children(
             page_id, render_lines(lines, section.style), after=section.heading_id)
         if err:
-            # Nothing deleted — the section still holds its previous content.
-            skipped.append(f"{path} ({err})")
+            if written.partial:
+                # The old content is intact — the delete never ran — and part of
+                # the replacement is now sitting next to it. Both copies are on
+                # the page, which is the accepted cost of never showing neither
+                # (Hard Rule 2), but it has to be SAID or the next run merges
+                # against a section that reads as duplicated.
+                partial.append(f"{path} ({written.summary} written, "
+                               f"old content still there: {err})")
+            else:
+                # Nothing deleted, nothing appended — genuinely unchanged.
+                skipped.append(f"{path} ({err})")
             continue
 
         clear_page_blocks_by_id(stale_ids)
         applied += 1
 
-    return applied, skipped
+    return applied, skipped, partial
 
 
 # ─── 8. MAIN HANDLER ───────────────────────────────────────────────────────────
@@ -628,6 +646,12 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
         await notify("❌ Source page appears to be empty.")
         return
 
+    # Is this source Claude's recollection rather than something that was read?
+    # The marker is a sentence Learn writes into the page body, so it is already
+    # here in source_text — the same text the merge call is about to be given.
+    # Nothing extra is fetched to find out.
+    unverified = is_unverified_source(source_text)
+
     # ── Steps B–D run under a per-area lock ────────────────────────────────────
     # Taken BEFORE the read, not just around the write: the merge is only valid
     # if it was computed from a Manual nobody else is mutating.
@@ -640,10 +664,12 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
             if manual_page is None:
                 done = await _first_run(area_db_id, area_name,
                                         page_name, source_text, source_title,
+                                        unverified=unverified,
                                         notify=notify, notify_md=notify_md)
             else:
                 done = await _sectioned_run(manual_page["id"], area_name,
                                             page_name, source_text, source_title,
+                                            unverified=unverified,
                                             notify=notify, notify_md=notify_md)
             if not done:
                 return
@@ -657,9 +683,21 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
     await asyncio.to_thread(update_page, source_page_id, {"Implemented": {"checkbox": True}})
 
 
+# The one line every Implement message uses to say the source was not read.
+# One string, so the warning cannot be worded three ways in three places and then
+# fixed in one of them.
+_UNVERIFIED_LINE = ("⚠️ *Unverified source* — this page is Claude's recollection, "
+                    "not an extract of a text. Anything merged from it inherits that.")
+
+
 async def _first_run(area_db_id, area_name, page_name, source_text, source_title,
-                     *, notify, notify_md) -> bool:
+                     *, unverified=False, notify, notify_md) -> bool:
     """No Manual yet — build the whole page from this one source. Returns True on success."""
+    # Said BEFORE the build, not only after it: on a first run this one source
+    # becomes the entire Manual, which is the worst case for an unverified one.
+    if unverified:
+        await notify_md(_UNVERIFIED_LINE)
+
     await notify("🧠 First run for this area — Claude is building the Manual…")
 
     try:
@@ -684,19 +722,29 @@ async def _first_run(area_db_id, area_name, page_name, source_text, source_title
         await notify(f"❌ Could not create Manual page: {err}")
         return False
 
+    # A page id AND an error means the page exists and is missing content — see
+    # notion_client.create_page. Reported as its own outcome, because "created"
+    # and "created with half the Manual on it" need different next steps.
     # manual['title'] is Claude's, source_title is Notion's — both escaped.
-    await notify_md(f"✅ Manual created ✨\n\n"
+    await notify_md(f"{'⚠️ *Manual created, but incomplete*' if err else '✅ Manual created ✨'}\n\n"
         f"📋 *{escape_md(manual.get('title', 'Manual'))}*\n"
         f"📍 Area: {escape_md(area_name)}\n\n"
         f"⚙️ {len(manual.get('routine', []))} process steps\n"
         f"🚀 {len(manual.get('improvements', []))} improvements\n\n"
-        f"_Source used: {escape_md(source_title)}_",
+        f"_Source used: {escape_md(source_title)}_"
+        + (f"\n\n{_UNVERIFIED_LINE}" if unverified else ""),
     )
+    if err:
+        # Plain: a raw Notion error inside a code span cannot be escaped safely.
+        await notify(f"⚠️ Not all of the Manual was written: {err}\n"
+                     "Re-running appends a second copy of what did land — open "
+                     "the page and check it before you do.")
     return True
 
 
 async def _sectioned_run(manual_page_id, area_name, page_name,
-                         source_text, source_title, *, notify, notify_md) -> bool:
+                         source_text, source_title, *,
+                         unverified=False, notify, notify_md) -> bool:
     """Route → merge → write back only the affected sections. Returns True on success."""
     sections, err = await asyncio.to_thread(read_manual_sections, manual_page_id)
     if err:
@@ -751,7 +799,7 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         )
         return True
 
-    await notify_md(_format_plan(affected, new_steps, len(sections)))
+    await notify_md(_format_plan(affected, new_steps, len(sections), unverified))
 
     # ── Merge: only the affected sections ──────────────────────────────────────
     try:
@@ -770,7 +818,7 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         return False
 
     await notify("📝 Writing the updated sections to Notion…")
-    applied, skipped = await asyncio.to_thread(
+    applied, skipped, partial = await asyncio.to_thread(
         apply_section_updates, manual_page_id, merged.get("updates", []), sections, new_paths)
 
     msg = (f"✅ Manual updated 🔄\n\n"
@@ -778,24 +826,40 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
            f"✏️ *{applied}* of {len(sections)} section(s) rewritten — the rest were never "
            f"sent to Claude, so they are untouched.\n\n"
            f"_Source used: {escape_md(source_title)}_")
+    if unverified:
+        msg += f"\n\n{_UNVERIFIED_LINE}"
     if skipped:
         # A skipped section is genuinely unchanged: its append failed, so the
         # delete never ran and its previous content is still there. Each entry is
         # "path (notion error)", so both halves need escaping.
         msg += ("\n\n⚠️ Skipped — these are unchanged:\n"
                 + "\n".join(f"• {escape_md(s)}" for s in skipped[:8]))
+    if partial:
+        # Its own heading, deliberately not folded into "skipped": these sections
+        # hold their old content AND part of a replacement, and only a person
+        # looking at the page can sort that out.
+        msg += ("\n\n🚨 Half-written — open these in Notion, the old and new "
+                "content are both there:\n"
+                + "\n".join(f"• {escape_md(s)}" for s in partial[:8]))
     await notify_md(msg)
     return True
 
 
-def _format_plan(affected: list, new_steps: list, total: int) -> str:
+def _format_plan(affected: list, new_steps: list, total: int,
+                 unverified: bool = False) -> str:
     """What is about to change, sent before anything is written.
 
     Every interpolated value is Claude's: the section paths it chose and the free-
     form `why` it wrote for each. Escaped here rather than at the send site so the
     function stays safe wherever it is sent from.
+
+    The unverified warning goes at the TOP and before the merge call, which is the
+    only moment it is actionable: after the write, the Manual already holds the
+    content and the message is a post-mortem.
     """
     lines = [f"📋 *Plan* — {len(affected) + len(new_steps)} of {total} sections\n"]
+    if unverified:
+        lines.append(f"{_UNVERIFIED_LINE}\n")
     for item in affected:
         why = item.get("why", "")
         lines.append(f"♻️ {escape_md(item['path'])}"

@@ -25,7 +25,7 @@ itself.
 import pytest
 
 from services import implement
-from conftest import FakeUpdate, run, with_update
+from conftest import FakeUpdate, run, with_update, written_nothing, written_ok
 
 AREA_DB = "test-brain-id"          # BRAIN_ID in the fake environment
 
@@ -82,6 +82,9 @@ def manual(monkeypatch):
         "appends": [],            # [(after, blocks)]
         "deletes": [],
         "append_error": None,
+        # What the failed append got as far as writing. Defaults to nothing —
+        # a test that wants the half-written case sets it to written_half().
+        "append_written": written_nothing(),
     }
 
     def get_children(page_id):
@@ -101,9 +104,9 @@ def manual(monkeypatch):
 
     def append_children(block_id, blocks, after=None):
         if state["append_error"]:
-            return [], state["append_error"]
+            return state["append_written"], state["append_error"]
         state["appends"].append((after, blocks))
-        return [{"id": f"new-{len(state['appends'])}"}], None
+        return written_ok(1), None
 
     monkeypatch.setattr(implement, "get_area_db_id", lambda area: AREA_DB)
     monkeypatch.setattr(implement, "search_page_in_db",

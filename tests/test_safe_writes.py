@@ -16,7 +16,7 @@ import pytest
 
 from services import implement, implement_diet
 import page_lock
-from conftest import FakeUpdate, run, with_update
+from conftest import FakeUpdate, run, with_update, written_nothing
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ class NotionSpy:
     def append_children(self, block_id, blocks, after=None):
         self.calls.append(("append", block_id))
         if self.append_error:
-            return [], self.append_error
+            return written_nothing(), self.append_error
         return blocks, None
 
     def delete_block(self, block_id):

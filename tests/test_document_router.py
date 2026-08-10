@@ -12,7 +12,7 @@ import bot.learn
 import david
 from clients import telegram_files
 from services import books
-from conftest import FakeContext, FakeDocument, FakeUpdate, run
+from conftest import FakeContext, FakeDocument, FakeUpdate, run, written_nothing, written_ok
 
 FILE_URL   = "https://api.telegram.org/file/bot-token/doc.pdf"
 PDF_BYTES  = b"%PDF-1.4 pretend this is a book"
@@ -33,7 +33,7 @@ def spies(monkeypatch):
     def add_Quote(page_id, quote_title, quote_text):
         calls["add_Quote"] = {"page_id": page_id, "quote_title": quote_title,
                               "quote_text": quote_text}
-        return True
+        return written_ok(2), None
 
     def extract_quote_from_pdf(pdf_bytes, begin_text, end_text):
         calls["extract"] = {"pdf_bytes": pdf_bytes, "begin_text": begin_text,
@@ -153,7 +153,8 @@ def test_quote_caption_reports_a_failed_download(spies):
 @responses.activate
 def test_quote_caption_reports_a_failed_notion_save(spies, monkeypatch):
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
-    monkeypatch.setattr(books, "add_Quote", lambda page_id, title, text: False)
+    monkeypatch.setattr(books, "add_Quote",
+                        lambda page_id, title, text: (written_nothing(), "Notion 502: bad gateway"))
     update = upload(QUOTE_CAPTION)
 
     run(david.handle_document(update, FakeContext()))

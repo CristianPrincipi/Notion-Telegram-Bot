@@ -215,7 +215,7 @@ def summarised(monkeypatch):
 
     monkeypatch.setattr(learn, "summarize_with_claude", fake_summarise)
     monkeypatch.setattr(learn, "create_learn_page",
-                        lambda *a, **k: (True, "page-1"))
+                        lambda *a, **k: (True, "page-1", None))
     return seen
 
 

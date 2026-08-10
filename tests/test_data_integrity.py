@@ -25,7 +25,7 @@ import config
 import david
 from services import books, expenses
 from services import learn
-from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run
+from conftest import EXPENSES_ID, NOTION_BASE, OWNER_ID, FakeContext, FakeUpdate, run, written_ok
 
 QUERY_URL = f"{NOTION_BASE}/databases/{EXPENSES_ID}/query"
 PAGES_URL = f"{NOTION_BASE}/pages"
@@ -73,7 +73,8 @@ def notion_writes(monkeypatch):
     monkeypatch.setattr(books, "add_Quote",
                         lambda page_id, quote_title, quote_text:
                         calls.append({"quote_title": quote_title,
-                                      "quote_text": quote_text}) or True)
+                                      "quote_text": quote_text})
+                        or (written_ok(2), None))
     return calls
 
 
@@ -434,12 +435,12 @@ def test_learn_page_metadata_is_not_shared_between_calls(monkeypatch):
     monkeypatch.setattr(learn, "create_page",
                         lambda db, props, children=None, icon=None: (created.append(props), "p1")[1])
 
-    ok, _ = learn.create_learn_page("book", "First", [], metadata={"author": "Herbert"})
+    ok, _, _ = learn.create_learn_page("book", "First", [], metadata={"author": "Herbert"})
     assert ok
     assert "Author" in created[0]
 
     # No metadata this time: the author must not survive from the call above.
-    ok, _ = learn.create_learn_page("book", "Second", [])
+    ok, _, _ = learn.create_learn_page("book", "Second", [])
     assert ok
     assert "Author" not in created[1]
 

@@ -42,7 +42,7 @@ import bot.implement
 import bot.learn
 import david
 from services import books, expenses, learn
-from conftest import FakeContext, FakeUpdate, run
+from conftest import FakeContext, FakeUpdate, run, written_ok
 
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
 
@@ -91,7 +91,7 @@ SPY_TARGETS = [
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
     ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
-    ("add_Quote",        ("page_id", "quote_title", "quote_text"),  True,                 False),
+    ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
     ("add_Expenses",     ("name", "amount", "category"),            True,                 False),
     # The destructive pair is find-then-write, so both halves are spied: the
     # finder carries the parsed NAME, the writer the parsed amount/category.

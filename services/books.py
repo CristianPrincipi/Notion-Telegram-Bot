@@ -22,7 +22,9 @@ import re
 import PyPDF2
 
 from clients import telegram_files
-from clients.notion_client import CREATED_DESC, body_excerpt, notion_request, query_database
+from clients.notion_client import (
+    CREATED_DESC, append_children, body_excerpt, notion_request, query_database,
+)
 from config import GENRE_MAP, genre_help
 from telegram_text import escape_md
 
@@ -135,8 +137,19 @@ def chunk_text(text, size=1800):
 
 
 def add_Quote(page_id, quote_title, quote_text):
-    """Add a quote section to a book page, automatically splitting long quotes."""
+    """Add a quote section to a book page. Returns (written, error).
 
+    A long quote is many blocks and Notion caps an append at 100 of them, so this
+    is several requests with no transaction across them. It used to run its own
+    copy of that batching loop and return a bare `False` the moment one batch
+    failed — while every batch before it was already on the page. You were told
+    the quote had not been saved, two fifths of it had, and re-running appended
+    those two fifths a second time on top.
+
+    So it returns notion_client's Written, which says how much landed, and it
+    borrows the batching from `append_children` rather than repeating it — the
+    loop here was that function minus the `after` anchor.
+    """
     children = [
         {
             "object": "block",
@@ -171,23 +184,22 @@ def add_Quote(page_id, quote_title, quote_text):
             }
         })
 
-    url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    written, err = append_children(page_id, children)
+    if err:
+        logger.error("add_Quote block append failed after %s: %s", written.summary, err)
+    return written, err
 
-    for i in range(0, len(children), 100):
-        batch = children[i:i + 100]
 
-        response = notion_request(
-                 "PATCH",
-                 url,
-                 json={"children": batch}
-        )
+def partial_quote_warning(written) -> str:
+    """What to say when part of a quote is on the page and part is not.
 
-        if response.status_code != 200:
-            logger.error("add_Quote block append failed: Notion %s: %s",
-                         response.status_code, body_excerpt(response))
-            return False
-
-    return True
+    Named and shared because both quote flows have to say it and it is the whole
+    point of the change: the re-run advice is what stops a partial write becoming
+    a duplicated one.
+    """
+    return (f"⚠️ Saved partially — {written.summary} written.\n"
+            "Re-sending this command appends a SECOND copy of the part that "
+            "already landed. Delete the incomplete quote in Notion first.")
 
 
 # --- THE FLOWS --- #
@@ -237,8 +249,12 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
         return
 
     # --- MANUAL MODE: full quote provided directly ---
-    if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
+    written, err = await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content)
+    if not err:
         await notify(f"✍️ Quote added to '{book_name}'!")
+    elif written.partial:
+        await notify(f"⚠️ Quote only partly added to '{book_name}'.\n"
+                     + partial_quote_warning(written))
     else:
         await notify("❌ Error during quote transcription.")
 
@@ -302,7 +318,11 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
     )
 
     # Save to Notion
-    if await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content):
+    written, err = await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content)
+    if not err:
         await notify(f"✍️ Quote added to \'{book_name}\'!")
+    elif written.partial:
+        await notify(f"⚠️ Quote only partly added to \'{book_name}\'.\n"
+                     + partial_quote_warning(written))
     else:
         await notify("❌ Error saving quote to Notion.")

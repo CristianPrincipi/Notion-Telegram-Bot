@@ -37,7 +37,7 @@ from services import books
 from services import expenses as expense_service
 import page_lock
 import reminder
-from conftest import FakeContext, FakeUpdate, run
+from conftest import FakeContext, FakeUpdate, run, written_ok
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -299,7 +299,7 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(bot.learn, "handle_learn", noop)
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
     monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
-    monkeypatch.setattr(books, "add_Quote", lambda *a: True)
+    monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
     monkeypatch.setattr(bot.commands, "budget", lambda: "TOTAL")
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
     monkeypatch.setattr(expense_service, "find_expense_matches",
