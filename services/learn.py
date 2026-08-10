@@ -73,6 +73,29 @@ def extract_youtube(url: str) -> tuple[str | None, str | None]:
 # with some nav text attached produces a slightly padded one.
 MIN_ARTICLE_CHARS = 250
 
+# An author is a NAME, or a few of them. Past these bounds it is prose, and prose
+# in that field means the metadata parser latched onto the wrong element.
+#
+# Found live rather than reasoned about: a Wikipedia article returned "Authority
+# control databases International GND National United States Japan Israel" —
+# trafilatura reading the authority-control footer box — and that string was
+# headed for the Notion Author property. Notion is the source of truth, so a
+# fabricated value there is worse than a missing one: an empty Author is visibly
+# empty, while a wrong one is a fact you later act on.
+#
+# Both bounds are needed. That string is 80 characters, so a length cap alone
+# lets it through; a word cap alone lets through one enormous token.
+MAX_AUTHOR_CHARS = 80
+MAX_AUTHOR_WORDS = 6
+
+
+def _plausible_author(author: str) -> str:
+    """The author if it looks like one, "" otherwise. Never guesses on our behalf."""
+    author = (author or "").strip()
+    if not author or len(author) > MAX_AUTHOR_CHARS or len(author.split()) > MAX_AUTHOR_WORDS:
+        return ""
+    return author
+
 
 def _fetch(url: str) -> bytes:
     """The page bytes. Raises requests.RequestException — the caller sorts errors out.
@@ -103,7 +126,7 @@ def _extract_trafilatura(html: bytes, url: str) -> dict | None:
     # of — never None — so every field on it still has to be treated as optional.
     meta   = trafilatura.extract_metadata(html, default_url=url)
     title  = (getattr(meta, "title", None) or "").strip()
-    author = (getattr(meta, "author", None) or "").strip()
+    author = _plausible_author(getattr(meta, "author", None))
     return {"title": title, "author": author, "text": text}
 
 
