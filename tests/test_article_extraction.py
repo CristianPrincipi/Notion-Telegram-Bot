@@ -406,13 +406,27 @@ def test_the_author_is_populated_from_metadata():
 
 
 @pytest.mark.parametrize("meta_author, expected", [
+    # Kept — these are bylines.
     ("Jane Doe",                                              "Jane Doe"),
     ("Jane Doe; John Smith",                                  "Jane Doe; John Smith"),
     ("  Jane Doe  ",                                          "Jane Doe"),
-    # The live failure this guard exists for: trafilatura read Wikipedia's
-    # authority-control footer box and returned it as the author.
+    ("J. R. R. Tolkien",                                      "J. R. R. Tolkien"),
+    ("Anne-Marie Slaughter",                                  "Anne-Marie Slaughter"),
+    ("Gabriel García Márquez",                                "Gabriel García Márquez"),
+    # Lowercase particles are part of a real name and must not count against it.
+    ("Ludwig van Beethoven",                                  "Ludwig van Beethoven"),
+    ("Charles de Gaulle",                                     "Charles de Gaulle"),
+    ("NASA",                                                  "NASA"),
+
+    # Dropped. BOTH of these came out of the same Wikipedia authority-control
+    # footer box on two different articles, and the pair is the whole reason the
+    # size bounds are not enough on their own: 27 characters over 3 words is
+    # exactly the shape of a real name, so only the lowercase words give it away.
     ("Authority control databases International GND National "
-     "United States Japan Israel",                            ""),
+     "United States Japan Israel",                            ""),   # /wiki/Espresso
+    ("Authority control databases",                           ""),   # /wiki/World_War_II
+    ("Skip to main content",                                  ""),
+    ("Posted in technology and culture",                      ""),
     ("word " * 40,                                            ""),
     ("x" * 200,                                               ""),
     (None,                                                    ""),
