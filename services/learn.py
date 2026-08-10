@@ -73,6 +73,59 @@ def extract_youtube(url: str) -> tuple[str | None, str | None]:
 # with some nav text attached produces a slightly padded one.
 MIN_ARTICLE_CHARS = 250
 
+# An author is a NAME, or a few of them. Past these bounds it is prose, and prose
+# in that field means the metadata parser latched onto the wrong element.
+#
+# Found live rather than reasoned about, and then found AGAIN when the first
+# version of this guard proved superficial. Wikipedia's authority-control footer
+# box reaches trafilatura's metadata parser as an author, and it arrives at two
+# different lengths from the same template:
+#
+#   /wiki/Espresso    "Authority control databases International GND National
+#                      United States Japan Israel"        81 chars, 10 words
+#   /wiki/World_War_II "Authority control databases"       27 chars,  3 words
+#
+# Size bounds catch the first and wave the second through, because 27 characters
+# over 3 words is exactly the shape of a real name. So the bounds are necessary
+# and not sufficient, and the discriminator has to be about FORM: a byline is
+# title-case ("Jane Doe"), a stray noun phrase is not ("Authority control
+# databases" — two lowercase words).
+#
+# Notion is the source of truth, so this errs toward empty in every ambiguous
+# case. An empty Author is visibly empty; a wrong one is a fact you later act on.
+# The cost is real and accepted: a byline styled "bell hooks" or "cummings" is
+# dropped, which returns that page to the hardcoded "" this field had for its
+# whole life before the metadata was wired up.
+MAX_AUTHOR_CHARS = 80
+MAX_AUTHOR_WORDS = 6
+
+# Name particles are lowercase inside a real name, so they cannot count against
+# it: "Ludwig van Beethoven", "Vincent van Gogh", "Charles de Gaulle".
+_NAME_PARTICLES = {
+    "van", "von", "de", "del", "della", "di", "da", "dos", "du", "la", "le",
+    "bin", "ibn", "al", "el", "y", "e", "of", "the", "ter", "ten", "op",
+}
+
+
+def _plausible_author(author: str) -> str:
+    """The author if it looks like a byline, "" otherwise. Never guesses for us."""
+    author = (author or "").strip()
+    if not author or len(author) > MAX_AUTHOR_CHARS or len(author.split()) > MAX_AUTHOR_WORDS:
+        return ""
+
+    # Every word that carries letters must be capitalised, particles aside.
+    # Initials ("J.") and hyphenated names ("Anne-Marie") pass on their first
+    # character; separators between multiple authors ("Jane Doe; John Smith")
+    # carry no letters at all and are skipped.
+    words = [w for w in re.split(r"[\s;,]+", author) if any(c.isalpha() for c in w)]
+    if not words:
+        return ""
+    if any(w.lower() not in _NAME_PARTICLES and not w.lstrip("('\"").istitle()
+           and not w.isupper()
+           for w in words):
+        return ""
+    return author
+
 
 def _fetch(url: str) -> bytes:
     """The page bytes. Raises requests.RequestException — the caller sorts errors out.
@@ -103,7 +156,7 @@ def _extract_trafilatura(html: bytes, url: str) -> dict | None:
     # of — never None — so every field on it still has to be treated as optional.
     meta   = trafilatura.extract_metadata(html, default_url=url)
     title  = (getattr(meta, "title", None) or "").strip()
-    author = (getattr(meta, "author", None) or "").strip()
+    author = _plausible_author(getattr(meta, "author", None))
     return {"title": title, "author": author, "text": text}
 
 

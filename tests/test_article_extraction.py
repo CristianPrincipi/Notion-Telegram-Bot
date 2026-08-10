@@ -405,6 +405,59 @@ def test_the_author_is_populated_from_metadata():
     assert result["author"] == "Jane Doe"
 
 
+@pytest.mark.parametrize("meta_author, expected", [
+    # Kept — these are bylines.
+    ("Jane Doe",                                              "Jane Doe"),
+    ("Jane Doe; John Smith",                                  "Jane Doe; John Smith"),
+    ("  Jane Doe  ",                                          "Jane Doe"),
+    ("J. R. R. Tolkien",                                      "J. R. R. Tolkien"),
+    ("Anne-Marie Slaughter",                                  "Anne-Marie Slaughter"),
+    ("Gabriel García Márquez",                                "Gabriel García Márquez"),
+    # Lowercase particles are part of a real name and must not count against it.
+    ("Ludwig van Beethoven",                                  "Ludwig van Beethoven"),
+    ("Charles de Gaulle",                                     "Charles de Gaulle"),
+    ("NASA",                                                  "NASA"),
+
+    # Dropped. BOTH of these came out of the same Wikipedia authority-control
+    # footer box on two different articles, and the pair is the whole reason the
+    # size bounds are not enough on their own: 27 characters over 3 words is
+    # exactly the shape of a real name, so only the lowercase words give it away.
+    ("Authority control databases International GND National "
+     "United States Japan Israel",                            ""),   # /wiki/Espresso
+    ("Authority control databases",                           ""),   # /wiki/World_War_II
+    ("Skip to main content",                                  ""),
+    ("Posted in technology and culture",                      ""),
+    ("word " * 40,                                            ""),
+    ("x" * 200,                                               ""),
+    (None,                                                    ""),
+])
+@responses.activate
+def test_an_implausible_author_is_dropped_rather_than_written(meta_author, expected):
+    """Notion is the source of truth, so a fabricated Author is worse than none.
+
+    An empty Author is visibly empty. A wrong one is a fact you later act on —
+    and this field was hardcoded "" until the metadata was wired up, so anything
+    junk arriving here is a regression introduced by that wiring, not a
+    pre-existing gap.
+    """
+    serve(html_page(body=paragraphs("A long substantive article body. ", 8)))
+    real_extract = learn.trafilatura.extract
+    monkeypatch_meta = type("Meta", (), {"title": "T", "author": meta_author})
+    learn_traf = type("T", (), {
+        "extract": staticmethod(real_extract),
+        "extract_metadata": staticmethod(lambda html, default_url=None: monkeypatch_meta),
+    })
+    original = learn.trafilatura
+    learn.trafilatura = learn_traf
+    try:
+        result, err = learn.extract_article(URL)
+    finally:
+        learn.trafilatura = original
+
+    assert err is None
+    assert result["author"] == expected
+
+
 @responses.activate
 def test_which_parser_won_is_logged(caplog):
     """A permanent silent downgrade to the fallback is the thing to notice.
