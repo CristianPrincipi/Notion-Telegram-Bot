@@ -124,6 +124,23 @@ ANTHROPIC_MODEL = "claude-sonnet-4-5"
 ANTHROPIC_MAX_TOKENS = 8192    # output cap. Stays well under the ~16k above which
                                # the SDK refuses a non-streaming request outright.
 
+# INPUT cap: how much source text one summarisation may be given. ~100k chars
+# covers a 2-hour video transcript in a single call.
+#
+# This constant is owned by what CONSUMES the text, not by what fetches it, and
+# there is exactly one of it because the alternative already shipped: the article
+# extractor capped at 12,000 while the summariser accepted 100,000, so every
+# article over ~12k chars was summarised from its first eighth and nothing said
+# so. Two independent numbers describing one budget drift the moment either
+# moves. An extractor must NOT pre-truncate to this value either — then
+# `run_learn` could not tell a source of exactly the budget from one cut down to
+# it, and the warning below would be unreliable at its own boundary.
+#
+# services.learn.run_learn is the single place text is cut to fit, and it says so
+# in the reply when it does. A partial summary you are told about is a different
+# thing from a thin Manual entry you discover months later.
+SUMMARY_INPUT_CHARS = 100_000
+
 # Retries on 429 / 5xx / 529 and network errors, with exponential backoff. The
 # Notion client has had this for ages; the Anthropic calls did not, so a single
 # rate-limit response after two minutes of transcript fetching threw the whole

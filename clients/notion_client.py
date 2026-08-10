@@ -150,17 +150,78 @@ def body_excerpt(response) -> str:
 CREATED_DESC = [{"timestamp": "created_time", "direction": "descending"}]
 
 
+# ─── TITLE PROPERTY DISCOVERY ──────────────────────────────────────────────────
+# Every Notion database has exactly one property of type "title", but its NAME is
+# whatever the person who made the database typed. search_page_in_db used to
+# filter on a hard-coded "Name" — which Notion answers with a 400 when the column
+# is called anything else, and the 400 was returned to the user as
+# "No page found matching 'X'". A message pointing at your data for a bug in this
+# line. get_page_title, twenty lines up, has always done this properly.
+#
+# Cached per database for the life of the process: the name of a column changes
+# about never, and the alternative is an extra GET on every single lookup.
+# Harmless to lose (Hard Rule 1) — a fresh container just asks Notion again, once
+# per database.
+#
+# RLock, not asyncio.Lock: these functions run inside asyncio.to_thread workers,
+# and an asyncio lock shared between two THREADS acquires without ever blocking,
+# so it would read as protection and provide none. Same reasoning month.py
+# documents for the same reason.
+_title_props: dict[str, str] = {}
+_title_props_lock = threading.RLock()
+
+
+def title_property(db_id: str):
+    """The name of `db_id`'s title column. Returns (property_name, error).
+
+    THE CACHE IS POPULATED ONLY ON SUCCESS, and read before any network call. So
+    a database whose schema was read once keeps working through a later Notion
+    outage — the value cannot have gone stale in a way that matters — and only a
+    database that has NEVER been read successfully fails. That asymmetry is the
+    point: it buys the correctness of asking without making every lookup depend
+    on Notion being up twice.
+    """
+    with _title_props_lock:
+        cached = _title_props.get(db_id)
+    if cached:
+        return cached, None
+
+    db, err = get_database(db_id)
+    if err:
+        return None, err
+
+    for name, prop in (db or {}).get("properties", {}).items():
+        if prop.get("type") == "title":
+            with _title_props_lock:
+                _title_props[db_id] = name
+            return name, None
+
+    # Every database has a title property, so reaching here means what came back
+    # was not the database we asked about. Its own error, because "the schema
+    # read fine and had no title column" needs a different fix from "the read
+    # failed".
+    return None, "no property of type 'title' — is that ID really a database?"
+
+
 def search_page_in_db(db_id: str, query: str, exact: bool = False):
     """Search a Notion database for a page by title. Returns (page_object, error).
 
     Returns the most recently created match — see CREATED_DESC.
     """
     try:
+        title_prop, prop_err = title_property(db_id)
+        if prop_err:
+            # REFUSED, not widened to "Name". Guessing here would restore exactly
+            # the misleading "No page found" this removes, and would restore it
+            # intermittently — which is materially harder to diagnose than a bug
+            # that happens every time.
+            return None, f"Could not read the schema of database {db_id}: {prop_err}"
+
         filter_type = "equals" if exact else "contains"
         resp = notion_request(
             "POST",
             f"{NOTION_BASE}/databases/{db_id}/query",
-            json={"filter": {"property": "Name", "title": {filter_type: query}},
+            json={"filter": {"property": title_prop, "title": {filter_type: query}},
                   "sorts": CREATED_DESC},
         )
         if resp.status_code != 200:
