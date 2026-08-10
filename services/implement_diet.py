@@ -3,7 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from clients.anthropic_client import complete_json
-from config import ANTHROPIC_TIMEOUT
+from config import ANTHROPIC_TIMEOUT, is_unverified_source
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -710,7 +710,8 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
                 else:
                     unresolved.append(path)
 
-            await notify_md(_format_plan(affected, unresolved, len(paths), summary_title))
+            await notify_md(_format_plan(affected, unresolved, len(paths), summary_title,
+                                         is_unverified_source(summary_text)))
 
             if not targets:
                 await notify(
@@ -799,7 +800,8 @@ def _report_lines(label: str, paths: list, emoji: str) -> list:
     return lines
 
 
-def _format_plan(affected: list, unresolved: list, total: int, title: str) -> str:
+def _format_plan(affected: list, unresolved: list, total: int, title: str,
+                 unverified: bool = False) -> str:
     """What is about to change, sent before anything is written.
 
     Built from the ROUTING call, so it names the sections that will be read and
@@ -811,6 +813,13 @@ def _format_plan(affected: list, unresolved: list, total: int, title: str) -> st
     function stays safe wherever it is sent from.
     """
     lines = [f"📋 *Plan* — {len(affected)} of {total} sections — _{escape_md(title)}_", ""]
+    if unverified:
+        # The same string the flat-Manual path uses. Imported rather than repeated:
+        # this warning went missing on the Diet path for its whole life precisely
+        # because run_implement branches to here BEFORE it reads the source page,
+        # so the detection it does never ran for Diet at all.
+        from services.implement import _UNVERIFIED_LINE
+        lines += [_UNVERIFIED_LINE, ""]
     for item in affected:
         why = item.get("why", "")
         lines.append(f"♻️ {escape_md(item['path'])}"

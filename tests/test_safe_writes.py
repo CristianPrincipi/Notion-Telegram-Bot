@@ -106,9 +106,17 @@ def wired_manual(manual_spy, monkeypatch):
                         lambda paths, text, title: (
                             {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None))
     monkeypatch.setattr(implement, "merge_sections",
-                        lambda targets, text, title: (
+                        lambda targets, text, title, unverified=False: (
                             {"updates": [{"path": "Perfect Process",
                                           "lines": ["merged step"]}]}, None))
+    # The Sources ledger is a pure append to a section these tests do not touch,
+    # and it runs AFTER the section writes — so leaving it live would put a second
+    # "append" at the end of every ordering assertion here without saying anything
+    # about the ordering those assertions exist to protect.
+    # tests/test_implement_sections.py covers the ledger, including that it never
+    # deletes.
+    monkeypatch.setattr(implement, "record_source",
+                        lambda page_id, sections, title, unverified: (True, None))
     monkeypatch.setattr(implement, "update_page", lambda *a, **k: (True, None))
     return manual_spy
 

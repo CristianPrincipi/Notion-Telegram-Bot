@@ -43,6 +43,7 @@ import os
 import re
 
 from clients.anthropic_client import complete_json
+from clients.calendar_client import now_local
 from config import ANTHROPIC_TIMEOUT, is_unverified_source
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
@@ -60,6 +61,15 @@ BRAIN_ID = os.environ.get("BRAIN_ID")
 # The H2 that holds one H3 per routine step. It is the only section that grows
 # new subsections, so it is the only place a new step can be added.
 STEPS_SECTION = "Step-by-Step Breakdown"
+
+# The H2 David owns. Every other section belongs to Claude and to you; this one
+# is a ledger of what has been merged into the page and when, so it is the one
+# section that must never be rewritten by a merge.
+#
+# `build_manual_blocks` writes it on the FIRST run only, from whatever Claude
+# listed, and no sectioned run has ever appended to it — so until now a Manual
+# recorded nothing at all about what went into it after day one.
+SOURCES_SECTION = "Sources"
 
 
 # ─── 1. AREA ROUTING ───────────────────────────────────────────────────────────
@@ -158,6 +168,19 @@ class Section:
         return blocks_to_text(self.content_blocks)
 
     @property
+    def lines(self) -> list:
+        """The section's content as RAW lines, one per block.
+
+        Deliberately not `self.text.splitlines()`. `blocks_to_text` prefixes each
+        block by type (`- `, `• `, `## `) and the lines a merge returns carry no
+        prefix at all — they get one from `render_lines` on the way back in. So
+        comparing the two forms would compare the markdown and not the content,
+        and `_survives` below would report every line as lost.
+        """
+        return [extract_rich_text(b.get(b.get("type", ""), {}).get("rich_text", []))
+                for b in self.content_blocks]
+
+    @property
     def style(self) -> str:
         """How this section writes its lines, so a rewrite keeps its shape.
 
@@ -210,6 +233,32 @@ def read_manual_sections(page_id: str) -> tuple[list, str | None]:
             current_h2.tail_id = block_id
 
     return sections, None
+
+
+def is_sources_path(path: str) -> bool:
+    """True for the Sources section and anything nested under it.
+
+    Matched on the FIRST segment, so an H3 that ends up beneath the ledger cannot
+    slip through a check that only compared whole paths.
+    """
+    first = _normalise_path(path).split(" > ")[0]
+    return first == SOURCES_SECTION.lower()
+
+
+def routable_sections(sections: list) -> list:
+    """The section paths a routing call may be shown. Sources is not one of them.
+
+    ONE function, called from one place, because the requirement is that this
+    exclusion cannot be silently undone. A future change to how the taxonomy is
+    built goes through here; a `[s.path for s in sections]` written inline at the
+    call site would quietly put the ledger back in front of the model.
+
+    This is half the guard. The other half is in `apply_section_updates`, which
+    refuses to WRITE a Sources path however it was arrived at — because this list
+    only controls what Claude is shown, and a model can name a section it was
+    never offered.
+    """
+    return [s.path for s in sections if not is_sources_path(s.path)]
 
 
 def _resolve(path: str, sections: list):
@@ -319,7 +368,27 @@ _MERGE_SCHEMA = {
 }
 
 
-def merge_sections(targets: list, source_text: str, source_title: str):
+# Appended to the merge prompt when the source is a recollection. It is the HINT,
+# not the guard: `_hold_back_rewrites` below checks the same rule mechanically and
+# refuses to write a section that breaks it. Both, because the instruction alone
+# is a request a model can decline silently, and the check alone would hold back
+# far more sections than it needs to.
+_UNVERIFIED_MERGE_RULE = """
+
+=== THIS SOURCE IS UNVERIFIED ===
+It is a model's recollection of a work, not an extract of any text. Nothing was
+read to produce it, so relative to the Manual it is the WEAKER evidence.
+
+- Reproduce every existing line of each section EXACTLY as it is given to you.
+  Do not reword, reorder, shorten, or combine them.
+- You may ADD new lines from this source. You may not replace or delete an
+  existing one, however much this source appears to contradict it.
+- A section whose existing lines are not all reproduced verbatim will be
+  discarded and left unchanged."""
+
+
+def merge_sections(targets: list, source_text: str, source_title: str,
+                   unverified: bool = False):
     """Merge the source into the given sections. Returns (result, error).
 
     `targets` is a list of {"path", "style", "text"} — only the sections routing
@@ -333,8 +402,83 @@ def merge_sections(targets: list, source_text: str, source_title: str):
     user_msg = (
         "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
         f"\n\n=== SOURCE: {source_title} ===\n{source_text[:60000]}"
+        + (_UNVERIFIED_MERGE_RULE if unverified else "")
     )
     return complete_json(_MERGE_SYSTEM, user_msg, _MERGE_SCHEMA)
+
+
+# ─── 4b. THE ADDITIONS-ONLY RULE ───────────────────────────────────────────────
+# What an unverified source is allowed to do to a Manual, checked rather than
+# asked for.
+#
+# WHAT THIS ENFORCES: no line already in the Manual is deleted or reworded by a
+# merge whose source was a recollection. That is a real, deterministic guarantee —
+# David holds both sides before it writes, so it needs no judgement from anyone.
+#
+# WHAT IT DOES NOT ENFORCE, and must never be described as enforcing: anything at
+# all about the lines it ADDS. Nothing can check whether a recollected fact is
+# true. That is why the Sources ledger exists — the trail is what you have when
+# the content itself cannot be verified.
+#
+# THE COST IS REAL. _MERGE_SYSTEM asks for "the FULL merged content", and a model
+# reproducing twenty lines verbatim will eventually reword one. Those sections are
+# held back and named rather than written, which is the safe direction but is not
+# a free one. See PLAN.md's open question.
+
+
+def _comparable(line: str) -> str:
+    """A line stripped of differences that are not differences.
+
+    Whitespace only. Case and punctuation stay significant: "do it daily" and "Do
+    it daily." are the same claim to a reader and a REWRITE to this rule, which is
+    exactly the edit an unverified source must not be allowed to make silently.
+    """
+    return " ".join((line or "").split())
+
+
+def _survives(old_lines: list, new_lines: list) -> list:
+    """The old lines that do NOT appear, verbatim and in order, in the new ones.
+
+    A subsequence walk, not a set difference: order carries meaning in a numbered
+    routine, and a merge that reversed two steps while keeping both would pass a
+    membership check.
+    """
+    remaining = [_comparable(line) for line in new_lines]
+    lost = []
+    for line in old_lines:
+        wanted = _comparable(line)
+        if not wanted:
+            continue
+        try:
+            remaining = remaining[remaining.index(wanted) + 1:]
+        except ValueError:
+            lost.append(line)
+    return lost
+
+
+def _hold_back_rewrites(updates: list, sections: list) -> tuple[list, list]:
+    """Split an unverified merge into (may_be_written, held_back).
+
+    Runs BEFORE apply_section_updates rather than inside it. What may be written
+    is a policy decision about this source; the writer stays a writer, and its
+    three buckets (applied / skipped / partial) keep describing what Notion did
+    rather than what David decided.
+    """
+    allowed, held = [], []
+    for upd in updates:
+        section = _resolve((upd.get("path") or "").strip(), sections)
+        # No section, or nothing there yet (a new step, an empty section): there
+        # is no existing content to protect, so the rule has nothing to say.
+        if section is None or not section.lines:
+            allowed.append(upd)
+            continue
+
+        lost = _survives(section.lines, upd.get("lines", []))
+        if lost:
+            held.append((section.path, lost))
+        else:
+            allowed.append(upd)
+    return allowed, held
 
 
 # ─── 5. NOTION BLOCK BUILDERS ──────────────────────────────────────────────────
@@ -530,6 +674,15 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
         if not path or not lines:
             continue
 
+        # THE LEDGER IS NOT WRITEABLE, and this is checked here rather than only
+        # in routable_sections. That list decides what Claude is SHOWN; a model
+        # can name a section it was never offered, and one that did would rewrite
+        # the only record of where the page's content came from — with the
+        # provenance of an unverified merge as the first thing to go.
+        if is_sources_path(path):
+            skipped.append(f"{path} (David's own section — never rewritten by a merge)")
+            continue
+
         section = _resolve(path, sections)
 
         # ── A brand-new step: pure append under the steps section, nothing stale ──
@@ -575,6 +728,53 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
         applied += 1
 
     return applied, skipped, partial
+
+
+# ─── 7b. THE SOURCES LEDGER ────────────────────────────────────────────────────
+
+def _source_record(source_title: str, unverified: bool) -> str:
+    """One ledger line: what was merged, whether it was read, and when."""
+    provenance = " — unverified (model recollection)" if unverified else ""
+    return f"{source_title}{provenance} — {now_local():%d %b %Y}"
+
+
+def record_source(page_id: str, sections: list | None,
+                  source_title: str, unverified: bool) -> tuple[bool, str | None]:
+    """Append this run to the Manual's Sources section. Returns (ok, error).
+
+    BLOCKING — one or two Notion round trips. Run via asyncio.to_thread.
+
+    A PURE APPEND, which is why it can run after the section writes without any of
+    Hard Rule 2's ordering care: there is nothing to delete, so there is no window
+    in which the page holds neither the old nor the new.
+
+    `sections` is the index the caller already built, or None to read one. The
+    index stays valid across the section writes because Sources is the one section
+    those writes can never touch — which is the whole point of the two guards
+    above.
+
+    The provenance goes HERE and not into the merged lines. An inline marker would
+    be sent back to the model as "current content" on the next run, reworded at its
+    discretion, and never removed if a real source later confirmed the claim. This
+    line is written by David and read by people.
+    """
+    if sections is None:
+        sections, err = read_manual_sections(page_id)
+        if err:
+            return False, err
+
+    bullet = _bullet(_source_record(source_title, unverified))
+    ledger = next((s for s in sections if is_sources_path(s.path)), None)
+
+    if ledger is None:
+        # A Manual whose first run produced no sources has no ledger to append to.
+        # Both blocks go at the END of the page, which is where the section lives
+        # in every Manual build_manual_blocks has ever emitted.
+        _, err = append_children(page_id, [_heading2(f"📚 {SOURCES_SECTION}"), bullet])
+        return (err is None), err
+
+    _, err = append_children(page_id, [bullet], after=ledger.tail_id)
+    return (err is None), err
 
 
 # ─── 8. MAIN HANDLER ───────────────────────────────────────────────────────────
@@ -739,7 +939,25 @@ async def _first_run(area_db_id, area_name, page_name, source_text, source_title
         await notify(f"⚠️ Not all of the Manual was written: {err}\n"
                      "Re-running appends a second copy of what did land — open "
                      "the page and check it before you do.")
+
+    # The ledger's first entry. No index to pass — the page was created moments
+    # ago, so record_source reads one for itself.
+    await _record(page_id, None, source_title, unverified, notify=notify)
     return True
+
+
+async def _record(page_id, sections, source_title, unverified, *, notify) -> None:
+    """Write the ledger line, and say so if it could not be written.
+
+    Its own failure, reported separately: the Manual write succeeded and the
+    provenance did not, which is a different thing from either half failing alone
+    — and the provenance is the part you cannot reconstruct later.
+    """
+    ok, err = await asyncio.to_thread(
+        record_source, page_id, sections, source_title, unverified)
+    if not ok:
+        await notify(f"⚠️ The Manual was updated but I could not record the source "
+                     f"in its Sources section: {err}")
 
 
 async def _sectioned_run(manual_page_id, area_name, page_name,
@@ -762,7 +980,11 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         f"🧭 Checking which of the {len(sections)} sections this affects…")
     try:
         routing, err = await asyncio.wait_for(
-            asyncio.to_thread(route_sections, [s.path for s in sections],
+            # routable_sections, never [s.path for s in sections]: the Sources
+            # ledger is David's and is not offered to the model. Asserted by
+            # test_implement_sections, because an inline list comprehension here
+            # is exactly how that exclusion gets undone without anyone noticing.
+            asyncio.to_thread(route_sections, routable_sections(sections),
                               source_text, source_title),
             timeout=ANTHROPIC_TIMEOUT,
         )
@@ -804,7 +1026,8 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
     # ── Merge: only the affected sections ──────────────────────────────────────
     try:
         merged, err = await asyncio.wait_for(
-            asyncio.to_thread(merge_sections, targets, source_text, source_title),
+            asyncio.to_thread(merge_sections, targets, source_text, source_title,
+                              unverified),
             timeout=ANTHROPIC_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -817,9 +1040,19 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         await notify(f"❌ Merge failed: {err}")
         return False
 
+    # ── The additions-only rule, for an unverified source only ─────────────────
+    # Checked here rather than trusted to the prompt above. What this catches is
+    # narrow and real: a merge that would delete or reword something already in
+    # the Manual on the authority of a recollection. It says nothing about whether
+    # what it lets through is TRUE — see the note above _comparable.
+    updates = merged.get("updates", [])
+    held = []
+    if unverified:
+        updates, held = _hold_back_rewrites(updates, sections)
+
     await notify("📝 Writing the updated sections to Notion…")
     applied, skipped, partial = await asyncio.to_thread(
-        apply_section_updates, manual_page_id, merged.get("updates", []), sections, new_paths)
+        apply_section_updates, manual_page_id, updates, sections, new_paths)
 
     msg = (f"✅ Manual updated 🔄\n\n"
            f"📍 Area: {escape_md(area_name)}\n"
@@ -841,7 +1074,23 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         msg += ("\n\n🚨 Half-written — open these in Notion, the old and new "
                 "content are both there:\n"
                 + "\n".join(f"• {escape_md(s)}" for s in partial[:8]))
+    if held:
+        # A THIRD kind of unchanged, and its own heading for the same reason the
+        # other two have theirs: this one is not Notion failing, it is David
+        # refusing. The lines that would have gone are named, because "a section
+        # was held back" is not something you can act on and "these two lines
+        # would have been replaced by a recollection" is.
+        msg += ("\n\n🛡️ Held back — an unverified source cannot rewrite what is "
+                "already there. These are unchanged:\n"
+                + "\n".join(f"• {escape_md(path)} — would have lost: "
+                            + "; ".join(escape_md(line[:60]) for line in lost[:3])
+                            for path, lost in held[:5]))
     await notify_md(msg)
+
+    # The ledger, after the writes and only on a run that got this far. `sections`
+    # is the index from before the writes and is still correct for Sources — the
+    # one section apply_section_updates is not allowed to touch.
+    await _record(manual_page_id, sections, source_title, unverified, notify=notify)
     return True
 
 

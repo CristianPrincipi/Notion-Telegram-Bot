@@ -2,6 +2,11 @@
 
 _Last updated: 2026-08-10_
 
+> **Part 2 (this branch, second pass): what an unverified source may do to a Manual.**
+> Milestones 5–7 below were added after the first three shipped, from the decisions
+> taken on the open question at the bottom of this file. Options 1 (provenance) and
+> 3 (the merge rule) were built; option 2 (a force gate on `Implement`) was declined.
+
 Branch: `claude/ingest-hygiene-qkue5z`, off `main` at `b63b6fd`.
 Baseline before any change: **786 passed**, `ruff check .` clean.
 After: **853 passed**, `ruff check .` clean.
@@ -88,6 +93,78 @@ presented as a failure.
 - [x] Each guard verified by reverting it and watching its named test go red —
       all 19 of them, in two passes (see `## Changelog`).
 
+## Milestone 5: The Sources ledger
+
+- [x] `SOURCES_SECTION`, and `record_source` — one bullet per Implement run, naming
+      the source, whether it was read or recalled, and the date. Creates its own
+      `📚 Sources` heading when the Manual has none.
+- [x] A pure append, which is why it can run after the section writes with none of
+      Hard Rule 2's ordering care: there is no window in which the page holds
+      neither the old content nor the new.
+- [x] **Two independent guards** keep it unwritable by a merge, because either one
+      alone is undoable by a reasonable-looking change: `routable_sections` keeps
+      it out of what the router is SHOWN, and `apply_section_updates` refuses a
+      Sources path however it was arrived at.
+- [x] Still INDEXED — `record_source` has to find it, and `Get Sources - Brain` has
+      to read it. The exclusion is about routing, not about the index.
+- [x] Provenance goes here and NOT into the merged lines: an inline marker is sent
+      back to the model as "current content" on the next run, reworded at its
+      discretion, and never removed if a real source later confirms the claim.
+
+## Milestone 6: The additions-only rule
+
+- [x] `_survives` — a subsequence walk over whitespace-normalised lines. Order is
+      significant (a numbered routine with two steps swapped has been changed);
+      whitespace is not (a reflowed line is not a rewrite).
+- [x] `_hold_back_rewrites` runs in `_sectioned_run` BEFORE the writer, and only
+      when the source is unverified. Policy about what may be written lives next to
+      the merge; `apply_section_updates` stays a writer and its three buckets keep
+      describing what Notion did.
+- [x] Held-back sections are a fourth outcome in the reply, naming the lines that
+      would have been lost. Not folded into "skipped": both are unchanged, but one
+      is Notion failing and one is David refusing.
+- [x] `_UNVERIFIED_MERGE_RULE` appended to the merge prompt — the hint that makes
+      the check pass often enough to be usable, never the guarantee.
+- [x] ~~A force gate on `Implement`~~ — dropped: declined deliberately. A gate that
+      fires on every book page is a gate you stop reading; the plan message is the
+      checkpoint.
+
+## Milestone 7: The Diet path
+
+- [x] `run_implement` branches to Diet BEFORE it fetches the Learn page, so the
+      unverified detection never ran for `Implement … - Diet` at all. Its plan
+      message now carries the same warning, computed from the summary text it
+      already reads. No ledger — the Diet page is a fixed toggle tree with nowhere
+      to put one.
+
+## Milestone 8: Tests for parts 5–7
+
+- [x] `tests/test_implement_sections.py` — Sources absent from the routing paths
+      (asserted against the REAL `_sectioned_run`, not against `routable_sections`
+      in isolation, because the failure mode is someone rebuilding that list at the
+      call site); still indexed; an H3 beneath it excluded too; a merge naming it
+      refused at the write; and seven ledger tests driving the real `record_source`.
+- [x] `tests/test_unverified_sources.py` — the rule bites on a reworded line and on
+      a reordered one, tolerates whitespace, lets a pure addition through, leaves a
+      new section alone, and does not apply to verified sources. Plus the merge
+      prompt's text, asserted on the PROMPT rather than on the call — deleting the
+      appended rule leaves a call-level assertion green.
+- [x] All 12 new guards verified by reverting them. One (the merge prompt) was
+      STILL GREEN on the first pass and got a second test; see `## Changelog`.
+
+## What is enforced, and what is not
+
+Copied into the PR body verbatim, because the difference is the whole value:
+
+- **Enforced, deterministically.** No line already in a Manual is deleted or
+  reworded by a merge whose source was a recollection. David holds both sides
+  before it writes.
+- **Prompt-only.** That the model cooperates, and the tone of what it adds.
+- **Not checked by anything.** Whether an ADDED line is true. Nothing can check
+  that; it is why the ledger exists.
+- **Unmeasured.** How often the rule holds a section back. `_MERGE_SYSTEM` asks for
+  "the FULL merged content" and models reword while reproducing.
+
 ## Changelog
 
 - **The `Source URL` guard is two guards, and the first revert check only found
@@ -104,6 +181,19 @@ presented as a failure.
   request shape would have passed on a builder whose output flattens to nothing.
   The test converts to the response shape by hand, for the same reason the
   RCDATA-title test builds its shape by hand.
+- **A test asserting the merge call was TOLD does not guard what it was told.**
+  The first version stubbed `merge_sections` and asserted `unverified is True`;
+  deleting the rule text the real function appends left it green. The revert pass
+  caught it. There are now two tests — one for the plumbing, one driving the real
+  `merge_sections` with only `complete_json` replaced. Same shape as the
+  `Source URL` guard that turned out to be two guards, and the second time this
+  branch has been caught guarding the wrapper instead of the thing.
+- **`test_a_huge_manual_does_not_get_its_tail_dropped` used `📚 Sources` as its
+  tail section**, so it routed to and rewrote the section that is now David's
+  ledger — it would have asserted the exact opposite of the new rule. Renamed to
+  `📎 References`, which tests the same tail-not-dropped property. Worth recording
+  because any Manual with real content under `Sources` is now equally frozen: that
+  section can no longer be rewritten by a merge, by design.
 - **The duplicate check is two more Notion calls before the fetch**, so
   `test_async_io`'s exact-sequence assertion for Learn grew two entries rather
   than being loosened. They were also making real network calls in the suite until
@@ -111,20 +201,21 @@ presented as a failure.
 
 ## Open questions
 
-- **How far should Implement go with an unverified source?** Recommended, in order,
-  none of it built here:
-  1. Carry the marker INTO the Manual — prefix each line merged from an unverified
-     source with `(unverified)` or write the Sources bullet as
-     `Title — unverified, model recollection`. Today the Manual is the one place the
-     provenance is lost, and it is the place the content is read from years later.
-  2. Refuse by default, force with `Implement … - Brain !`, mirroring the Learn force
-     token from Milestone 1. Symmetric, and it puts the decision at the moment the
-     content leaves the quarantine of its own page.
-  3. Tell the merge prompt about it, so unverified claims merge as hedged rather than
-     as fact.
-  (1) is the one worth doing; (2) is worth doing if the Manual is ever shared or acted
-  on without re-reading; (3) is cheap but the weakest — it asks the model to be careful
-  with its own recollection.
+- ~~**How far should Implement go with an unverified source?**~~ — resolved in
+  milestones 5–7. Option 1 was built as the **Sources ledger**, not as inline
+  suffixes: the merge replaces a section's full content, so an inline marker goes
+  back through the model next run and survives at its discretion, and nothing ever
+  removes it if a real source later confirms the claim. Option 3 was built as an
+  **enforced check** rather than the prompt-only hedging first proposed. Option 2
+  (the force gate) was declined — see Milestone 6.
+- **How often the additions-only rule holds a section back is unmeasured.** If it
+  turns out to be most of them, the honest next move is to loosen it to "no
+  existing line may be DROPPED, rewording allowed" — which cannot be checked
+  deterministically and would have to be described as prompt-only, losing the one
+  property that makes the current rule worth having.
+- **The Diet page has no ledger.** Its structure is a fixed H1>H2>H3 toggle tree
+  with nowhere to put one, and inventing a section there is a schema change to
+  argue for separately. `Implement … - Diet` warns but does not record.
 - **`Learn book` is still not deduplicated.** It has no URL, so this branch does not
   cover it; the equivalent would be a title match against `LETTI_ID`, which is a
   fuzzy-match decision of its own and was not asked for.

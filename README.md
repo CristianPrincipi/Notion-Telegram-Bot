@@ -233,6 +233,26 @@ all: the summary is Claude's recollection of the work, so the page opens with a
 red callout saying so, and `Implement` repeats that warning in its plan message
 whenever a merge is drawing on one of those pages.
 
+### What an unverified source can do to a Manual
+
+Two things, and it is worth knowing exactly which is guaranteed:
+
+**It can add, but it cannot rewrite.** Before writing, David compares the merged
+result against what the section already held. If any existing line has been
+dropped or reworded, the whole section is refused and reported instead — the
+Manual keeps what you had, and the reply names the lines that would have gone.
+This is a real check, not a request: David has both versions in hand.
+
+**Nothing verifies what it adds.** No check can tell whether a recollected fact is
+true. That is why every Implement run now appends a line to the Manual's
+`📚 Sources` section — what was merged, when, and whether the source was read or
+recalled. That section is David's: it is never shown to the model when deciding
+what to change, and a merge naming it is refused, so the record cannot be
+rewritten by the thing it is recording.
+
+The merge is also *told* the source is unverified, which is what makes the check
+above pass often enough to be useful. It is not what makes it true.
+
 ### Partial writes
 
 Notion caps an append at 100 blocks and has no transaction across the batches,

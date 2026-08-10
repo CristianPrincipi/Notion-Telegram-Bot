@@ -62,7 +62,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
 | `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the `Source URL` property, the duplicate check and its ` !` override) | Manual merging; the unverified marker's TEXT (that is `config.py`) |
-| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `services/implement_diet.py`) |
+| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id`, the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge) and the additions-only rule for unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
 | `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
@@ -173,6 +173,41 @@ sends to the merge call. Detecting it costs no extra read. One predicate
 (`config.is_unverified_source`) serves the writer and the reader, because two `in`
 checks in two modules is how a marker gets reworded in one of them and silently
 stops being detected in the other.
+
+**The Manual keeps a ledger, and it is the one section a merge cannot touch.**
+`📚 Sources` used to be written on the first run and never again, so a Manual
+recorded nothing about what had been merged into it since. It is now appended to
+on every run — title, whether the source was unverified, and the date — and it is
+the only place an unverified source's provenance survives, because a marker inside
+a section does NOT: the merge returns a section's full content, so anything inline
+goes back through the model next run and is reworded or dropped at its discretion.
+
+Kept unwritable by **two independent guards**, and they are independent because
+each one alone is undoable by a change that looks reasonable on its own:
+`routable_sections` keeps it out of what the router is SHOWN (an inline
+`[s.path for s in sections]` at the call site puts it back), and
+`apply_section_updates` refuses a Sources path however it was arrived at (a model
+can name a section it was never offered). Both are asserted in
+`tests/test_implement_sections.py`.
+
+**An unverified source may add to a Manual; it may not rewrite one.**
+`_hold_back_rewrites` compares the merge's output against the section's existing
+lines and refuses the whole section unless every one of them survives verbatim
+(whitespace-normalised, order significant — a numbered routine with two steps
+swapped has been changed). A held-back section is a fourth outcome in the reply,
+next to applied / skipped / partial, because "David refused" and "Notion failed"
+need different next steps.
+
+Be precise about what this buys, in the code and in any PR describing it:
+
+- **Enforced:** no line already in the Manual is deleted or reworded on the
+  authority of a recollection. Deterministic — David holds both sides before it
+  writes.
+- **Prompt-only:** `_UNVERIFIED_MERGE_RULE` asks the model to reproduce existing
+  lines exactly. It is what makes the check pass often enough to be usable; it is
+  not what makes it true.
+- **Not checked by anything:** whether an ADDED line is true. That is the ledger's
+  job, and the ledger is a trail, not a verdict.
 
 **Learn asks whether it has seen this URL before, and asks Notion, not itself.**
 The same link twice — which is what you send after a timeout — made a second page
@@ -525,14 +560,19 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   the bug's home. The live copy was in `briefing.py`. `david.headers` — a second
   Notion header dict, superseded by `clients/notion_client.py` and read by nothing — has been
   deleted along with the `NOTION_KEY` that existed only to build it.)
-- **How far the unverified marker should follow the content is undecided.** Today
-  it stops at the Manual's door: `Implement` names it in the plan and in the
-  confirmation, and then merges normally. The content itself lands in the Manual
-  with no provenance at all, which is the one place it will be read years later as
-  settled. Three options were written up in `PLAN.md` and none were built —
-  carrying the marker into the merged lines, refusing an unverified `Implement`
-  without a force token, or telling the merge prompt about it. The first is the
-  one worth doing.
+- **What an unverified source may do to a Manual is now bounded, and the bound is
+  narrower than it looks.** `_hold_back_rewrites` refuses to write a section unless
+  every existing line survives verbatim, so a recollection can ADD but cannot
+  delete or reword. That is deterministic and it is the only part that is
+  enforced. Nothing checks whether an added line is TRUE — nothing can — which is
+  what the Sources ledger is for. `_UNVERIFIED_MERGE_RULE` in the prompt is a hint
+  that helps the model comply, never the guarantee; do not describe it as one.
+  How often the rule holds a section back is still unmeasured: `_MERGE_SYSTEM`
+  asks for "the FULL merged content" and models reword while reproducing.
+- **The force gate on `Implement` was considered and declined.** A prompt-level
+  refusal (`Implement … - Brain !`) was the obvious symmetry with Learn's token
+  and was rejected deliberately: a gate that fires on every book page is a gate
+  you stop reading. The plan message is the checkpoint.
 - **`Learn book` is not de-duplicated.** It has no URL. The equivalent would be a
   title match against `LETTI_ID`, which is a fuzzy-match decision of its own.
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`

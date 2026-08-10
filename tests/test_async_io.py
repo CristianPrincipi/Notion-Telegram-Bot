@@ -247,9 +247,12 @@ def implement_stubs(monkeypatch):
         "read_manual_sections":  lambda page_id: ([_fake_section()], None),
         "route_sections":        lambda paths, text, title: (
             {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None),
-        "merge_sections":        lambda targets, text, title: (
+        "merge_sections":        lambda targets, text, title, unverified=False: (
             {"updates": [{"path": "Perfect Process", "lines": ["merged"]}]}, None),
         "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (1, [], []),
+        # The Sources ledger — one more Notion write, and one more chance to
+        # freeze the bot if it is ever called straight from the loop.
+        "record_source":         lambda page_id, sections, title, unverified: (True, None),
         "update_page":           lambda page_id, props: (True, None),
     })
 
@@ -274,6 +277,7 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
         "route_sections",          # cheap: section names only
         "merge_sections",          # the slow one, affected sections only
         "apply_section_updates",   # append-then-delete, per section
+        "record_source",           # the Sources ledger, a pure append
         "update_page",             # tick 'Implemented'
     )
     assert update.message.replied_with("Manual updated")
