@@ -5,14 +5,18 @@ import re
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
+from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from clients.anthropic_client import complete_json
+from clients.calendar_client import now_local
 from config import (
-    ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, LEARN_TYPES,
-    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS,
+    ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, KNOWLEDGE_RECALL_TYPES, LEARN_TYPES,
+    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS, UNVERIFIED_NOTE,
 )
 from clients.notion_client import (
-    create_page,
+    CREATED_DESC, create_page, database_property_type, get_page_title,
+    query_database, rich,
     paragraph as _paragraph, heading2 as _heading2, callout as _callout,
     quote as _quote, bullet as _bullet, divider as _divider,
 )
@@ -27,6 +31,141 @@ logger = logging.getLogger(__name__)
 # so a type cannot be supported without being documented or documented without
 # being supported.
 SUPPORTED_TYPES = list(LEARN_TYPES)
+
+
+# ─── 0. SOURCE IDENTITY ────────────────────────────────────────────────────────
+# Learn had no idea it had ever seen a URL before. The same link sent twice — and
+# after a transient failure it WILL be sent twice — made a second Notion page and
+# paid for a second summarisation. The two pages then have near-identical titles,
+# which is precisely what search_page_in_db's `contains` filter cannot choose
+# between when Implement goes looking for the source.
+#
+# The check is cheap (one query) and it happens BEFORE the fetch and before
+# Claude, so a duplicate costs one request and nothing else.
+
+# The property David matches on. It is not created by this code: adding a column
+# to a database David does not own the schema of is a bigger decision than
+# de-duplicating one command. When it is missing, run_learn says so and carries
+# on — see the note there.
+LEARN_SOURCE_PROPERTY = "Source URL"
+
+# Parameters that identify the CLICK, not the DOCUMENT. Stripped so the copy of a
+# link out of a newsletter and the same link off the site match each other.
+#
+# Conservative on purpose, and it can afford to be: a missed match costs a
+# duplicate page, and an over-eager one costs a single ` !` to override — but the
+# ones below are unambiguous. Anything a site might use for real routing (`id`,
+# `p`, `page`, and YouTube's `t`) is NOT here.
+_TRACKING_PARAMS = frozenset({
+    "fbclid", "gclid", "gbraid", "wbraid", "msclkid", "dclid", "yclid",
+    "mc_cid", "mc_eid", "igshid", "igsh", "si", "twclid", "ttclid",
+    "_hsenc", "_hsmi", "vero_id", "vero_conv", "ck_subscriber_id",
+    "ref", "ref_src", "referrer", "source", "spm", "cmpid", "ncid",
+})
+
+# utm_source, utm_medium, utm_campaign, utm_term, utm_content, and the long tail
+# of utm_* that individual platforms invent.
+_TRACKING_PREFIXES = ("utm_",)
+
+
+def normalise_source_url(url: str) -> str:
+    """The comparable form of a URL. "" for anything that is not http(s).
+
+    Every transformation here answers "would these two strings have fetched the
+    same bytes?", and each one is a way the SAME article arrives looking
+    different:
+
+      http → https        the same page, linked from an old post
+      Host case, `www.`   the same page, typed by hand
+      :80 / :443          the same page, from a tool that spells the port out
+      utm_* & friends     the same page, from a newsletter
+      #fragment           the same page, linked to one of its headings
+      trailing /          the same page, with and without
+
+    Remaining parameters are SORTED rather than dropped: `?v=abc&list=xyz` and
+    `?list=xyz&v=abc` are one video, but `?v=abc` and `?v=def` are two, so the
+    query cannot simply be discarded.
+
+    The normalised form is what is stored and what is matched. The ORIGINAL url
+    is what goes in the page's 🔗 Source link, so nothing a person might want to
+    click is lost to this.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # An unparseable URL is not a URL. Returning "" means "no identity to
+        # compare", which is the honest answer and disables the check for it.
+        return ""
+
+    if parts.scheme.lower() not in ("http", "https"):
+        return ""
+
+    host = parts.hostname or ""
+    if host.startswith("www."):
+        host = host[4:]
+    if parts.port and parts.port not in (80, 443):
+        host = f"{host}:{parts.port}"
+
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_PARAMS
+            and not k.lower().startswith(_TRACKING_PREFIXES)]
+
+    path = parts.path.rstrip("/")
+
+    return urlunsplit(("https", host, path, urlencode(sorted(kept)), ""))
+
+
+def _source_url_filter(prop_type: str, normalised: str) -> dict:
+    """The Notion filter for an exact match on the Source URL property.
+
+    Both `url` and `rich_text` are accepted because both are reasonable ways to
+    have made this column by hand, and a filter that names the wrong one is a
+    Notion 400 — which would arrive as "no duplicate found", the same shape of
+    lie search_page_in_db's hardcoded "Name" used to produce.
+    """
+    key = "url" if prop_type == "url" else "rich_text"
+    return {"property": LEARN_SOURCE_PROPERTY, key: {"equals": normalised}}
+
+
+def find_page_by_source_url(db_id: str, prop_type: str, normalised: str):
+    """The most recent page in `db_id` already holding this URL. (page, error).
+
+    (None, None) means there genuinely is not one — the caller may proceed.
+    """
+    pages, err = query_database(
+        db_id,
+        filter_obj=_source_url_filter(prop_type, normalised),
+        sorts=CREATED_DESC,
+    )
+    if err:
+        return None, err
+    return (pages[0] if pages else None), None
+
+
+def _saved_when(page: dict) -> str:
+    """'3 days ago, on 07 August 2026' — from a page's created_time.
+
+    The relative half is what makes the duplicate legible at a glance ("that was
+    this morning's failed run" vs "that was last spring"); the absolute half is
+    what survives being read a week later. Falls back to whatever Notion sent if
+    it cannot be parsed, rather than dropping the only fact the message is for.
+    """
+    stamp = (page or {}).get("created_time") or ""
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp or "at an unknown time"
+
+    today = now_local()
+    when  = when.astimezone(today.tzinfo)
+    days  = (today.date() - when.date()).days
+    # days < 0 is a clock disagreeing with Notion's, not a page from the future.
+    relative = "today" if days <= 0 else "yesterday" if days == 1 else f"{days} days ago"
+    return f"{relative}, on {when.strftime('%d %B %Y')}"
 
 
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
@@ -342,8 +481,25 @@ def _source_link(url: str) -> dict:
             ]}}
 
 
-def build_notion_blocks(summary: dict, source: str) -> list[dict]:
+def build_notion_blocks(summary: dict, source: str, content_type: str = "") -> list[dict]:
+    """The page body. `content_type` decides whether it opens with a warning.
+
+    The unverified callout goes FIRST — above the TL;DR, which is the one part of
+    the page anybody reads in a hurry, and above the source link, which is absent
+    on exactly the pages that need the warning.
+    """
     blocks: list[dict] = []
+
+    # ── The unverified-source marker ───────────────────────────────────────────
+    # A knowledge-recall page has no source text: `Learn book X` asks Claude to
+    # summarise from memory, and the answer is filed next to pages built from a
+    # real transcript. Nothing distinguished the two, and this content flows on
+    # into a Manual through Implement as though it had been read somewhere.
+    #
+    # red_background, not the default blue: this is the one callout on the page
+    # that is not information about the subject.
+    if content_type in KNOWLEDGE_RECALL_TYPES:
+        blocks.append(_callout(UNVERIFIED_NOTE, "⚠️", "red_background"))
 
     # TL;DR callout
     if summary.get("tldr"):
@@ -392,8 +548,18 @@ def _get_db_id(content_type: str) -> str | None:
 
 
 def create_learn_page(content_type: str, title: str, blocks: list[dict],
-                      metadata: dict | None = None) -> tuple[bool, str]:
-    """Create a Notion page. Returns (success, page_id_or_error).
+                      metadata: dict | None = None) -> tuple[bool, str, str | None]:
+    """Create a Notion page. Returns (success, page_id_or_error, incomplete).
+
+    THREE outcomes, because Notion writes have three (see create_page):
+
+        (True,  page_id, None)   the page and all of its content are there
+        (True,  page_id, why)    the page is there and is MISSING CONTENT
+        (False, error,   None)   nothing was created
+
+    The middle one used to come back as the first: create_page returns the page
+    id together with the append error, and `if not page_id` cannot see the
+    difference — so a page holding its first 100 blocks reported a clean save.
 
     `metadata` defaults to None, not {}: a mutable default is built ONCE, at
     definition time, and shared by every call that omits the argument — so
@@ -403,7 +569,7 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict],
 
     db_id = _get_db_id(content_type)
     if not db_id:
-        return False, f"No Notion database configured for type '{content_type}'."
+        return False, f"No Notion database configured for type '{content_type}'.", None
 
     properties: dict = {
         "Name": {"title": [{"text": {"content": title[:2000]}}]},
@@ -413,6 +579,17 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict],
     if author and content_type in ("book", "article"):
         properties["Author"] = {"rich_text": [{"text": {"content": author[:500]}}]}
 
+    # The de-duplication key, written only when the column exists and the caller
+    # resolved its type. A property Notion does not know about is a 400 on the
+    # CREATE — which would turn "your database has no Source URL column yet" into
+    # "Learn is broken", so the absence disables the write rather than causing it.
+    source_url  = metadata.get("source_url", "")
+    source_type = metadata.get("source_property_type", "")
+    if source_url and source_type:
+        properties[LEARN_SOURCE_PROPERTY] = (
+            {"url": source_url} if source_type == "url" else {"rich_text": rich(source_url)}
+        )
+
     # Shared create_page handles the >100-block batching and retries internally
     page_id, err = create_page(
         db_id,
@@ -421,11 +598,72 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict],
         icon=_emoji(content_type),
     )
     if not page_id:
-        return False, err or "Unknown error creating page."
-    return True, page_id
+        return False, err or "Unknown error creating page.", None
+    return True, page_id, err
 
 
 # ─── 5. MAIN HANDLER ───────────────────────────────────────────────────────────
+
+# The override for the duplicate check: a bang as its own trailing token.
+#
+# `\s+!$` and not `!$`, so `Learn book Wow!` is a book called "Wow!" and not a
+# forced re-run of one called "Wow". The same lesson `Remind`'s `t` lookahead
+# carries: a token that can swallow the end of a real value is a bug waiting for
+# the one input that ends that way.
+_FORCE_TOKEN = re.compile(r"\s+!$")
+
+
+def _strip_force(source: str) -> tuple[str, bool]:
+    """('https://…', True) if the source ends in a bare `!`, stripped."""
+    if _FORCE_TOKEN.search(source):
+        return _FORCE_TOKEN.sub("", source).strip(), True
+    return source, False
+
+
+async def _check_for_duplicate(content_type: str, normalised: str, *, notify, notify_md):
+    """Has this URL been learned already? Returns (existing_page, property_type).
+
+    Every failure here DEGRADES rather than blocks, and says so:
+
+      no database configured   silent — create_learn_page reports it properly
+      property does not exist  said once; the check AND the write are skipped
+      the query failed         said, naming the duplicate it could not rule out
+
+    Refusing to Learn because a duplicate check could not run would make an
+    optional safeguard into a hard dependency on a column that may not exist yet.
+    The cost of degrading is one duplicate page; the cost of refusing is the
+    command.
+    """
+    db_id = _get_db_id(content_type)
+    if not db_id:
+        return None, ""
+
+    prop_type, err = await asyncio.to_thread(
+        database_property_type, db_id, LEARN_SOURCE_PROPERTY)
+    if err:
+        await notify(f"⚠️ Could not check for duplicates: {err}\n"
+                     "Continuing — this may create a second page for the same source.")
+        return None, ""
+    if not prop_type:
+        await notify_md(
+            f"⚠️ No `{LEARN_SOURCE_PROPERTY}` property in this database, so I cannot "
+            "tell whether this URL is already saved.\n"
+            f"Add a `{LEARN_SOURCE_PROPERTY}` property (type *URL*) to switch duplicate "
+            "detection on.")
+        return None, ""
+
+    existing, err = await asyncio.to_thread(
+        find_page_by_source_url, db_id, prop_type, normalised)
+    if err:
+        await notify(f"⚠️ Could not check for duplicates: {err}\n"
+                     "Continuing — this may create a second page for the same source.")
+        # The property type is still good: the SCHEMA read succeeded, only the
+        # query failed. Returning it keeps the new page's Source URL written, so
+        # one failed check does not also cost the next run its match.
+        return None, prop_type
+
+    return existing, prop_type
+
 
 async def run_learn(user_text: str, file_bytes: bytes | None = None,
                     *, notify, notify_md=None):
@@ -438,6 +676,9 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
       Learn podcast https://show.com/episode
       Learn book    Atomic Habits          ← summarised from Claude's knowledge
       Learn pdf     <send a PDF file>      ← attach file, send "Learn pdf" as caption
+
+    A trailing ` !` on any of them re-summarises a source already in Notion
+    instead of stopping to ask.
     """
     notify_md = notify_md or notify
 
@@ -453,8 +694,8 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
         )
         return
 
-    content_type = match.group(1).lower()
-    source       = (match.group(2) or "").strip()
+    content_type  = match.group(1).lower()
+    source, force = _strip_force((match.group(2) or "").strip())
 
     if content_type not in SUPPORTED_TYPES:
         # content_type comes from a \w+ group, so it cannot contain a backtick and
@@ -462,6 +703,38 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
         await notify_md(f"❌ Unknown type `{content_type}`. Supported: {', '.join(SUPPORTED_TYPES)}",
         )
         return
+
+    # ── Have we already learned this? ──────────────────────────────────────────
+    # BEFORE the fetch and before Claude, which is the whole point: a duplicate
+    # costs one Notion query instead of a scrape and a summarisation.
+    #
+    # Only URL sources have an identity to compare. A book title and a PDF upload
+    # do not, so they skip this entirely rather than being matched on something
+    # weaker — see PLAN.md.
+    normalised   = normalise_source_url(source)
+    source_property_type = ""
+    if normalised:
+        existing, source_property_type = await _check_for_duplicate(
+            content_type, normalised, notify=notify, notify_md=notify_md)
+        if existing is not None and not force:
+            # Notion's title and the user's own URL — both data, both escaped, and
+            # NEITHER inside a code span. A backslash escape is literal text
+            # inside `code` in Markdown v1 (which is why the error reporters send
+            # plain), so a code span here would either show the backslashes or,
+            # unescaped, break on the first `_` in a URL. The command line is
+            # escaped plain text: Telegram renders it back as typed, so it is
+            # still copy-pasteable.
+            await notify_md(
+                f"📎 *Already saved* — nothing was fetched and nothing was summarised.\n\n"
+                f"{_emoji(content_type)} *{escape_md(get_page_title(existing))}*\n"
+                f"🗓️ Saved {escape_md(_saved_when(existing))}\n"
+                f"🔗 Matched on: {escape_md(normalised)}\n\n"
+                f"To summarise it again anyway, put a `!` on the end:\n"
+                f"{escape_md(f'Learn {content_type} {source} !')}")
+            return
+        if existing is not None and force:
+            await notify("🔁 Already saved — re-summarising as asked. "
+                         "This will create a second page.")
 
     # ── Extract raw text ───────────────────────────────────────────────────────
     await notify(f"⏳ Fetching {content_type}…")
@@ -595,7 +868,7 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
     final_author = summary.get("author") or author
 
     # ── Build Notion blocks ────────────────────────────────────────────────────
-    blocks = build_notion_blocks(summary, source)
+    blocks = build_notion_blocks(summary, source, content_type)
 
     # ── Save to Notion ─────────────────────────────────────────────────────────
     await notify("📝 Saving to Notion…")
@@ -603,20 +876,37 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
     # No wait_for: this WRITES. A wait_for cannot cancel the worker thread, so
     # timing out here would report failure while the page was still being
     # created. notion_request already bounds each request and its retries.
-    ok, result = await asyncio.to_thread(
+    ok, result, incomplete = await asyncio.to_thread(
         create_learn_page,
         content_type, final_title, blocks,
-        metadata={"author": final_author},
+        metadata={"author": final_author,
+                  "source_url": normalised,
+                  "source_property_type": source_property_type},
     )
 
-    if ok:
-        # Both values are Claude's prose (final_title falls back to a raw URL), so
-        # both are escaped — a title with an underscore used to lose the whole
-        # confirmation even though the page had been written.
-        tldr_preview = summary.get("tldr", "")[:220]
-        await notify_md(f"✅ Saved to Notion!\n\n"
-            f"{_emoji(content_type)} *{escape_md(final_title)}*\n\n"
-            f"💡 {escape_md(tldr_preview)}",
-        )
-    else:
+    if not ok:
         await notify(f"❌ Could not save to Notion: {result}")
+        return
+
+    # Both values are Claude's prose (final_title falls back to a raw URL), so
+    # both are escaped — a title with an underscore used to lose the whole
+    # confirmation even though the page had been written.
+    tldr_preview = summary.get("tldr", "")[:220]
+    headline = "⚠️ *Saved partially*" if incomplete else "✅ Saved to Notion!"
+    message = (f"{headline}\n\n"
+               f"{_emoji(content_type)} *{escape_md(final_title)}*\n\n"
+               f"💡 {escape_md(tldr_preview)}")
+    await notify_md(message)
+
+    if incomplete:
+        # Plain, and a SECOND message: this one carries a raw Notion error, which
+        # cannot be made Markdown-safe (see telegram_text) — and it is the half
+        # that must arrive even if the first is rejected.
+        await notify(f"⚠️ The page exists but is missing content: {incomplete}\n"
+                     "Re-running Learn will create a SECOND page rather than "
+                     "completing this one — delete this page first.")
+
+    if content_type in KNOWLEDGE_RECALL_TYPES:
+        await notify("⚠️ No source was read for this one — it is Claude's "
+                     "recollection of the work, and the page says so at the top. "
+                     "Treat quotes, figures and dates as unverified.")

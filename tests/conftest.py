@@ -93,6 +93,42 @@ def with_update(update) -> dict:
     return {"notify": notify, "notify_md": notify_md}
 
 
+# ─── NOTION WRITE DOUBLES ──────────────────────────────────────────────────────
+# append_children returns notion_client.Written — a list of the created blocks
+# that also knows how many BATCHES went in, which is what lets a caller say "2 of
+# 5 written" instead of a flat failure. A double that returns a bare list looks
+# right and drops that, so the caller under test can no longer tell a write that
+# landed nothing from one that landed half. These build the real type.
+
+def written_ok(blocks=1):
+    """A fully successful append of `blocks` blocks, in one batch."""
+    from clients.notion_client import Written
+
+    return Written([{"id": f"new-{i}"} for i in range(blocks)],
+                   batches_done=1, batches_total=1, blocks_total=blocks)
+
+
+def written_nothing(batches_total=1, blocks_total=1):
+    """An append whose FIRST batch failed: nothing is on the page."""
+    from clients.notion_client import Written
+
+    return Written(batches_done=0, batches_total=batches_total, blocks_total=blocks_total)
+
+
+def written_half(batches_done=2, batches_total=5, blocks_total=430):
+    """An append that committed some batches and then failed.
+
+    The state the whole partial-write change exists for: this content is on the
+    page, cannot be rolled back (Notion has no transactions), and re-running
+    appends a second copy of it.
+    """
+    from clients.notion_client import Written
+
+    return Written([{"id": f"new-{i}"} for i in range(batches_done * 100)],
+                   batches_done=batches_done, batches_total=batches_total,
+                   blocks_total=blocks_total)
+
+
 # ─── TELEGRAM DOUBLES ──────────────────────────────────────────────────────────
 
 class FakeDocument:

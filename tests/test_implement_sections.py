@@ -24,10 +24,16 @@ itself.
 
 import pytest
 
+from config import UNVERIFIED_MARKER
 from services import implement
-from conftest import FakeUpdate, run, with_update
+from conftest import FakeUpdate, run, with_update, written_nothing, written_ok
 
 AREA_DB = "test-brain-id"          # BRAIN_ID in the fake environment
+
+# Captured at import, before any fixture patches the module attribute away.
+# The ledger tests below put it back: monkeypatch.undo() would drop every
+# other patch the `manual` fixture installed along with it.
+REAL_RECORD_SOURCE = implement.record_source
 
 
 # ─── A FAKE MANUAL ─────────────────────────────────────────────────────────────
@@ -82,40 +88,54 @@ def manual(monkeypatch):
         "appends": [],            # [(after, blocks)]
         "deletes": [],
         "append_error": None,
+        # What the failed append got as far as writing. Defaults to nothing —
+        # a test that wants the half-written case sets it to written_half().
+        "append_written": written_nothing(),
+        "recorded": [],           # [(source_title, unverified)] per ledger write
+        "source_text": "SOURCE BODY",
     }
 
     def get_children(page_id):
         # The Learn source page and the Manual are different pages; returning the
         # Manual for both would let a section's content leak in as "the source".
         if page_id == "source-1":
-            return [leaf("src-1", "SOURCE BODY")], None
+            return [leaf("src-1", state["source_text"])], None
         return list(state["blocks"]), None
 
     def route_sections(section_paths, source_text, source_title):
         state["route_prompt"] = {"paths": list(section_paths), "source": source_text}
         return {"affected": state["affected"], "new_steps": state["new_steps"]}, None
 
-    def merge_sections(targets, source_text, source_title):
+    def merge_sections(targets, source_text, source_title, unverified=False):
         state["merge_targets"] = [dict(t) for t in targets]
+        state["merge_unverified"] = unverified
         return {"updates": state["updates"]}, None
 
     def append_children(block_id, blocks, after=None):
         if state["append_error"]:
-            return [], state["append_error"]
+            return state["append_written"], state["append_error"]
         state["appends"].append((after, blocks))
-        return [{"id": f"new-{len(state['appends'])}"}], None
+        return written_ok(1), None
 
     monkeypatch.setattr(implement, "get_area_db_id", lambda area: AREA_DB)
     monkeypatch.setattr(implement, "search_page_in_db",
                         lambda db, name, exact=False: (
                             {"id": "manual-1" if db == AREA_DB else "source-1",
-                             "properties": {}}, None))
+                             "properties": {"Name": {"type": "title", "title": [
+                                 {"plain_text": "Memory Techniques"}]}}}, None))
     monkeypatch.setattr(implement, "get_children", get_children)
     monkeypatch.setattr(implement, "route_sections", route_sections)
     monkeypatch.setattr(implement, "merge_sections", merge_sections)
     monkeypatch.setattr(implement, "append_children", append_children)
     monkeypatch.setattr(implement, "delete_block", state["deletes"].append)
     monkeypatch.setattr(implement, "update_page", lambda page_id, props: (True, None))
+    # The Sources ledger runs AFTER the section writes and appends to a section
+    # none of these tests touch. Stubbed here so `appends` and the write-ordering
+    # assertions keep describing the section rewrite they exist for; the real
+    # record_source is driven, unstubbed, in section 6 below.
+    monkeypatch.setattr(implement, "record_source",
+                        lambda page_id, sections, title, unverified: (
+                            state["recorded"].append((title, unverified)) or (True, None)))
     return state
 
 
@@ -203,7 +223,7 @@ def test_the_routing_call_sees_names_but_no_content(manual):
     assert manual["route_prompt"]["paths"] == [
         "Perfect Process", "Improvements & Optimizations", "Step-by-Step Breakdown",
         "Step-by-Step Breakdown > Active Recall",
-        "Step-by-Step Breakdown > Interleaving", "Sources",
+        "Step-by-Step Breakdown > Interleaving",
     ]
     assert "Prime the material" not in str(manual["route_prompt"])
     assert "Spaced repetition" not in str(manual["route_prompt"])
@@ -328,15 +348,170 @@ def test_a_huge_manual_does_not_get_its_tail_dropped(manual):
     manual["blocks"] = [
         heading("h-process", "⚙️ Perfect Process"),
         leaf("p-1", "x" * 60000, "numbered_list_item"),
-        heading("h-tail", "📚 Sources"),
+        heading("h-tail", "📎 References"),
         leaf("s-1", "THE TAIL SECTION"),
     ]
-    manual["affected"] = [{"path": "Sources"}]
-    manual["updates"] = [{"path": "Sources", "lines": ["Make It Stick"]}]
+    manual["affected"] = [{"path": "References"}]
+    manual["updates"] = [{"path": "References", "lines": ["Make It Stick"]}]
 
     implement_it()
 
     sent = manual["merge_targets"]
-    assert [t["path"] for t in sent] == ["Sources"]
+    assert [t["path"] for t in sent] == ["References"]
     assert "THE TAIL SECTION" in sent[0]["text"], "the tail section was lost"
     assert manual["deletes"] == ["s-1"]
+
+
+# ─── 6. THE SOURCES LEDGER ─────────────────────────────────────────────────────
+# 📚 Sources is the one section David owns. It is a record of what has been
+# merged into the page and when, which is the only place an unverified source's
+# provenance survives — the merged CONTENT cannot carry it, because a marker
+# inside a section goes back through the model on the next run and is reworded or
+# dropped at its discretion.
+#
+# So it has to be unwritable by a merge, and that is guarded TWICE on purpose.
+# Either guard alone can be undone by a change that looks reasonable in isolation:
+# an inline `[s.path for s in sections]` at the routing call restores the section
+# to the model's view, and a model can name a section it was never shown.
+
+def test_sources_is_never_offered_to_the_routing_call(manual):
+    """THE ONE THAT KEEPS THE EXCLUSION FROM BEING UNDONE.
+
+    Asserted against the paths the REAL _sectioned_run passed to route_sections,
+    not against routable_sections in isolation — the failure mode being guarded
+    is someone rebuilding that list at the call site, which a unit test of the
+    helper would not notice.
+    """
+    implement_it()
+
+    assert "Sources" not in manual["route_prompt"]["paths"]
+    assert not any("Sources" in path for path in manual["route_prompt"]["paths"])
+
+
+def test_sources_is_still_indexed_even_though_it_is_not_routed(manual):
+    """Excluded from ROUTING, not from the index.
+
+    `record_source` has to find the section to append to it, and `Get Sources -
+    Brain` has to be able to read it. Dropping it from read_manual_sections would
+    break both while making this file's other assertions pass.
+    """
+    sections, _ = implement.read_manual_sections("manual-1")
+
+    assert "Sources" in [s.path for s in sections]
+
+
+def test_an_h3_under_sources_is_excluded_too(manual):
+    """Matched on the first path segment, so a nested heading cannot slip past a
+    check that only compared whole paths."""
+    manual["blocks"] = MANUAL_BLOCKS + [
+        heading("h-sub", "→ Primary", level=3),
+        leaf("sub-1", "Make It Stick, chapter 2"),
+    ]
+
+    implement_it()
+
+    assert not any(path.startswith("Sources") for path in manual["route_prompt"]["paths"])
+
+
+def test_a_merge_naming_sources_is_refused_at_the_write(manual):
+    """The second guard, and the reason there are two.
+
+    The routing list controls what Claude SEES. This controls what it can DO, so
+    a model naming a section it was never offered — or a future change to how
+    that list is built — still cannot rewrite the ledger.
+    """
+    manual["affected"] = [{"path": "Sources"}]
+    manual["updates"]  = [{"path": "Sources", "lines": ["Rewritten by the model"]}]
+
+    update = implement_it()
+
+    assert manual["deletes"] == [], "the ledger's existing entries were deleted"
+    assert manual["appends"] == []
+    assert update.message.replied_with("never rewritten by a merge")
+
+
+# ─── 7. WHAT THE LEDGER WRITES ─────────────────────────────────────────────────
+# These drive the REAL record_source — the fixture's stub is replaced — because
+# the point is what reaches Notion, not that a stub was called.
+
+@pytest.fixture
+def ledger(manual, monkeypatch):
+    """The real record_source, with its writes captured."""
+    monkeypatch.setattr(implement, "record_source", REAL_RECORD_SOURCE)
+    writes = []
+
+    def append_children(block_id, blocks, after=None):
+        writes.append({"after": after,
+                       "texts": [b[b["type"]]["rich_text"][0]["text"]["content"]
+                                 for b in blocks],
+                       "types": [b["type"] for b in blocks]})
+        return written_ok(len(blocks)), None
+
+    monkeypatch.setattr(implement, "append_children", append_children)
+    manual["writes"] = writes
+    return manual
+
+
+def test_every_run_appends_a_line_to_the_ledger(ledger):
+    implement_it()
+
+    entry = ledger["writes"][-1]
+    assert entry["types"] == ["bulleted_list_item"]
+    assert "Memory Techniques" in entry["texts"][0]
+
+
+def test_the_ledger_line_says_when_a_source_was_unverified(ledger):
+    ledger["blocks"] = [
+        heading("h-process", "⚙️ Perfect Process"),
+        leaf("p-1", "Prime the material", "numbered_list_item"),
+        heading("h-sources", "📚 Sources"),
+        leaf("s-1", "Make It Stick"),
+    ]
+    ledger["source_text"] = f"⚠️ {UNVERIFIED_MARKER}. No source text was read."
+
+    implement_it()
+
+    assert "unverified" in ledger["writes"][-1]["texts"][0]
+
+
+def test_a_verified_source_is_not_called_unverified(ledger):
+    """The mirror. A ledger that marks everything marks nothing."""
+    implement_it()
+
+    assert "unverified" not in ledger["writes"][-1]["texts"][0]
+
+
+def test_the_ledger_entry_lands_inside_the_sources_section(ledger):
+    implement_it()
+
+    assert ledger["writes"][-1]["after"] == "s-1", (
+        "the ledger line was appended somewhere other than under 📚 Sources")
+
+
+def test_the_ledger_creates_its_own_section_when_there_is_none(ledger):
+    """A Manual whose first run produced no sources has nowhere to append.
+
+    Writing the bullet anyway would drop it at the end of the page under whatever
+    section happens to be last — where the next merge into THAT section would
+    delete it as stale content.
+    """
+    ledger["blocks"] = [
+        heading("h-process", "⚙️ Perfect Process"),
+        leaf("p-1", "Prime the material", "numbered_list_item"),
+    ]
+
+    implement_it()
+
+    entry = ledger["writes"][-1]
+    assert entry["types"] == ["heading_2", "bulleted_list_item"]
+    assert "Sources" in entry["texts"][0]
+
+
+def test_the_ledger_only_ever_appends(ledger):
+    """It is a pure append, which is why it can run after the section writes
+    without any of Hard Rule 2's ordering care — there is no window in which the
+    page holds neither the old content nor the new."""
+    implement_it()
+
+    assert ledger["deletes"] == ["p-1", "p-2"], (
+        "the ledger deleted something, or the section write stopped deleting")

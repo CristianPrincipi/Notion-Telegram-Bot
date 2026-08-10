@@ -203,6 +203,47 @@ def title_property(db_id: str):
     return None, "no property of type 'title' — is that ID really a database?"
 
 
+# The same question one level out: what TYPE is the column called `name`, and does
+# it exist at all? Learn's duplicate check needs both — a filter names a property
+# and its type ({"url": {...}} vs {"rich_text": {...}}), and Notion answers a 400
+# for either mistake.
+#
+# Its own cache, alongside _title_props rather than merged into it, on the same
+# terms: written only on success, read before any network call. Merging the two
+# would save one GET per database per process and would rewrite the most
+# carefully-reasoned function in this module to do it.
+_db_schemas: dict[str, dict[str, str]] = {}
+_db_schemas_lock = threading.RLock()
+
+
+def database_property_type(db_id: str, property_name: str):
+    """The type of `property_name` in `db_id`. Returns (type_or_None, error).
+
+    THREE outcomes, and a caller has to tell them apart:
+
+        ("url", None)   the property exists and this is its type
+        (None,  None)   the schema read fine and there is no such property
+        (None,  error)  the schema could not be read — this is NOT "no property"
+
+    The middle and the last look identical to `if not prop_type`, which is the
+    same collapse `(value, error)` exists to prevent everywhere else: "you have
+    not added the column yet" and "Notion is down" want opposite handling.
+    """
+    with _db_schemas_lock:
+        cached = _db_schemas.get(db_id)
+
+    if cached is None:
+        db, err = get_database(db_id)
+        if err:
+            return None, err
+        cached = {name: prop.get("type", "")
+                  for name, prop in (db or {}).get("properties", {}).items()}
+        with _db_schemas_lock:
+            _db_schemas[db_id] = cached
+
+    return cached.get(property_name) or None, None
+
+
 def search_page_in_db(db_id: str, query: str, exact: bool = False):
     """Search a Notion database for a page by title. Returns (page_object, error).
 
@@ -312,8 +353,54 @@ def get_children(block_id: str):
 
 # ─── WRITE ─────────────────────────────────────────────────────────────────────
 
+# Notion caps an append at 100 blocks, so anything longer is several requests and
+# there is no transaction across them. Batch 3 of 5 failing leaves batches 1 and 2
+# ON THE PAGE — and until now the caller was handed a flat error, so David said
+# "could not save" while Notion held two fifths of the content. You then re-run,
+# and the two fifths already there are appended a second time.
+#
+# A flat failure is not a smaller truth than a partial one, it is a different and
+# wrong one. So the value side of (value, error) carries how far the write got.
+#
+# A LIST SUBCLASS, not a NamedTuple. Every existing caller already treats this
+# value as "the blocks that were created" — indexes it, takes its length, reads
+# created[0]["id"]. Changing the type would have broken each of those silently at
+# a different call site; adding attributes to the list they already receive
+# breaks none of them.
+
+class Written(list):
+    """The blocks a batched append actually created, and how far it got.
+
+    A truthful `False` is still available to a caller that only wants one bit:
+    an empty Written is falsy, exactly like the empty list it replaces.
+    """
+
+    def __init__(self, blocks=(), *, batches_done=0, batches_total=0, blocks_total=0):
+        super().__init__(blocks)
+        self.batches_done  = batches_done
+        self.batches_total = batches_total
+        self.blocks_total  = blocks_total
+
+    @property
+    def partial(self) -> bool:
+        """True when SOME of the write landed and the rest did not.
+
+        Deliberately not `bool(self) and self.batches_done < self.batches_total`:
+        a batch that returned 200 with an empty `results` array still committed,
+        so the batch tally is the authority on what is on the page, not the block
+        count.
+        """
+        return 0 < self.batches_done < self.batches_total
+
+    @property
+    def summary(self) -> str:
+        """'2 of 5 batches (200 of 430 blocks)' — for a message to a person."""
+        return (f"{self.batches_done} of {self.batches_total} batches "
+                f"({len(self)} of {self.blocks_total} blocks)")
+
+
 def append_children(block_id: str, blocks: list, after: str | None = None):
-    """Append children to a block in batches of 100. Returns (created_blocks, error).
+    """Append children to a block in batches of 100. Returns (Written, error).
 
     `after` inserts the new blocks immediately after an existing sibling instead
     of at the end of the parent. That is what makes a section rewrite possible on
@@ -323,8 +410,15 @@ def append_children(block_id: str, blocks: list, after: str | None = None):
     Each batch after the first is anchored to the LAST block the previous batch
     created — anchoring every batch to the same `after` would insert them in
     reverse.
+
+    Stops at the first failed batch, and the Written it returns says how many
+    went in before that. Everything counted there is already committed and there
+    is no way to take it back: Notion has no transactions, and deleting what
+    landed would be a second write that can fail in the same way.
     """
-    created = []
+    blocks = list(blocks or [])
+    created = Written(batches_total=(len(blocks) + 99) // 100,
+                      blocks_total=len(blocks))
     try:
         remaining, anchor = blocks, after
         while remaining:
@@ -342,6 +436,7 @@ def append_children(block_id: str, blocks: list, after: str | None = None):
                 return created, f"Notion {resp.status_code}: {resp.text[:200]}"
             batch_created = resp.json().get("results", [])
             created.extend(batch_created)
+            created.batches_done += 1
             if anchor and batch_created:
                 anchor = batch_created[-1].get("id") or anchor
         return created, None
@@ -358,7 +453,20 @@ def delete_block(block_id: str):
 
 
 def create_page(parent_db_id: str, properties: dict, children: list = None, icon: str = None):
-    """Create a Notion page. Returns (page_id, error). Appends >100 children in batches."""
+    """Create a Notion page. Returns (page_id, error). Appends >100 children in batches.
+
+    THREE outcomes, not two, and the middle one is the one that used to lie:
+
+        (page_id, None)   the page and all of its content exist
+        (page_id, error)  THE PAGE EXISTS AND IS INCOMPLETE — the create call
+                          succeeded, a later batch of content did not
+        (None,    error)  nothing was created
+
+    A caller that only checks `if not page_id` reports the middle case as a clean
+    success, which is how a Learn page holding its first 100 blocks and nothing
+    else came back as "✅ Saved to Notion!". The error string now opens with what
+    landed, so a caller that DOES check it can say so without re-deriving it.
+    """
     body = {
         "parent": {"database_id": parent_db_id},
         "properties": properties,
@@ -374,9 +482,12 @@ def create_page(parent_db_id: str, properties: dict, children: list = None, icon
             return None, f"Notion {resp.status_code}: {resp.text[:300]}"
         page_id = resp.json()["id"]
         if children and len(children) > 100:
-            _, err = append_children(page_id, children[100:])
+            written, err = append_children(page_id, children[100:])
             if err:
-                return page_id, err
+                # The first 100 went in with the page itself, so they count.
+                on_page = 100 + len(written)
+                return page_id, (f"page created with {on_page} of {len(children)} "
+                                 f"blocks — the rest failed: {err}")
         return page_id, None
     except Exception as e:
         return None, str(e)

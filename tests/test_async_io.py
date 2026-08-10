@@ -40,7 +40,7 @@ import bot.commands
 import bot.implement
 import bot.learn
 from services import books, expenses
-from conftest import FakeContext, FakeDocument, FakeUpdate, run, with_update
+from conftest import FakeContext, FakeDocument, FakeUpdate, run, with_update, written_ok
 
 
 # ─── THE RECORDER ──────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ def david_stubs(monkeypatch):
     stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
         "find_Book_Page": lambda book_name: "book-page-id",
-        "add_Quote":      lambda page_id, quote_title, quote_text: True,
+        "add_Quote":      lambda page_id, quote_title, quote_text: (written_ok(2), None),
     })
     stubs |= stub_module(monkeypatch, expenses, {
         "add_Expenses":   lambda name, amount, category: True,
@@ -174,15 +174,24 @@ def learn_stubs(monkeypatch):
         "extract_pdf":           lambda file_bytes: ("pdf text", None),
         "summarize_with_claude": lambda ctype, text, title="", source="": (
             {"title": "Summary", "tldr": "the gist", "sections": [], "key_takeaways": []}, None),
-        "create_learn_page":     lambda ctype, title, blocks, metadata={}: (True, "page-1"),
+        "create_learn_page":     lambda ctype, title, blocks, metadata={}: (True, "page-1", None),
+        # The duplicate check is two more Notion round trips, and they run BEFORE
+        # the fetch — so they are two more chances to freeze the bot before it has
+        # said anything at all.
+        "database_property_type":  lambda db_id, prop: ("url", None),
+        "find_page_by_source_url": lambda db_id, prop_type, url: (None, None),
     })
 
 
 LEARN_COMMANDS = [
+    # The URL-bearing types check for a duplicate first; a book title and a PDF
+    # upload have no URL to check, so they go straight to the summariser.
     ("Learn video https://youtu.be/abc",
-     ("extract_youtube", "summarize_with_claude", "create_learn_page")),
+     ("database_property_type", "find_page_by_source_url",
+      "extract_youtube", "summarize_with_claude", "create_learn_page")),
     ("Learn article https://example.com/post",
-     ("extract_article", "summarize_with_claude", "create_learn_page")),
+     ("database_property_type", "find_page_by_source_url",
+      "extract_article", "summarize_with_claude", "create_learn_page")),
     ("Learn book Sapiens",
      ("summarize_with_claude", "create_learn_page")),
 ]
@@ -238,9 +247,12 @@ def implement_stubs(monkeypatch):
         "read_manual_sections":  lambda page_id: ([_fake_section()], None),
         "route_sections":        lambda paths, text, title: (
             {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None),
-        "merge_sections":        lambda targets, text, title: (
+        "merge_sections":        lambda targets, text, title, unverified=False: (
             {"updates": [{"path": "Perfect Process", "lines": ["merged"]}]}, None),
-        "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (1, []),
+        "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (1, [], []),
+        # The Sources ledger — one more Notion write, and one more chance to
+        # freeze the bot if it is ever called straight from the loop.
+        "record_source":         lambda page_id, sections, title, unverified: (True, None),
         "update_page":           lambda page_id, props: (True, None),
     })
 
@@ -265,6 +277,7 @@ def test_implement_runs_every_notion_and_claude_call_off_the_loop(offloaded, imp
         "route_sections",          # cheap: section names only
         "merge_sections",          # the slow one, affected sections only
         "apply_section_updates",   # append-then-delete, per section
+        "record_source",           # the Sources ledger, a pure append
         "update_page",             # tick 'Implemented'
     )
     assert update.message.replied_with("Manual updated")

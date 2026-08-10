@@ -456,7 +456,10 @@ COMMANDS = [
         pattern=re.compile(r"(?P<text>learn\s+\w+[\s\S]*)", re.I),
         handler=cmd_learn,
         help=Help("🧠 *LEARN*", usage=_LEARN_USAGE,
-                  notes=("Learn pdf needs the file attached, with the command as the caption",)),
+                  notes=("Learn pdf needs the file attached, with the command as the caption",
+                         "A URL already saved is reported instead of summarised again; "
+                         "end the command with ` !` to re-summarise it anyway",
+                         "Learn book has no source text — the page is marked unverified")),
     ),
     Command(
         name="Implement",

@@ -79,6 +79,53 @@ LEARN_TYPES = {
 
 DEFAULT_LEARN_EMOJI = "📖"
 
+# The types that have no source text at all: nothing is fetched, nothing is read,
+# and Claude answers from its own recollection of the work. Every other type is
+# summarised from bytes that actually arrived.
+#
+# A set rather than a flag on LearnType, because the distinction is not about how
+# a type is FILED — it is about whether the page's content can be traced back to
+# anything. Adding a type here is what makes it wear the marker below.
+KNOWLEDGE_RECALL_TYPES = frozenset({"book"})
+
+# ─── UNVERIFIED SOURCES ────────────────────────────────────────────────────────
+# `Learn book Atomic Habits` sends "Please summarise the book: X" and files the
+# answer next to pages built from a real transcript or a real article. Nothing on
+# the page said which one it was — and for anything obscure, translated or recent
+# the model will produce confident, plausible, wrong detail. That page then flows
+# into a Manual through Implement as though it had been extracted from a text.
+#
+# So the page carries a marker. THE MARKER IS A SENTENCE IN THE PAGE BODY, not a
+# property, and that is the whole design:
+#
+#   • it is visible in Notion without opening a properties panel;
+#   • it survives notion_client.blocks_to_text, which is how Implement reads a
+#     source page — so the model doing the merge is told, in the same text, that
+#     what it is merging is a recollection;
+#   • a property would be invisible to both, and would need a schema change
+#     before David could write a page at all.
+#
+# MARKER is the part that is matched. NOTE is what a person reads. The matched
+# part is a fragment of the sentence rather than the whole of it, so the wording
+# can be improved without orphaning every page already written.
+UNVERIFIED_MARKER = "UNVERIFIED — generated from model recollection"
+
+UNVERIFIED_NOTE = (
+    f"⚠️ {UNVERIFIED_MARKER}. No source text was read. "
+    "Quotes, figures, names and dates here may be fabricated, and are not "
+    "evidence of what the work actually says. Verify before acting on it."
+)
+
+
+def is_unverified_source(text: str) -> bool:
+    """True if this page text carries the unverified-source marker.
+
+    One predicate, used by the writer (services/learn.py) and by the reader
+    (services/implement.py). Two `in` checks in two modules is how a marker gets
+    reworded in one of them and silently stops being detected in the other.
+    """
+    return UNVERIFIED_MARKER in (text or "")
+
 
 def genre_help() -> str:
     """Human-readable list of genre shortcuts for help/error messages."""
