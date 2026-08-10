@@ -61,7 +61,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `bot/commands.py` | The one-line delegators for commands whose feature module still takes `update` itself: `B`, `Month`, `Diag`, `DBs`, `Find`, `Get`, `Remind` | Anything more than the forward — see the open question |
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
-| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion | Manual merging |
+| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder and the one place source text is cut to fit | Manual merging |
 | `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `services/implement_diet.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
@@ -121,8 +121,62 @@ Markdown v1 ignores backslash escapes — escaping cannot save them, so the repo
 used to fail on exactly the ugly Notion errors they existed to report. Do not
 "fix" them back into Markdown; each carries a comment saying so.
 
+**A budget belongs to whatever consumes it, and there is one of it.** The article
+extractor returned `text[:12000]`; the summariser accepted `text[:100000]`. Two
+independent numbers describing one budget, so every article over ~12k chars was
+summarised from its first eighth — silently, and indistinguishably from a full
+summary in both the reply and the Notion page. You find out from a thin Manual
+entry months later, with no way to tell which entries were affected.
+
+`config.SUMMARY_INPUT_CHARS` is now the only number, and `run_learn` is the only
+place text is cut — **for every content type**, since a 3-hour transcript and a
+400-page PDF reach the same cap an article does. Two consequences worth keeping:
+
+- **Extractors must return the text WHOLE.** An extractor that pre-truncated to
+  the budget would leave the truncation undetectable at its own boundary — a
+  source of exactly the budget and one cut down to it are the same string.
+- **It says so in the reply.** A partial summary you are told about is a
+  different object from one you discover later. `summarize_with_claude` keeps the
+  same cap as a backstop, and that copy is deliberately NOT the primary: if it
+  ever fires, it fires silently.
+
+**Notion is asked what its columns are called.** `search_page_in_db` filtered on a
+hard-coded `{"property": "Name"}`. Notion answers a 400 when the title column is
+named anything else, and that 400 came back as `"No page found matching 'X'"` — an
+error about your data, for a bug in this line, while `get_page_title` twenty lines
+away had always resolved the title property properly. `notion_client.title_property`
+now discovers it, cached per database.
+
+That cache is **populated only on success and read before any network call**, which
+is the whole reason refusing is safe: a database read once keeps working through a
+later outage, and only one never read successfully fails. On failure the lookup is
+REFUSED and names the schema read — never widened back to `"Name"`, because guessing
+would restore exactly the misleading error it removes, *intermittently*, which is
+harder to diagnose than a bug that happens every time.
+
 **Notion database IDs are `{AREA}_ID` in the environment.** `get_area_db_id` derives the
 name (`"Brain"` → `BRAIN_ID`), so adding an area means adding an env var, not code.
+
+**Article extraction is a ladder, and the rungs are declared dependencies.**
+trafilatura scores the DOM for content density, so navigation, cookie banners and
+footers do not reach the summariser; BS4's `get_text()` cannot do that, because to
+it every string in the document is equally text. BS4 remains the fallback, and
+`MIN_ARTICLE_CHARS` guards the case `is None` cannot: trafilatura's failure mode on
+an odd layout is a *fragment* — a caption, a standfirst — that looks like success.
+
+`import trafilatura` is at module scope and **unguarded, on purpose**. This path
+used to open with `from newspaper import Article` inside a `try/except ImportError`
+while newspaper was not in `requirements.txt`, so the import failed on every call,
+the bare except swallowed it, and BS4 did the work every time — a branch documenting
+extraction quality nothing was delivering. A guarded import converts a build failure
+(loud, at deploy, fixable) into a permanent silent downgrade. Which parser won is
+logged for the same reason.
+
+lxml was the original objection and no longer is: it ships manylinux wheels. Before
+touching either pin, re-run the check in `requirements.txt`'s comment —
+`--only-binary=:all:` against `manylinux_2_17_x86_64` fails if anything in the tree
+needs a compiler, which is the Railway build failing on your laptop instead of on
+Railway.
 
 **All secrets come from environment variables.** `config.validate()` runs first in
 `__main__` and raises `SystemExit` listing *every* problem at once — a misconfigured deploy
@@ -354,8 +408,24 @@ repo root.** They used to stop at the root, which meant a file that moved into a
 dropped silently out of the guard while it kept passing green. If you add a package, add
 it to those lists.
 
+**A process-lifetime cache needs an autouse fixture that clears it.**
+`notion_client._title_props` lives for the life of the process, which is right in
+production and poisonous in a suite: whichever test ran first would satisfy every
+later test's schema lookup, so a test asserting the schema IS fetched passes
+without it being fetched, and the refusal tests silently depend on file order.
+`test_notion_client.forget_title_properties` clears it on the way in *and* out.
+
+**Fixtures that build bulk text must not repeat themselves.** The first version of
+`test_article_extraction.paragraphs` made a long body by repeating one paragraph
+twenty times, and trafilatura — which drops duplicate blocks — extracted 54
+characters from it. The "no truncation" assertions failed for a reason that had
+nothing to do with truncation, against correct code. Each paragraph is indexed now.
+
 **Every bug fix ships with a test that fails before it and passes after**, asserting against
 the shipping code path — a test that rebuilds the logic only proves it agrees with itself.
+The six guards in `article-extraction` were each verified by reverting them and watching a
+named test go red: `.string.strip()`, the 12k extraction cap, the truncation warning, the
+collapsed `except`, the hard-coded `"Name"`, and caching a failed schema read.
 
 ## Deployment
 

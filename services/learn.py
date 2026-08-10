@@ -1,13 +1,15 @@
 import asyncio
+import logging
 import os
 import re
 import requests
+import trafilatura
 from bs4 import BeautifulSoup
 
 from clients.anthropic_client import complete_json
 from config import (
     ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, LEARN_TYPES,
-    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
+    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS,
 )
 from clients.notion_client import (
     create_page,
@@ -15,6 +17,8 @@ from clients.notion_client import (
     quote as _quote, bullet as _bullet, divider as _divider,
 )
 from telegram_text import escape_md
+
+logger = logging.getLogger(__name__)
 
 # ─── CONTENT TYPES ─────────────────────────────────────────────────────────────
 # The types, their icons and their target databases are declared once, in
@@ -57,28 +61,132 @@ def extract_youtube(url: str) -> tuple[str | None, str | None]:
         return None, str(e)
 
 
+# Below this many characters, a trafilatura result is treated as a miss and BS4
+# is asked instead. trafilatura is precise by design — it would rather return
+# nothing than return boilerplate — and its failure mode on an unusual layout is
+# a short fragment (a caption, a standfirst) rather than an empty result, which
+# no `is None` check can catch.
+#
+# The trade is deliberate and it is not free: for a genuinely short page, BS4's
+# noisier text wins here. That is the cheaper mistake. A page summarised from its
+# own caption produces a confident, wrong Manual entry; a short page summarised
+# with some nav text attached produces a slightly padded one.
+MIN_ARTICLE_CHARS = 250
+
+
+def _fetch(url: str) -> bytes:
+    """The page bytes. Raises requests.RequestException — the caller sorts errors out.
+
+    Bytes, not resp.text: both parsers below detect the encoding from the meta
+    tags in the markup, which requests' own guess (headers, then chardet) throws
+    away before either of them sees it.
+    """
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+    resp.raise_for_status()
+    return resp.content
+
+
+def _extract_trafilatura(html: bytes, url: str) -> dict | None:
+    """The good path: article body only. Returns None if it found nothing usable.
+
+    trafilatura scores the DOM for content density, so navigation, cookie
+    banners, share widgets and footers do not reach the summariser — which is
+    what BS4's get_text() cannot do, since to it every string in the document is
+    equally text. Noise is not free here: it is tokens we pay for and context the
+    model reasons over on the way to a Manual entry.
+    """
+    text = trafilatura.extract(html, url=url)
+    if not text or len(text) < MIN_ARTICLE_CHARS:
+        return None
+
+    # extract_metadata returns a Document even for markup it understood nothing
+    # of — never None — so every field on it still has to be treated as optional.
+    meta   = trafilatura.extract_metadata(html, default_url=url)
+    title  = (getattr(meta, "title", None) or "").strip()
+    author = (getattr(meta, "author", None) or "").strip()
+    return {"title": title, "author": author, "text": text}
+
+
+def _title_from_html(soup: BeautifulSoup) -> str:
+    """The document's <title>, normalised. "" when there is not one worth having.
+
+    get_text(), NOT .string. `.string` is None whenever the element has more than
+    one child — which `<title>Post <em>name</em></title>` does — and the .strip()
+    that followed it then raised AttributeError. The broad except in
+    extract_article turned that into "could not extract content", a message that
+    reads as the site's fault and sent every investigation to the wrong place.
+
+    And NOT get_text(strip=True), which is the obvious spelling and is wrong
+    here: it strips each string BEFORE joining them, so the same title comes back
+    as "Postname". Splitting on whitespace and rejoining keeps the word boundary
+    the markup implies while still collapsing the newlines and runs of spaces
+    that titles laid out over several lines carry.
+    """
+    return " ".join(soup.title.get_text().split()) if soup.title else ""
+
+
+def _extract_bs4(html: bytes, url: str) -> dict:
+    """The fallback: strip the obvious chrome, then take every remaining string."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+        tag.decompose()
+
+    return {"title": _title_from_html(soup), "author": "",
+            "text": soup.get_text(separator="\n", strip=True)}
+
+
 def extract_article(url: str) -> tuple[dict | None, str | None]:
-    """Return ({"title", "author", "text"}, error). Extracts with requests + BS4.
+    """Return ({"title", "author", "text"}, error). trafilatura first, BS4 second.
 
     This USED to open with a `from newspaper import Article` branch, described as
     the good path with BS4 as its fallback. newspaper is not in requirements.txt
-    — it was taken out deliberately, because it pulls lxml, which compiles from C
+    — it was taken out deliberately, because it pulls lxml, which compiled from C
     source — so the import raised ImportError on every call, the bare `except`
     swallowed it, and BS4 did the work every time. The branch documented an
-    extraction quality nothing was delivering. Improving on BS4 is a separate
-    piece of work; it starts from what actually runs.
+    extraction quality nothing was delivering.
+
+    So trafilatura is imported at MODULE scope and unguarded. It is a declared
+    dependency; wrapping it in try/except ImportError is the exact construction
+    that produced that bug, and it converts a build problem — loud, at deploy,
+    fixable — into a permanent silent downgrade nobody can see from the outside.
+
+    The text is returned WHOLE. Truncating to fit the summariser is run_learn's
+    job (see config.SUMMARY_INPUT_CHARS) because it is the only place that can
+    tell you it happened.
     """
     try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.content, "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
-        title = soup.title.string.strip() if soup.title else url
-        text  = soup.get_text(separator="\n", strip=True)
-        return {"title": title, "author": "", "text": text[:12000]}, None
+        html = _fetch(url)
+
+        result = _extract_trafilatura(html, url)
+        if result is None:
+            logger.info("extract_article: trafilatura found nothing usable for %s, "
+                        "falling back to BeautifulSoup", url)
+            result = _extract_bs4(html, url)
+        else:
+            logger.info("extract_article: trafilatura extracted %d chars from %s",
+                        len(result["text"]), url)
+
+        # The title falls back on its own, independently of the body: trafilatura
+        # can score the article perfectly and still hand back no title, and the
+        # page's own <title> is a far better Notion page name than a raw URL.
+        # A missing title is never worth discarding a good body extraction over,
+        # which is why this is a fallback chain and not an error.
+        if not result["title"]:
+            result["title"] = _title_from_html(BeautifulSoup(html, "html.parser")) or url
+        return result, None
+
+    except requests.RequestException as e:
+        # The genuinely-their-fault case: DNS, TLS, a timeout, a 403 blocking the
+        # scraper. Named as a fetch problem because that is what it is.
+        return None, f"Could not fetch the page: {e}"
     except Exception as e:
-        return None, str(e)
+        # OURS. A service may not raise across a module boundary, so this stays
+        # broad — but it no longer wears the fetch failure's clothes. The type
+        # name goes in the message and the traceback goes to the log, because the
+        # nested-<title> AttributeError above spent its whole life being reported
+        # as a problem with the website.
+        logger.exception("extract_article: internal failure on %s", url)
+        return None, f"Internal extraction error ({type(e).__name__}): {e}"
 
 
 def extract_pdf(file_bytes: bytes) -> tuple[str | None, str | None]:
@@ -140,7 +248,11 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
         f"Content type: {content_type}\n"
         f"Title (if known): {title}\n"
         f"Source: {source}\n\n"
-        f"Content:\n{text[:100000]}"  # 100k chars ≈ covers a 2-hour video in one API call
+        # A backstop, not the truncation point. run_learn has already cut the
+        # text to this budget AND told the user it did; this guard only ensures a
+        # future caller that forgets cannot blow the input cap. If it ever fires,
+        # it fires silently — which is exactly why it is not the primary place.
+        f"Content:\n{text[:SUMMARY_INPUT_CHARS]}"
     )
     return complete_json(_SYSTEM, user_msg, _SUMMARY_SCHEMA, max_tokens=4096)
 
@@ -309,8 +421,10 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
         if not source.startswith("http"):
             await notify("❌ Please provide a URL.")
             return
-        # The newspaper3k branch of extract_article calls download() with no
-        # timeout of its own, so this outer cap is the only bound on it.
+        # extract_article does its own fetch with a per-request timeout, but that
+        # is per socket read and restarts on every byte. This outer cap is what
+        # bounds the whole operation — fetch plus both parsers — for a server
+        # trickling one byte at a time.
         try:
             result, err = await asyncio.wait_for(
                 asyncio.to_thread(extract_article, source),
@@ -363,6 +477,25 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
     if not text:
         await notify("❌ No content could be extracted.")
         return
+
+    # ── Fit the summariser's budget, out loud ──────────────────────────────────
+    # THE ONLY PLACE SOURCE TEXT IS CUT, and it covers every type — a long
+    # article, a 3-hour transcript and a 400-page PDF all reach the same cap.
+    # Silence here is the whole defect: a summary built from an eighth of an
+    # article is indistinguishable, in the reply and on the page, from one built
+    # from all of it. You find out from a thin Manual entry, months later, with
+    # no way to tell which entries were affected.
+    if len(text) > SUMMARY_INPUT_CHARS:
+        logger.info("run_learn: %s source is %d chars, truncating to %d",
+                    content_type, len(text), SUMMARY_INPUT_CHARS)
+        # Plain notify: this string is David's own and interpolates only
+        # integers, so there is nothing to escape and no reason to risk a
+        # parse_mode rejection on the message that exists to warn you.
+        await notify(
+            f"⚠️ Source is {len(text):,} characters; summarising the first "
+            f"{SUMMARY_INPUT_CHARS:,}. This summary is partial."
+        )
+        text = text[:SUMMARY_INPUT_CHARS]
 
     # ── Claude summarization ───────────────────────────────────────────────────
     await notify("🧠 Claude is reading and summarising…")

@@ -23,6 +23,7 @@ DB_ID    = "db-under-test"
 BLOCK_ID = "block-under-test"
 
 QUERY_URL    = f"{NOTION_BASE}/databases/{DB_ID}/query"
+SCHEMA_URL   = f"{NOTION_BASE}/databases/{DB_ID}"
 CHILDREN_URL = f"{NOTION_BASE}/blocks/{BLOCK_ID}/children"
 
 
@@ -32,6 +33,38 @@ def no_real_sleeping(monkeypatch):
     slept = []
     monkeypatch.setattr(notion_client.time, "sleep", slept.append)
     return slept
+
+
+@pytest.fixture(autouse=True)
+def forget_title_properties():
+    """Empty the title-property cache around every test.
+
+    The cache is module-level and deliberately lives for the whole process, which
+    is right in production and poisonous in a suite: whichever test ran first
+    would satisfy every later test's schema lookup, so a test asserting that the
+    schema IS fetched would pass without it being fetched, and the refusal tests
+    would depend on file order. Cleared on the way out as well as in, so this
+    file cannot leak a cached name into another one.
+    """
+    notion_client._title_props.clear()
+    yield
+    notion_client._title_props.clear()
+
+
+def serve_schema(title_prop="Name", status=200):
+    """Mock GET /databases/{id} — the schema read that resolves the title column."""
+    responses.add(responses.GET, SCHEMA_URL, status=status, json={
+        "id": DB_ID,
+        "properties": {
+            "Tags":      {"type": "multi_select"},
+            title_prop:  {"type": "title"},
+        },
+    })
+
+
+def query_body():
+    """The body of the QUERY request, skipping the schema GET that precedes it."""
+    return [b for b in request_bodies() if b and "filter" in b][0]
 
 
 def page(index):
@@ -188,6 +221,7 @@ def test_append_children_stops_and_reports_a_failed_batch():
 
 @responses.activate
 def test_search_page_in_db_returns_the_first_match():
+    serve_schema()
     responses.add(responses.POST, QUERY_URL, status=200,
                   json={"results": [page(0), page(1)], "has_more": False})
 
@@ -195,21 +229,23 @@ def test_search_page_in_db_returns_the_first_match():
 
     assert err is None
     assert found["id"] == "page-0"
-    assert request_bodies()[0]["filter"]["title"] == {"contains": "Dune"}
+    assert query_body()["filter"]["title"] == {"contains": "Dune"}
 
 
 @responses.activate
 def test_search_page_in_db_can_match_exactly():
+    serve_schema()
     responses.add(responses.POST, QUERY_URL, status=200,
                   json={"results": [page(0)], "has_more": False})
 
     search_page_in_db(DB_ID, "Dune", exact=True)
 
-    assert request_bodies()[0]["filter"]["title"] == {"equals": "Dune"}
+    assert query_body()["filter"]["title"] == {"equals": "Dune"}
 
 
 @responses.activate
 def test_search_page_in_db_reports_no_match():
+    serve_schema()
     responses.add(responses.POST, QUERY_URL, status=200,
                   json={"results": [], "has_more": False})
 
@@ -217,6 +253,118 @@ def test_search_page_in_db_reports_no_match():
 
     assert found is None
     assert "Nonexistent" in err
+
+
+# ─── THE TITLE PROPERTY IS DISCOVERED, NOT ASSUMED ─────────────────────────────
+# search_page_in_db filtered on a hard-coded {"property": "Name"}. Notion answers
+# a 400 when the title column is called anything else, and that 400 was handed
+# back as "No page found matching 'X'" — an error about your data, for a bug in
+# this file. get_page_title has always resolved it properly, twenty lines away.
+
+@responses.activate
+def test_a_title_property_not_called_Name_is_used():
+    """THE BUG. A database whose title column is "Título" was unsearchable."""
+    serve_schema(title_prop="Título")
+    responses.add(responses.POST, QUERY_URL, status=200,
+                  json={"results": [page(0)], "has_more": False})
+
+    found, err = search_page_in_db(DB_ID, "Dune")
+
+    assert err is None
+    assert query_body()["filter"]["property"] == "Título", (
+        "the query still filters on a hard-coded property name")
+
+
+@responses.activate
+def test_the_schema_is_read_once_per_database_not_once_per_lookup():
+    """A GET on every lookup would be the obvious way to pay for this fix."""
+    serve_schema(title_prop="Título")
+    for _ in range(3):
+        responses.add(responses.POST, QUERY_URL, status=200,
+                      json={"results": [page(0)], "has_more": False})
+
+    for _ in range(3):
+        search_page_in_db(DB_ID, "Dune")
+
+    schema_reads = [c for c in responses.calls if c.request.method == "GET"]
+    assert len(schema_reads) == 1, (
+        f"the schema was fetched {len(schema_reads)} times for 3 lookups")
+
+
+@responses.activate
+def test_a_cached_title_property_survives_a_later_outage():
+    """Read once, and a Notion blip cannot take the lookup away again.
+
+    The cache is populated ONLY on success and consulted before any network call,
+    so the failure below is never even reached for a database already known. This
+    is the asymmetry that makes refusing safe: only a database that has NEVER
+    been read successfully can fail.
+    """
+    serve_schema(title_prop="Título")
+    responses.add(responses.POST, QUERY_URL, status=200,
+                  json={"results": [page(0)], "has_more": False})
+    search_page_in_db(DB_ID, "Dune")                    # warms the cache
+
+    responses.reset()
+    responses.add(responses.GET, SCHEMA_URL, status=502, body="bad gateway")
+    responses.add(responses.POST, QUERY_URL, status=200,
+                  json={"results": [page(1)], "has_more": False})
+
+    found, err = search_page_in_db(DB_ID, "Dune")
+
+    assert err is None, f"a cached database refused during an outage: {err}"
+    assert found["id"] == "page-1"
+    assert query_body()["filter"]["property"] == "Título"
+    assert not [c for c in responses.calls if c.request.method == "GET"], (
+        "the schema was re-read even though it was already cached")
+
+
+@responses.activate
+def test_an_unreadable_schema_refuses_and_names_the_real_cause(no_real_sleeping):
+    """REFUSED, never widened back to "Name".
+
+    Falling back would restore exactly the misleading "No page found" this
+    removes — and restore it intermittently, which is harder to diagnose than a
+    bug that happens every time. The message has to point at the schema read.
+    """
+    responses.add(responses.GET, SCHEMA_URL, status=502, body="bad gateway")
+
+    found, err = search_page_in_db(DB_ID, "Dune")
+
+    assert found is None
+    assert "schema" in err.lower(), f"the error does not name the real cause: {err}"
+    assert "No page found" not in err
+    assert not [c for c in responses.calls if c.request.method == "POST"], (
+        "it queried anyway, which means it guessed a property name")
+
+
+@responses.activate
+def test_a_failed_schema_read_is_not_cached():
+    """Otherwise one blip at startup would poison the lookup for the process."""
+    responses.add(responses.GET, SCHEMA_URL, status=502, body="bad gateway")
+    search_page_in_db(DB_ID, "Dune")
+
+    responses.reset()
+    serve_schema(title_prop="Título")
+    responses.add(responses.POST, QUERY_URL, status=200,
+                  json={"results": [page(0)], "has_more": False})
+
+    found, err = search_page_in_db(DB_ID, "Dune")
+
+    assert err is None, f"the failure was cached and kept refusing: {err}"
+    assert query_body()["filter"]["property"] == "Título"
+
+
+@responses.activate
+def test_an_id_that_is_not_a_database_gets_its_own_error():
+    """"Read fine, no title column" needs a different fix from "read failed"."""
+    responses.add(responses.GET, SCHEMA_URL, status=200,
+                  json={"id": DB_ID, "properties": {"Tags": {"type": "multi_select"}}})
+
+    prop, err = notion_client.title_property(DB_ID)
+
+    assert prop is None
+    assert "title" in err.lower()
 
 
 # ─── RETRY / BACKOFF ───────────────────────────────────────────────────────────
