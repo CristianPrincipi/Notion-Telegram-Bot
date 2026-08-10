@@ -4,6 +4,7 @@ _Last updated: 2026-08-10_
 
 Branch: `claude/ingest-hygiene-qkue5z`, off `main` at `b63b6fd`.
 Baseline before any change: **786 passed**, `ruff check .` clean.
+After: **853 passed**, `ruff check .` clean.
 
 Three fixes to the Learn ingest path, before anything new is built on top of it. They
 share a shape: each one is a place where David reports a state it is not in — a second
@@ -80,7 +81,33 @@ presented as a failure.
       message carries the warning, and a verified source's does not.
 - [x] `tests/test_partial_writes.py` — a mid-run batch failure at every one of the
       four call sites, each asserting the MESSAGE, not just the return value.
-- [x] Each guard verified by reverting it and watching its named test go red.
+- [x] Every existing test double for `append_children` / `add_Quote` /
+      `create_learn_page` updated to return the type production returns, and
+      `conftest.written_ok` / `written_nothing` / `written_half` added so the next
+      one does not have to invent it.
+- [x] Each guard verified by reverting it and watching its named test go red —
+      all 19 of them, in two passes (see `## Changelog`).
+
+## Changelog
+
+- **The `Source URL` guard is two guards, and the first revert check only found
+  one.** `run_learn` must pass an empty property type when the column is missing,
+  AND `create_learn_page` must skip the property when it is given one. Reverting
+  the second left the test green, because the test that covers the first stubs
+  `create_learn_page` out entirely. Split into two tests, one per line. Recorded
+  because the guard read as a single decision and is not.
+- **A Notion block has two shapes, and only one of them reaches Implement.** The
+  first version of `test_the_marker_survives_the_flattening_implement_reads_through`
+  flattened the blocks `build_notion_blocks` returns and got `"---\n---"`: a block
+  on the way IN carries `{"text": {"content": …}}`, and `extract_rich_text` reads
+  only the `plain_text` a block carries on the way BACK. Asserting against the
+  request shape would have passed on a builder whose output flattens to nothing.
+  The test converts to the response shape by hand, for the same reason the
+  RCDATA-title test builds its shape by hand.
+- **The duplicate check is two more Notion calls before the fetch**, so
+  `test_async_io`'s exact-sequence assertion for Learn grew two entries rather
+  than being loosened. They were also making real network calls in the suite until
+  they were stubbed — the offline guarantee catches this only if the stubs exist.
 
 ## Open questions
 

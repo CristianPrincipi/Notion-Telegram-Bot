@@ -51,7 +51,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
 | `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
-| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source` (two layers need it, neither owns it), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / `undo` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo |
@@ -61,7 +61,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `bot/commands.py` | The one-line delegators for commands whose feature module still takes `update` itself: `B`, `Month`, `Diag`, `DBs`, `Find`, `Get`, `Remind` | Anything more than the forward — see the open question |
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
-| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder and the one place source text is cut to fit | Manual merging |
+| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the `Source URL` property, the duplicate check and its ` !` override) | Manual merging; the unverified marker's TEXT (that is `config.py`) |
 | `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id` | Diet (delegates to `services/implement_diet.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
@@ -139,6 +139,64 @@ place text is cut — **for every content type**, since a 3-hour transcript and 
   different object from one you discover later. `summarize_with_claude` keeps the
   same cap as a backstop, and that copy is deliberately NOT the primary: if it
   ever fires, it fires silently.
+
+**A partial write is a third outcome, not a failure.** Notion caps an append at
+100 blocks and has no transaction across the batches, so batch 3 of 5 failing
+leaves batches 1 and 2 on the page — permanently, since deleting them would be a
+second write that can fail the same way. Every caller used to report that as a
+flat failure: `add_Quote` returned a bare `False` while two fifths of the quote
+sat in the book, and `create_page` handed back the new page's id *together with*
+the append error, which `if not page_id` cannot see — so a Learn page holding its
+first 100 blocks came back as `✅ Saved to Notion!`.
+
+The reason it matters is what you do next. Told it failed, you re-run, and the
+part that already landed is appended a second time. So `append_children` returns
+`Written` — a **list subclass**, because every caller already reads that value as
+the blocks that were created, and a NamedTuple would have broken each of them at a
+different call site — carrying `batches_done` / `batches_total`, and every caller
+prints the tally plus the warning that a re-run duplicates. `implement`'s
+`apply_section_updates` gained a third bucket for the same reason: a half-written
+section is neither applied nor "unchanged", and it was being filed under the
+latter, next to a heading that said so.
+
+**A source with no source says so, in the page body.** `Learn book X` summarises
+from Claude's recollection — nothing is fetched, nothing is read — and the result
+was filed next to pages built from a real transcript with nothing to tell them
+apart. It then flows into a Manual through `Implement`, where even the fact that
+it came from a `Learn book` command is gone.
+
+`config.UNVERIFIED_MARKER` is stamped as a red callout at the top of those pages,
+and it is **a sentence in the body rather than a property** for three reasons that
+are all the same reason: it is visible in Notion without opening a panel, it
+survives `blocks_to_text`, and therefore it is already inside the text `Implement`
+sends to the merge call. Detecting it costs no extra read. One predicate
+(`config.is_unverified_source`) serves the writer and the reader, because two `in`
+checks in two modules is how a marker gets reworded in one of them and silently
+stops being detected in the other.
+
+**Learn asks whether it has seen this URL before, and asks Notion, not itself.**
+The same link twice — which is what you send after a timeout — made a second page
+and paid for a second summarisation, and the two near-identical titles are exactly
+what `search_page_in_db`'s `contains` filter cannot choose between afterwards. The
+check runs **before the fetch and before Claude**, so a duplicate costs one query.
+
+Two properties of it are load-bearing:
+
+- **Normalisation answers one question** — would these two strings have fetched
+  the same bytes. So scheme, host case, `www.`, default ports, `utm_*` and the
+  named trackers, the fragment and a trailing slash fold away, while the remaining
+  query is **sorted rather than dropped**: `?v=abc` and `?v=def` are two videos.
+  Anything a site might route on (`page`, `id`, YouTube's `t`) stays out of the
+  tracking list, because collapsing two real sources into one is the worse error.
+- **It degrades rather than blocks, out loud.** The `Source URL` property is not
+  created by David and may not exist; absent, the check *and* the write are
+  skipped and said, because writing a property Notion does not know is a 400 on
+  the page CREATE — which would turn "you have not added the column" into "Learn
+  does not work". A check that ERRORS is reported and the run continues, naming
+  the duplicate it could not rule out. Refusing the command is the worse failure
+  when the safeguard is optional; that asymmetry is the opposite of
+  `title_property`'s, and it is deliberate — there, guessing produces a *wrong
+  answer*, here, refusing costs you the command.
 
 **Notion is asked what its columns are called.** `search_page_in_db` filtered on a
 hard-coded `{"property": "Name"}`. Notion answers a 400 when the title column is
@@ -414,6 +472,17 @@ production and poisonous in a suite: whichever test ran first would satisfy ever
 later test's schema lookup, so a test asserting the schema IS fetched passes
 without it being fetched, and the refusal tests silently depend on file order.
 `test_notion_client.forget_title_properties` clears it on the way in *and* out.
+`_db_schemas` is the second one, with `test_learn_idempotency.forget_database_schemas`
+doing the same job — two caches because merging them would rewrite the most
+carefully-reasoned function in `notion_client` to save one GET per process.
+
+**A test double must return the type production returns.** `append_children`
+hands back `Written`, and a double returning a bare list looks correct and drops
+the batch tally — so the caller under test can no longer tell a write that landed
+nothing from one that landed half, and the assertions pass either way.
+`conftest.written_ok` / `written_nothing` / `written_half` build the real type;
+`test_partial_writes` covers each one against the real function too, so the
+doubles cannot drift into describing a shape nothing produces.
 
 **A test that only exercises the shape YOUR machine produces guards half a bug.**
 `<title>Post <em>name</em></title>` reaches `_title_from_html` as a tag with
@@ -456,6 +525,16 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   the bug's home. The live copy was in `briefing.py`. `david.headers` — a second
   Notion header dict, superseded by `clients/notion_client.py` and read by nothing — has been
   deleted along with the `NOTION_KEY` that existed only to build it.)
+- **How far the unverified marker should follow the content is undecided.** Today
+  it stops at the Manual's door: `Implement` names it in the plan and in the
+  confirmation, and then merges normally. The content itself lands in the Manual
+  with no provenance at all, which is the one place it will be read years later as
+  settled. Three options were written up in `PLAN.md` and none were built —
+  carrying the marker into the merged lines, refusing an unverified `Implement`
+  without a force token, or telling the merge prompt about it. The first is the
+  one worth doing.
+- **`Learn book` is not de-duplicated.** It has no URL. The equivalent would be a
+  title match against `LETTI_ID`, which is a fuzzy-match decision of its own.
 - **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
   checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
   (takeaway of the week) and Step 7 (tasks). The checkbox is written and never read.

@@ -71,7 +71,7 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `B` | Monthly budget recap |
 | `Month` | Force the monthly page rollover now and report the page ID |
 | `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event. `t` in place of the date means tomorrow and a bare hour means o'clock, so `Remind Dentist t 10` books tomorrow at 10:00. Add the year (`12.06.2027`) to pick one; without it, a date more than a day past rolls to next year and one inside that window is queried rather than guessed |
-| `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database |
+| `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database. A URL already saved is reported instead of summarised again; add ` !` on the end to re-summarise anyway |
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
 | `Diag` / `Find [name]` / `DBs` | Notion ID diagnostics |
@@ -211,6 +211,35 @@ would create a second Notion entry.
 
 Expense dates use Europe/Rome, not the host clock, so an expense logged after
 local midnight is not filed under the previous day.
+
+### Learning the same thing twice
+
+`Learn` matches a URL against what is already in the Learn database before it
+fetches anything, so re-sending a link after a timeout costs one Notion query
+rather than a second scrape and a second summarisation. The match is on a
+normalised form of the URL — `http`/`https`, host case, `www.`, default ports,
+`utm_*` and other tracking parameters, the `#fragment` and a trailing slash are
+all folded away, while the remaining query parameters are kept and sorted, so
+`?v=abc` and `?v=def` stay two different videos. A hit reports the existing page
+and when it was saved; ` !` on the end of the command re-summarises anyway.
+
+**This needs one column in Notion, added by hand: a `Source URL` property on the
+Learn database, of type URL** (a text property works too). Without it David says
+so once per run and carries on — the check is skipped, the property is not
+written, and nothing else changes.
+
+`Learn book` has no URL and is not de-duplicated. It also has no source text at
+all: the summary is Claude's recollection of the work, so the page opens with a
+red callout saying so, and `Implement` repeats that warning in its plan message
+whenever a merge is drawing on one of those pages.
+
+### Partial writes
+
+Notion caps an append at 100 blocks and has no transaction across the batches,
+so a long quote or a long summary can end up half on the page. That is now
+reported as its own outcome — "2 of 5 batches written" — rather than as a flat
+failure, because re-running after a flat failure appends a second copy of the
+part that already landed.
 
 ### File uploads
 
