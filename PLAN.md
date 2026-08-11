@@ -1,225 +1,204 @@
-# Plan: ingest hygiene — idempotency, unverified sources, honest partial writes
+# Plan: `Remind` gets two shorthands — `td` for today, `tr` for tomorrow
 
-_Last updated: 2026-08-10_
+_Last updated: 2026-08-11_
 
-> **Part 2 (this branch, second pass): what an unverified source may do to a Manual.**
-> Milestones 5–7 below were added after the first three shipped, from the decisions
-> taken on the open question at the bottom of this file. Options 1 (provenance) and
-> 3 (the merge rule) were built; option 2 (a force gate on `Implement`) was declined.
+Branch: `remind-td-tr`, off `main` at `a3aa627`.
+Baseline before any change: **873 passed**, `ruff check .` clean.
 
-Branch: `claude/ingest-hygiene-qkue5z`, off `main` at `b63b6fd`.
-Baseline before any change: **786 passed**, `ruff check .` clean.
-After: **853 passed**, `ruff check .` clean.
+`t` currently means tomorrow. It is the only one-letter date token, which is what
+makes it a bad one: there is no room for today next to it, and the letter itself
+does not say which day it picked. The command grows a matched pair instead —
+`td` today, `tr` tomorrow — and `t` is retired.
 
-Three fixes to the Learn ingest path, before anything new is built on top of it. They
-share a shape: each one is a place where David reports a state it is not in — a second
-page presented as a first, a recollection presented as a reading, a partial write
-presented as a failure.
+Two decisions were taken before writing this, both in the direction the rest of
+this command already leans (refuse rather than resolve):
 
-## Milestone 1: Idempotency — the same URL is not summarised twice
+1. **`t` is refused BY NAME, not dropped from the grammar.** It stays a legal
+   token in `REMIND_PATTERN` and `parse_date_time` refuses it with a message
+   naming both replacements. Dropping it from the pattern would produce the
+   generic usage message, which does not say why the thing you have always typed
+   stopped working — and the one outcome that must be impossible is `t` quietly
+   meaning a different day than it used to.
+2. **`td` with a time already past today is refused.** `t` could never name a
+   past moment; `td` can. A calendar event in the past pings nothing — Google's
+   1-hour alert is gone and the morning poll has already run — so booking it is a
+   silent no-op confirmed as "Reminder set!". That is the exact shape of the bug
+   `PAST_GRACE` exists for, one token over.
 
-- [x] `services/learn.normalise_source_url` — one canonical form for comparison:
-      `http`→`https`, host lowercased and de-`www.`'d, default port dropped, `utm_*`
-      and the named tracking params stripped, remaining params sorted, fragment
-      dropped, trailing slash dropped. Non-http input is returned untouched.
-- [x] A `Source URL` property on the Learn database, written on every URL-bearing
-      Learn (`video`, `article`, `podcast`) and holding the NORMALISED url — the page
-      body keeps the original in its `🔗 Source` link, so nothing is lost.
-- [x] `notion_client.database_property_type(db_id, name)` — the schema question the
-      check needs, cached per database exactly like `title_property` (populated only
-      on success, read before any network call).
-- [x] Before extracting — before the fetch and before Claude — query the Learn
-      database for that normalised URL. A hit replies with the page title, when it was
-      saved, and the exact command to force a re-summarisation. Nothing is fetched,
-      nothing is paid for.
-- [x] The property may not exist yet. Absent → the check is SKIPPED and said out loud,
-      and the property is not written either, so this deploys against an untouched
-      Notion database instead of failing every Learn with a 400.
-- [x] A check that ERRORS is not a check that passed: the failure is reported and the
-      run continues, because refusing to Learn at all is the worse failure here. The
-      message names the risk (a possible duplicate).
-- [x] Both `url` and `rich_text` property types are supported, so whichever one gets
-      created by hand works.
+The split the command is built on is kept: **`REMIND_PATTERN` decides which
+tokens are legal, `parse_date_time` decides what they mean.** Both refusals above
+are meanings, so both live in `clients/calendar_client.py`.
 
-## Milestone 2: Unverified sources are marked, and Implement can see it
+## Milestone 1: The meaning layer — `clients/calendar_client.py`
 
-- [x] `config.UNVERIFIED_MARKER` / `UNVERIFIED_NOTE` / `KNOWLEDGE_RECALL_TYPES` —
-      the marker lives in config because two layers need it and neither owns it.
-- [x] `Learn book` (the only type with no source text) stamps a red callout at the top
-      of the page: unverified, generated from model recollection, no source text read.
-- [x] The marker is a SENTENCE in the page body, not a property. That is deliberate:
-      it survives `blocks_to_text`, so it is in the very text Implement sends to Claude,
-      and it is visible in Notion without opening a properties panel.
-- [x] `config.is_unverified_source(text)` — one predicate, so the write and the read
-      cannot drift.
-- [x] `Implement` surfaces it in the plan message (before the merge runs) and in the
-      first-run build message, both prefixed with the same warning line.
-- [ ] Anything beyond that is NOT implemented in this branch — see `## Open questions`,
-      which is the recommendation asked for.
+- [x] Replace `TOMORROW_TOKENS = {"t", "tomorrow"}` with three sets:
+      `TODAY_TOKENS = {"td", "today"}`, `TOMORROW_TOKENS = {"tr", "tomorrow"}`,
+      `RETIRED_TOKENS = {"t"}`. The long forms stay — a shorthand nobody
+      remembers is worse than none, which is why `tomorrow` was accepted already.
+- [x] `parse_date_time`: refuse `RETIRED_TOKENS` first, before any date maths.
+      The message names both replacements and echoes the time that was typed
+      (`Use `tr 10` for tomorrow or `td 10` for today`) — it cannot name the
+      appointment, because `parse_date_time` is not given it and passing the name
+      down would be a handler concern leaking into the date rules.
+      **Refused before `_parse_clock` too**, which was not in the plan: with a bad
+      time as well, `t` is the thing to fix either way, and a message about the
+      time sends the reader after the wrong problem.
+- [x] `TODAY_TOKENS` branch: build today's date, `_localize` it (so a DST-broken
+      hour is still refused, and refused for the DST reason rather than as
+      "past"), then refuse if the result is **strictly** before `now`.
+- [x] The past-today refusal names the resolved date, the time asked for and the
+      time it is now, and offers both escapes: `tr` for tomorrow, or an explicit
+      year (`06.08.2026`) to record something that already happened — an explicit
+      year is already taken at face value, past or not, so the escape exists.
+- [x] `dt == now` is NOT past. The boundary is asserted rather than left to luck.
+- [x] The `TOMORROW_TOKENS` branch keeps its current behaviour unchanged, and its
+      comment keeps saying why it needs no past check: tomorrow is a future
+      calendar day by construction.
+- [x] Update the three comments that name `t`: the token block above
+      `TOMORROW_TOKENS`, `_localize`'s note on why a refusal names the date rather
+      than the token, and `parse_date_time`'s docstring table of accepted forms.
+- [x] The `Invalid date format` message (thrown for an unparseable `DD.MM`) still
+      ends with "or `t` for tomorrow" — retarget it to `td`/`tr`.
 
-## Milestone 3: Partial writes report what actually landed
+## Milestone 2: The token layer — `reminder.py`
 
-- [x] `notion_client.Written` — a `list` subclass carrying `batches_done`,
-      `batches_total`, `blocks_total` and a `summary` string. A list, so every caller
-      that already reads it as "the blocks that were created" is unaffected.
-- [x] `append_children` returns it. Stops on the first failed batch, as before.
-- [x] `add_Quote` stops hand-rolling its own batching loop (it was a copy of
-      `append_children` minus the `after` anchor) and returns `(written, error)`.
-      Both quote flows report three states: saved, saved partially with the tally and
-      a duplication warning, or failed with nothing written.
-- [x] `create_page` already returned `(page_id, error)` with BOTH set on a partial
-      append; that state now says so in the error string instead of being ambiguous.
-- [x] `create_learn_page` returns `(ok, result, incomplete)` and `run_learn` reports
-      the partial case as its own outcome rather than as `✅ Saved to Notion!`.
-- [x] `implement.apply_section_updates` returns `(applied, skipped, partial)`. A
-      section whose append half-landed is no longer listed under "these are
-      unchanged", which was false for exactly that section.
-- [x] `implement._first_run` reports a Manual page created with incomplete content.
+- [x] `REMIND_PATTERN`'s date group becomes
+      `tomorrow|today|tr|td|t|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?`, longest-first.
+      ~~and a test pins every token rather than trusting that~~ — the test exists
+      and passes, but the ORDER turned out not to be what makes it pass. See
+      `## Changelog`; the comment now says so rather than claiming a guard.
+- [x] The existing `(?![\w.])` lookahead is left exactly as it is — it already
+      covers the new tokens (`td4` fails it the same way `t4` does). Verified by
+      removal, with a test named for the new tokens, because a guard that only
+      has a test for the token it was written against is half a guard.
+- [x] Rewrite the pattern's comment block: it currently explains `t`, and the
+      parenthetical about "today" being rejected by luck rather than design is now
+      wrong — `today` is a legal token.
+- [x] The usage message (`handle_remind`'s no-match reply) advertises `td` and
+      `tr` with an example of each.
+- [x] Module docstring examples updated.
 
-## Milestone 4: Tests
+## Milestone 3: The generated help — `david.py`
 
-- [x] `tests/test_learn_idempotency.py` — the normalisation table (12 cases), the
-      duplicate short-circuit (no fetch, no Claude call), the reply naming the date,
-      the force token, the missing property, the failed check, both property types.
-- [x] `tests/test_unverified_sources.py` — the callout is stamped on `book` and on
-      nothing else, it survives the flattening Implement reads through, the plan
-      message carries the warning, and a verified source's does not.
-- [x] `tests/test_partial_writes.py` — a mid-run batch failure at every one of the
-      four call sites, each asserting the MESSAGE, not just the return value.
-- [x] Every existing test double for `append_children` / `add_Quote` /
-      `create_learn_page` updated to return the type production returns, and
-      `conftest.written_ok` / `written_nothing` / `written_half` added so the next
-      one does not have to invent it.
-- [x] Each guard verified by reverting it and watching its named test go red —
-      all 19 of them, in two passes (see `## Changelog`).
+- [x] The `Remind` `Help` entry: usage lines gain `Remind [Name] td [HH]` and
+      `Remind [Name] tr [HH]` in place of `Remind [Name] t [HH]`; the notes say
+      `td` is today, `tr` is tomorrow, that the words work too, and that a past
+      time today is refused rather than booked.
+- [x] Help is generated from `COMMANDS`, so this is the only place the advertised
+      forms live — and `test_the_help_advertises_only_date_forms_the_parser_accepts`
+      runs them through the real pattern and parser.
 
-## Milestone 5: The Sources ledger
+## Milestone 4: Tests — `tests/test_reminder_dates.py`
 
-- [x] `SOURCES_SECTION`, and `record_source` — one bullet per Implement run, naming
-      the source, whether it was read or recalled, and the date. Creates its own
-      `📚 Sources` heading when the Manual has none.
-- [x] A pure append, which is why it can run after the section writes with none of
-      Hard Rule 2's ordering care: there is no window in which the page holds
-      neither the old content nor the new.
-- [x] **Two independent guards** keep it unwritable by a merge, because either one
-      alone is undoable by a reasonable-looking change: `routable_sections` keeps
-      it out of what the router is SHOWN, and `apply_section_updates` refuses a
-      Sources path however it was arrived at.
-- [x] Still INDEXED — `record_source` has to find it, and `Get Sources - Brain` has
-      to read it. The exclusion is about routing, not about the index.
-- [x] Provenance goes here and NOT into the merged lines: an inline marker is sent
-      back to the model as "current content" on the next run, reworded at its
-      discretion, and never removed if a real source later confirms the claim.
+**Retargeted (existing coverage, `t` → `tr`)** — these are not new guarantees,
+they are the same ones under the new token, so they move rather than multiply:
 
-## Milestone 6: The additions-only rule
+- [x] The eleven tests naming `t`: the bare-hour form, the accepted-forms table,
+      the multi-word name, the space requirement, the run-together time, the
+      no-time case, the out-of-range hour, both DST cases, the never-in-the-past
+      case, and both confirmation tests.
+- [x] `test_today_does_not_silently_become_tomorrow` is **rewritten, not deleted**.
+      Its subject — "today" must never resolve to tomorrow — is now enforced by
+      the alternation rather than by the accident it documented, and that is worth
+      more coverage, not less. It becomes an assertion that `today` and `td`
+      resolve to TODAY.
+- [x] `test_the_help_advertises_only_date_forms_the_parser_accepts` freezes at
+      06:00 rather than 10:00. With `td [HH]` advertised and `[HH]` filled as
+      `10`, a 10:00 clock makes the example land exactly on `now` — it would pass,
+      on the boundary, for a reason unrelated to what the test is for.
 
-- [x] `_survives` — a subsequence walk over whitespace-normalised lines. Order is
-      significant (a numbered routine with two steps swapped has been changed);
-      whitespace is not (a reflowed line is not a rewrite).
-- [x] `_hold_back_rewrites` runs in `_sectioned_run` BEFORE the writer, and only
-      when the source is unverified. Policy about what may be written lives next to
-      the merge; `apply_section_updates` stays a writer and its three buckets keep
-      describing what Notion did.
-- [x] Held-back sections are a fourth outcome in the reply, naming the lines that
-      would have been lost. Not folded into "skipped": both are unchanged, but one
-      is Notion failing and one is David refusing.
-- [x] `_UNVERIFIED_MERGE_RULE` appended to the merge prompt — the hint that makes
-      the check pass often enough to be usable, never the guarantee.
-- [x] ~~A force gate on `Implement`~~ — dropped: declined deliberately. A gate that
-      fires on every book page is a gate you stop reading; the plan message is the
-      checkpoint.
+**New coverage:**
 
-## Milestone 7: The Diet path
+- [x] `td` / `today` book today at the hour given.
+- [x] `tr` / `tomorrow` book tomorrow — one parametrized test over all four live
+      tokens asserting the day each names. ~~This is the alternation-order
+      guard.~~ It is not; see `## Changelog`. It stays as the guard on the
+      OUTCOME, which is the property that has to survive a rearrangement.
+- [x] `td` with a time already past is refused: nothing is booked, the message
+      names the current time and offers `tr`.
+- [x] `td` for a time still ahead today is accepted.
+- [x] `dt == now` is not refused (the boundary, mirroring the `PAST_GRACE` one).
+- [x] A bare `t` is refused by name, and the message names BOTH `td` and `tr` —
+      a message naming only one would be a nudge toward a specific day.
+- [x] A bare `t` never reaches `create_event`, driven end-to-end through
+      `handle_remind`.
+- [x] `td4` / `tr4` inside a name do not become the date (the lookahead, under
+      the new tokens).
+- [x] `td` is DST-checked, and the DST refusal wins over the past refusal when
+      both apply — the ordering is a decision, so it is asserted.
+- [x] A `td` refusal names the resolved date, not the raw token.
+- [x] The confirmation spells out today's weekday and date for `td`.
+- [x] Two not in the original plan, both from writing the revert script: `t` is
+      refused before the clock is parsed (an ordering decision that needed
+      pinning), and a past `td` does not roll to next year (`PAST_GRACE` must not
+      reach this path — rolling it would be the original bug with a new token).
+- [x] **Guard-revert pass**: 12 guards reverted one at a time, each run against
+      the test named for it. 11 went red. The 2 that did not are in
+      `## Changelog` — one was a weak assertion and is fixed, one was never a
+      guard and is now labelled as such in the pattern's comment.
 
-- [x] `run_implement` branches to Diet BEFORE it fetches the Learn page, so the
-      unverified detection never ran for `Implement … - Diet` at all. Its plan
-      message now carries the same warning, computed from the summary text it
-      already reads. No ledger — the Diet page is a fixed toggle tree with nowhere
-      to put one.
+## Milestone 5: The other test files
 
-## Milestone 8: Tests for parts 5–7
+- [x] `tests/test_router.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`
+      all drive `Remind` with the long `12.06 - 14.30` form, so they should need
+      no change. Confirmed by reading, then by running them — no edits needed.
+- [x] `tests/test_learn_idempotency.py:230` refers to "`Remind`'s `t` lookahead"
+      in a comment about a different guard. Update the reference so it points at
+      something that still exists.
+- [x] `tests/test_reminder_dates.py`'s module docstring gains the third subject it
+      now covers — which DAY a shorthand names.
 
-- [x] `tests/test_implement_sections.py` — Sources absent from the routing paths
-      (asserted against the REAL `_sectioned_run`, not against `routable_sections`
-      in isolation, because the failure mode is someone rebuilding that list at the
-      call site); still indexed; an H3 beneath it excluded too; a merge naming it
-      refused at the write; and seven ledger tests driving the real `record_source`.
-- [x] `tests/test_unverified_sources.py` — the rule bites on a reworded line and on
-      a reordered one, tolerates whitespace, lets a pure addition through, leaves a
-      new section alone, and does not apply to verified sources. Plus the merge
-      prompt's text, asserted on the PROMPT rather than on the call — deleting the
-      appended rule leaves a call-level assertion green.
-- [x] All 12 new guards verified by reverting them. One (the merge prompt) was
-      STILL GREEN on the first pass and got a second test; see `## Changelog`.
+## Milestone 6: Docs
 
-## What is enforced, and what is not
+- [x] `CLAUDE.md` — the date table under "**`Remind` never guesses which moment
+      you meant**" gains `td`/`today` and `tr`/`tomorrow` rows; the refusals list
+      grows from four to six (the retired `t`, and a past time today), and the
+      existing `t`-running-into-the-next-token bullet is retargeted. Plus a
+      paragraph on why the shorthands are a two-letter PAIR, and one recording
+      that the alternation order is not a guard.
+- [x] `CLAUDE.md` module map, `reminder.py` row: "`t` becoming a date is the
+      client's job" → the new tokens.
+- [x] `README.md` command table row for `Remind`.
+- [x] This file: steps ticked as they land, not batched at the end.
 
-Copied into the PR body verbatim, because the difference is the whole value:
+## Milestone 7: Ship
 
-- **Enforced, deterministically.** No line already in a Manual is deleted or
-  reworded by a merge whose source was a recollection. David holds both sides
-  before it writes.
-- **Prompt-only.** That the model cooperates, and the tone of what it adds.
-- **Not checked by anything.** Whether an ADDED line is true. Nothing can check
-  that; it is why the ledger exists.
-- **Unmeasured.** How often the rule holds a section back. `_MERGE_SYSTEM` asks for
-  "the FULL merged content" and models reword while reproducing.
+- [x] `ruff check .` clean, full suite green: **900 passed**, up from 873.
+- [ ] Commit on `remind-td-tr`, push, open a PR, let CI go green before merging.
+      Never straight to `main` — Railway keeps the old version on a failed deploy,
+      so a broken one is silent.
 
 ## Changelog
 
-- **The `Source URL` guard is two guards, and the first revert check only found
-  one.** `run_learn` must pass an empty property type when the column is missing,
-  AND `create_learn_page` must skip the property when it is given one. Reverting
-  the second left the test green, because the test that covers the first stubs
-  `create_learn_page` out entirely. Split into two tests, one per line. Recorded
-  because the guard read as a single decision and is not.
-- **A Notion block has two shapes, and only one of them reaches Implement.** The
-  first version of `test_the_marker_survives_the_flattening_implement_reads_through`
-  flattened the blocks `build_notion_blocks` returns and got `"---\n---"`: a block
-  on the way IN carries `{"text": {"content": …}}`, and `extract_rich_text` reads
-  only the `plain_text` a block carries on the way BACK. Asserting against the
-  request shape would have passed on a builder whose output flattens to nothing.
-  The test converts to the response shape by hand, for the same reason the
-  RCDATA-title test builds its shape by hand.
-- **A test asserting the merge call was TOLD does not guard what it was told.**
-  The first version stubbed `merge_sections` and asserted `unverified is True`;
-  deleting the rule text the real function appends left it green. The revert pass
-  caught it. There are now two tests — one for the plumbing, one driving the real
-  `merge_sections` with only `complete_json` replaced. Same shape as the
-  `Source URL` guard that turned out to be two guards, and the second time this
-  branch has been caught guarding the wrapper instead of the thing.
-- **`test_a_huge_manual_does_not_get_its_tail_dropped` used `📚 Sources` as its
-  tail section**, so it routed to and rewrote the section that is now David's
-  ledger — it would have asserted the exact opposite of the new rule. Renamed to
-  `📎 References`, which tests the same tail-not-dropped property. Worth recording
-  because any Manual with real content under `Sources` is now equally frozen: that
-  section can no longer be rewritten by a merge, by design.
-- **The duplicate check is two more Notion calls before the fetch**, so
-  `test_async_io`'s exact-sequence assertion for Learn grew two entries rather
-  than being loosened. They were also making real network calls in the suite until
-  they were stubbed — the offline guarantee catches this only if the stubs exist.
+- **The alternation order was written as a guard and is not one.** `REMIND_PATTERN`
+  lists the tokens longest-first, which reads like the thing stopping `t` from
+  claiming the head of `today`. Reversing it to `t|td|tr|today|tomorrow` left
+  `test_every_date_token_resolves_to_the_day_it_names` green: the `(?![\w.])`
+  lookahead fails `t` on the `o` and the engine backtracks to the branch that
+  fits, so every order works. The order is kept for legibility and both the
+  pattern comment and the test docstring now say plainly that it is not
+  protection. This is the same class as the note already in the test it replaced —
+  a line that reads like a guard and is not is worse than no line.
+- **A refusal that names the same date twice needs an assertion that says which
+  one.** `test_the_past_today_refusal_says_what_time_it_is` asserted
+  `"06.08.2026" in err`. The message contains that date in two places: the clause
+  saying what is past, and the `spell the date out` escape at the end. Rewording
+  the first to "09.00 today is already past" — deleting exactly the thing the test
+  claims to guard — left it green, satisfied by the escape. Now asserted as
+  `"09.00 on 06.08.2026"`, and the sibling test asserts the escape in its
+  backticked form for the same reason.
+- **Two guards were found by writing the revert script, not by planning.**
+  Refusing `t` before `_parse_clock` runs, and `PAST_GRACE` not reaching the `td`
+  path. Both are ordering decisions that read as arbitrary until something asserts
+  them; both now have a named test.
 
 ## Open questions
 
-- ~~**How far should Implement go with an unverified source?**~~ — resolved in
-  milestones 5–7. Option 1 was built as the **Sources ledger**, not as inline
-  suffixes: the merge replaces a section's full content, so an inline marker goes
-  back through the model next run and survives at its discretion, and nothing ever
-  removes it if a real source later confirms the claim. Option 3 was built as an
-  **enforced check** rather than the prompt-only hedging first proposed. Option 2
-  (the force gate) was declined — see Milestone 6.
-- **How often the additions-only rule holds a section back is unmeasured.** If it
-  turns out to be most of them, the honest next move is to loosen it to "no
-  existing line may be DROPPED, rewording allowed" — which cannot be checked
-  deterministically and would have to be described as prompt-only, losing the one
-  property that makes the current rule worth having.
-- **The Diet page has no ledger.** Its structure is a fixed H1>H2>H3 toggle tree
-  with nowhere to put one, and inventing a section there is a schema change to
-  argue for separately. `Implement … - Diet` warns but does not record.
-- **`Learn book` is still not deduplicated.** It has no URL, so this branch does not
-  cover it; the equivalent would be a title match against `LETTI_ID`, which is a
-  fuzzy-match decision of its own and was not asked for.
-- **The `Source URL` property has to exist in Notion for the dedup to do anything.**
-  It is not created by the code (an integration can add properties to a database, but
-  doing it implicitly on a database David does not own the schema of is a bigger
-  decision than this branch). Absent, David says so and carries on.
+- **Nothing migrates old reminders.** Events already on the calendar are
+  unaffected; this changes only what David accepts when creating one. No action
+  needed, recorded so it is not mistaken for an oversight.
+- **`td` is the only token that can now be refused for being past.** If that
+  turns out to be annoying in practice — booking a just-finished meeting as a
+  record — the escape is already there (spell out the date with its year), and the
+  refusal says so. Loosening it would mean confirming "Reminder set!" for
+  something that cannot remind.

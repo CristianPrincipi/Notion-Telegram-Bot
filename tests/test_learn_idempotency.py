@@ -227,7 +227,7 @@ def test_a_trailing_bang_re_summarises_anyway(learn_calls):
 def test_the_force_token_does_not_eat_the_end_of_a_title(learn_calls):
     """`Learn book Wow!` is a book called "Wow!", not a forced run.
 
-    The same lesson `Remind`'s `t` lookahead carries: a token that can swallow
+    The same lesson `Remind`'s date lookahead carries: a token that can swallow
     the end of a real value will, on the one input that ends that way. Here the
     cost of getting it wrong is a book filed under the wrong name.
     """

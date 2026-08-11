@@ -70,7 +70,7 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `undo` | Reverse the last delete or update |
 | `B` | Monthly budget recap |
 | `Month` | Force the monthly page rollover now and report the page ID |
-| `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event. `t` in place of the date means tomorrow and a bare hour means o'clock, so `Remind Dentist t 10` books tomorrow at 10:00. Add the year (`12.06.2027`) to pick one; without it, a date more than a day past rolls to next year and one inside that window is queried rather than guessed |
+| `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event. In place of the date, `td` means today and `tr` means tomorrow (the words work too), and a bare hour means o'clock — so `Remind Dentist tr 10` books tomorrow at 10:00. `td` refuses a time that has already passed, because a reminder in the past never pings. Add the year (`12.06.2027`) to pick one; without it, a date more than a day past rolls to next year and one inside that window is queried rather than guessed. A bare `t` used to mean tomorrow and is now refused by name |
 | `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database. A URL already saved is reported instead of summarised again; add ` !` on the end to re-summarise anyway |
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
