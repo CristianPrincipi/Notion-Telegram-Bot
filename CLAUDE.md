@@ -75,7 +75,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
-| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `t` becoming a date is the client's job |
+| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
@@ -297,39 +297,73 @@ time, and the accepted forms are:
 | --- | --- |
 | `12.06` | that day this year, subject to the rollover rule below |
 | `12.06.2027` | that year, taken at face value — past or not |
-| `t` / `tomorrow` | the day after today |
+| `td` / `today` | today, provided the time has not already passed |
+| `tr` / `tomorrow` | the day after today |
 
 | Time | |
 | --- | --- |
 | `14.30` | 24-hour |
 | `10` | a bare hour, meaning o'clock |
 
-The ` - ` between them is optional, so `Remind Dentist t 10` and
+The ` - ` between them is optional, so `Remind Dentist tr 10` and
 `Remind Dentist 12.06 - 14.30` are both whole commands. `reminder.REMIND_PATTERN`
 decides which TOKENS are legal; `clients.calendar_client.parse_date_time` decides what they
 MEAN. Keep that split — a shorthand resolved in the regex is a date rule nothing
 can unit-test.
 
-Four things are refused rather than resolved, and each one is a bug that already
+**The day shorthands are a matched PAIR, and they are two letters on purpose.**
+There used to be one, `t`, and it meant tomorrow: a single letter for one of two
+adjacent days, with no room for today beside it and nothing in the letter to say
+which of the two it had picked. `td` and `tr` cost one keystroke and remove the
+class. Neither is a prefix of the other, and the long forms stay because a
+shorthand nobody remembers is worse than none.
+
+Six things are refused rather than resolved, and each one is a bug that already
 shipped or nearly did:
 
 - **A bare `DD.MM` inside the last 24 hours** (`PAST_GRACE`). The old rule rolled
   ANY past datetime to next year, so at 10:00 a reminder for 09:00 today was
   booked for next August and confirmed as though it were fine. Beyond a day past,
   `12.06` in December still obviously means next June, so that still rolls.
+- **`td` naming a time already gone.** The one thing the pair can do that `t`
+  could not — tomorrow is a future day by construction. A past event pings
+  nothing: Google's alerts are 1 day and 1 hour before, both gone, and the morning
+  poll ran at 07:30, so booking it is a silent no-op confirmed as "Reminder set!".
+  `PAST_GRACE` deliberately does NOT reach this path — it exists because a bare
+  `DD.MM` is ambiguous between this year and next, and `td` answers that outright.
+  The refusal offers both readings (`tr` for tomorrow, or the date spelled out
+  with its year to record something that happened) rather than picking one.
+- **A bare `t`.** It meant tomorrow and now names neither day, so it is refused BY
+  NAME rather than dropped from the grammar — dropping it gives the generic usage
+  message, which does not say what changed. What it must never do is keep working:
+  `t` sits one letter from both replacements, so any silent reading is a coin flip
+  between two adjacent days. The refusal names BOTH, because naming only `tr`
+  ("it used to mean tomorrow") nudges toward one of them at the exact moment David
+  has no idea which was meant.
 - **Local times that are not one real instant.** `localize()` defaults to
   `is_dst=False`, which silently shifted the hour skipped at the start of summer
   time and silently picked one of the two at the end. `is_dst=None` raises, and
-  both are reported with the hour to avoid.
-- **`t` running into the next token.** `t` matches the first letter of any t-word,
-  and the rest is skipped as separator noise: `Remind Bus t4 to town 10` parsed as
-  "Bus", tomorrow, 04:00 — wrong name AND wrong time. A lookahead requires the
-  token to end where the word does, which costs `t10` and is worth it.
+  both are reported with the hour to avoid. On the spring-forward day `td 02.30`
+  is both nonexistent and past; the DST check runs FIRST, because that message
+  says the hour cannot be booked on any day while "already past" would send you to
+  try the same time tomorrow, where it exists.
+- **A shorthand running into the next token.** It otherwise matches the leading
+  letters of any word starting the same way and the rest becomes the TIME:
+  `Remind Bus td4 to town 10` parsed as "Bus", today, 04:00 — wrong name AND wrong
+  time. A lookahead requires the token to end where the word does, which costs
+  `td10` and is worth it.
 - **A run-together time.** `1030` would match its first two digits and book 10:00.
 
 Every one of those guards was verified by REMOVING it and watching a named test go
 red. A lookahead that guards nothing is worse than none, because it reads like
 protection.
+
+**`REMIND_PATTERN`'s alternation order is legibility, not protection, and it says
+so in the file.** It lists the tokens longest-first, which reads like the thing
+keeping `t` from claiming the head of `today` — and it is not. Reversing it leaves
+every token resolving to the same day, because the lookahead after the date group
+makes the order irrelevant. It was written as a guard, failed the revert check,
+and is now labelled. Do not re-promote it to one.
 
 The confirmation is the backstop for all of it: it names the weekday and the full
 date (`Friday 07 August 2026 at 10:00`), plus a line of its own when the year is

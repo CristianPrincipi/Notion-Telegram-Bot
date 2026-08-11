@@ -377,11 +377,14 @@ COMMANDS = [
         help=Help("📅 *REMINDER*",
                   usage=("Remind [Name] [DD.MM] - [HH.MM]",
                          "Remind [Name] [DD.MM.YYYY] - [HH.MM]",
-                         "Remind [Name] t [HH]"),
-                  notes=("e.g. Remind Dentist 12.06 - 14.30, or Remind Dentist t 10 "
+                         "Remind [Name] td [HH]",
+                         "Remind [Name] tr [HH]"),
+                  notes=("e.g. Remind Dentist 12.06 - 14.30, or Remind Dentist tr 10 "
                          "for tomorrow at 10:00",
-                         "t (or tomorrow) is the day after today; a bare hour means "
-                         "o'clock; the dash is optional",
+                         "td is today and tr is tomorrow (today/tomorrow spelled out "
+                         "work too); a bare hour means o'clock; the dash is optional",
+                         "td refuses a time that has already passed — a reminder in "
+                         "the past never pings",
                          "Without a year: a date over a day past means next year, and "
                          "one inside that window is queried rather than guessed")),
     ),

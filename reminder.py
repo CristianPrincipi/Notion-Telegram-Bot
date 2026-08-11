@@ -3,7 +3,8 @@ Reminder system for David — replaces the old Task functionality.
 
 Command:  Remind [Appointment Name] [Date] [Time]
 Examples: Remind Dentist 12.06 - 14.30
-          Remind Dentist t 10          (tomorrow at 10:00)
+          Remind Dentist td 10         (today at 10:00)
+          Remind Dentist tr 10         (tomorrow at 10:00)
 
 Google Calendar is the single source of truth. Creating a reminder makes a
 calendar event (with native Google popup alerts). A daily polling job reads the
@@ -26,7 +27,8 @@ from datetime import timedelta
 #
 #   Remind Dentist 12.06 - 14.30      the long form
 #   Remind Dentist 12.06.2027 - 14.30 with the year spelled out
-#   Remind Dentist t 10               tomorrow at 10:00
+#   Remind Dentist td 10              today at 10:00
+#   Remind Dentist tr 10              tomorrow at 10:00
 #
 # Name is non-greedy so it stops at the date.
 #
@@ -34,28 +36,45 @@ from datetime import timedelta
 # no year, a date inside the last day is ambiguous and calendar_client refuses to
 # guess (see PAST_GRACE), so spelling the year out is how you answer it.
 #
+# THE ALTERNATION IS ORDERED LONGEST-FIRST FOR LEGIBILITY, AND THAT IS ALL IT IS.
+# It was written as a guard and is not one: reversing it to `t|td|tr|today|
+# tomorrow` leaves every token resolving to the same day, and
+# `test_every_date_token_resolves_to_the_day_it_names` stays green. Recorded
+# because a line that reads like protection and is not is worse than no line.
+#
+# The lookahead below is what actually separates them. Ordered first, `t` matches
+# the head of "today", fails `(?![\w.])` on the `o`, and the engine backtracks to
+# the branch that fits — so every order works, and the order chosen is the one
+# that reads the way it behaves. The test still earns its place: it pins the DAY
+# each token resolves to, which is the property that must hold however the
+# pattern is later rearranged.
+#
+# `t` IS STILL LEGAL HERE, and it resolves to nothing: calendar_client refuses it
+# by name (RETIRED_TOKENS). This module decides which tokens are legal, that one
+# decides what they mean, and "used to mean tomorrow, now means neither day" is a
+# meaning. Dropping it here instead would give the generic usage message, which
+# does not say what changed.
+#
 # THE TWO LOOKAHEADS ARE LOAD-BEARING, not decoration. Both were checked by
 # removing them and watching a test go red, because a lookahead that guards
 # nothing is worse than none — it reads like protection.
 #
-#   after the date — the token has to END where the word does. `t` otherwise
-#     matches the leading letter of ANY word starting with t, and the rest of
-#     that word is skipped as separator noise: `Remind Bus t4 to town 10`
-#     silently becomes "Bus", tomorrow, 04:00. It costs the run-together form —
-#     `t10` is refused and `t 10` is required — and that is the right trade: a
-#     space is one keystroke, a wrong booking is invisible.
+#   after the date — the token has to END where the word does. A shorthand
+#     otherwise matches the leading letters of ANY word that starts with them,
+#     and the rest of that word is skipped as separator noise:
+#     `Remind Bus td4 to town 10` silently becomes "Bus", today, 04:00. It costs
+#     the run-together form — `td10` is refused and `td 10` is required — and
+#     that is the right trade: a space is one keystroke, a wrong booking is
+#     invisible.
 #
 #   after the time — a bare hour must not match the leading digits of a typo,
 #     so `1030` fails the command rather than quietly booking 10:00.
 #
-# ("today" is rejected by neither of these, incidentally — the time group cannot
-# match the "oday" left behind. That is luck rather than design, so the date
-# lookahead is what the intent rests on.)
-#
-# The separator is optional because `t 10` reads naturally without one; the
+# The separator is optional because `tr 10` reads naturally without one; the
 # dash still works everywhere it did before.
 REMIND_PATTERN = (r"(?i)remind\s+(?P<name>.+?)\s+"
-                  r"(?P<date>tomorrow|t|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)(?![\w.])"
+                  r"(?P<date>tomorrow|today|tr|td|t"
+                  r"|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)(?![\w.])"
                   r"\s*(?:-\s*)?"
                   r"(?P<time>\d{1,2}(?:\.\d{1,2})?)(?!\d)")
 
@@ -94,9 +113,10 @@ async def handle_remind(update, user_text: str):
             "`Remind [Name] [Date] [Time]`\n\n"
             "Examples:\n"
             "`Remind Dentist 12.06 - 14.30`\n"
-            "`Remind Dentist t 10`  _(tomorrow at 10:00)_\n\n"
-            "_Date is DD.MM, or `t` for tomorrow. Time is HH.MM in 24-hour "
-            "format, or a bare hour._\n"
+            "`Remind Dentist td 10`  _(today at 10:00)_\n"
+            "`Remind Dentist tr 10`  _(tomorrow at 10:00)_\n\n"
+            "_Date is DD.MM, or `td` for today and `tr` for tomorrow. Time is "
+            "HH.MM in 24-hour format, or a bare hour._\n"
             "_Add the year — `12.06.2027` — to book a specific one._",
         )
         return

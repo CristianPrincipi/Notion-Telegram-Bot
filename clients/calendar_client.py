@@ -126,8 +126,8 @@ def _localize(naive: datetime, time_str: str):
     expecting an exception. Not doing it here.
     """
     # The message names the DATE THIS RESOLVED TO, not the token that was typed.
-    # `t` is a legal date token, and "02.30 doesn't exist on t" tells you nothing
-    # about which night is the problem — the whole point of the message.
+    # `tr` is a legal date token, and "02.30 doesn't exist on tr" tells you
+    # nothing about which night is the problem — the whole point of the message.
     on = naive.strftime("%d.%m.%Y")
     try:
         return TIMEZONE.localize(naive, is_dst=None), None
@@ -141,15 +141,31 @@ def _localize(naive: datetime, time_str: str):
                       f"Pick a time before 02:00 or from 03:00.")
 
 
-# The shorthand for "the day after today". `t` is the one that gets typed; the
-# long form is accepted because a shorthand nobody remembers is worse than none.
+# The two day shorthands, as a MATCHED PAIR. The long forms are accepted beside
+# them because a shorthand nobody remembers is worse than none.
 #
-# "today" deliberately does NOT match either of them. It starts with a `t`, and
-# resolving it to TOMORROW would be a silent one-day error on a command whose
-# whole recent history is about not guessing dates — so the date token requires
-# the shorthand to end where the word does, and "today" falls through to the
-# usage message instead.
-TOMORROW_TOKENS = {"t", "tomorrow"}
+# `td` and `tr` are two letters rather than one, and that is the point. The old
+# scheme had a single `t` meaning tomorrow, which left no room for today next to
+# it and did not say which of the two it had picked — a one-letter token for one
+# of two adjacent days is a one-day error waiting for a typo. Two letters, chosen
+# so neither is a prefix of the other, cost one keystroke and remove the class.
+TODAY_TOKENS    = {"td", "today"}
+TOMORROW_TOKENS = {"tr", "tomorrow"}
+
+# `t` used to mean tomorrow, and it is REFUSED rather than removed.
+#
+# Removing it from reminder.REMIND_PATTERN would work — the command would simply
+# not match and the usage message would come back. That is worse for the one
+# reason that matters here: the usage message does not say why the thing you have
+# typed for months stopped working, and the reader is left to spot the difference
+# between two lists. Refusing it by name says it.
+#
+# What it must never do is keep working. `t` sits one letter from BOTH new
+# tokens, so any silent reading of it is a coin flip between today and tomorrow —
+# and a reminder on the wrong day of two adjacent ones is exactly the failure this
+# command's history is made of. Kept legal at the pattern level and refused here,
+# which is the same split every other date rule in this module lives on.
+RETIRED_TOKENS  = {"t"}
 
 
 def _parse_clock(time_str: str):
@@ -178,9 +194,12 @@ def parse_date_time(date_str: str, time_str: str):
     """Parse a date + time into an aware Europe/Rome datetime. Returns (dt, error).
 
     Accepted date forms:
-      DD.MM         the current year, with the rollover rules below
-      DD.MM.YYYY    that year, taken at face value
-      t / tomorrow  the day after today
+      DD.MM          the current year, with the rollover rules below
+      DD.MM.YYYY     that year, taken at face value
+      td / today     today, provided the time has not already passed
+      tr / tomorrow  the day after today
+
+    `t` on its own is refused: it used to mean tomorrow and now names neither day.
 
     Accepted time forms: HH.MM, or a bare HH meaning o'clock.
 
@@ -190,21 +209,73 @@ def parse_date_time(date_str: str, time_str: str):
     say which one you meant; an explicit year is taken at face value, past or not,
     because it is no longer a guess at that point.
     """
+    token = date_str.strip().lower()
+
+    # ── `t`, which no longer names a day ───────────────────────────────────────
+    # Refused BEFORE the clock is parsed, so the answer does not depend on
+    # whether the time was also wrong: `t` is the thing to fix either way, and a
+    # message about the time would send the reader after the wrong problem.
+    #
+    # It names BOTH replacements. Naming only `tr` — "it used to mean tomorrow,
+    # so say tomorrow" — would be a nudge toward one of two adjacent days at the
+    # exact moment David has no idea which was meant.
+    if token in RETIRED_TOKENS:
+        return None, (
+            f"`{date_str.strip()}` on its own is no longer a date — it used to "
+            f"mean tomorrow, and there are now two days to tell apart. Send "
+            f"`tr {time_str}` for tomorrow or `td {time_str}` for today."
+        )
+
     hour, minute, err = _parse_clock(time_str)
     if err:
         return None, err
 
     now = datetime.now(TIMEZONE)
 
-    # ── `t` / `tomorrow` ───────────────────────────────────────────────────────
+    # ── `tr` / `tomorrow` ──────────────────────────────────────────────────────
     # No rollover question to answer and no past-date question either: tomorrow
     # is a future calendar day by construction, so the earliest instant this can
     # produce is still ahead of `now`. It goes through _localize like everything
     # else, so asking for 02.30 on the night the clocks change is still refused.
-    if date_str.strip().lower() in TOMORROW_TOKENS:
+    if token in TOMORROW_TOKENS:
         tomorrow = (now + timedelta(days=1)).date()
         return _localize(datetime(tomorrow.year, tomorrow.month, tomorrow.day,
                                   hour, minute), time_str)
+
+    # ── `td` / `today` ─────────────────────────────────────────────────────────
+    # The one token that can name a moment already gone, which is why it is the
+    # only shorthand with a check after it.
+    #
+    # _localize runs FIRST, deliberately. On the night the clocks go forward,
+    # `td 02.30` is both nonexistent and (later that day) past, and the DST
+    # message is the useful one: it names an hour that cannot be booked on any
+    # day, while "already past" would send you to try the same time tomorrow.
+    if token in TODAY_TOKENS:
+        today = now.date()
+        dt, err = _localize(datetime(today.year, today.month, today.day,
+                                     hour, minute), time_str)
+        if err:
+            return None, err
+
+        # STRICTLY before. A reminder for this exact minute is odd but not wrong,
+        # and refusing it would be refusing a moment that has not happened yet.
+        if dt < now:
+            # PAST_GRACE does not apply and must not: it exists because a bare
+            # `DD.MM` in the recent past is ambiguous between this year and next,
+            # and `td` answers that question by construction. There is nothing to
+            # roll forward — the day was named outright.
+            #
+            # A past event pings nothing. Google's alerts are 1 day and 1 hour
+            # before, both gone, and the morning poll ran at 07:30 — so booking it
+            # is a silent no-op confirmed as "Reminder set!". Both ways out are
+            # offered, because one of them is usually what was meant.
+            return None, (
+                f"{time_str} on {dt.strftime('%d.%m.%Y')} is already past — it "
+                f"is {now.strftime('%H:%M')} now, and a reminder in the past "
+                f"never pings. Send `tr {time_str}` for tomorrow, or spell the "
+                f"date out (`{dt.strftime('%d.%m.%Y')}`) to record it anyway."
+            )
+        return dt, None
 
     # ── DD.MM, optionally with a year ──────────────────────────────────────────
     parts = date_str.split(".")
@@ -220,7 +291,8 @@ def parse_date_time(date_str: str, time_str: str):
             raise ValueError
     except (ValueError, TypeError):
         return None, (f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06), "
-                      f"DD.MM.YYYY (e.g. 12.06.2027), or `t` for tomorrow.")
+                      f"DD.MM.YYYY (e.g. 12.06.2027), `td` for today or `tr` "
+                      f"for tomorrow.")
     if not (1 <= month <= 12) or not (1 <= day <= 31):
         return None, f"Invalid date '{date_str}'. Day 1-31, month 1-12."
 
