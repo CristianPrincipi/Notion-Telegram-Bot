@@ -87,7 +87,7 @@ def test_budget_totals_every_page_not_just_the_first():
     of a real €150 — and the more you spend, the more wrong it gets."""
     expected = two_pages_of_expenses()
 
-    text = david.budget()
+    text, _ = david.budget()
 
     assert f"€{expected:.2f}" in text, f"expected €{expected:.2f} in: {text}"
 
@@ -98,7 +98,7 @@ def test_compute_budget_totals_every_page_not_just_the_first():
     briefing and the pacing warning, both of which now actually run."""
     expected = two_pages_of_expenses()
 
-    assert budget_module.compute_budget()["total"] == expected
+    assert budget_module.compute_budget()[0]["total"] == expected
 
 
 @responses.activate

@@ -96,7 +96,8 @@ def david_stubs(monkeypatch):
     # bot.commands, the Sunday recap through david, and the assertions below
     # compare function identity — so a second lambda would make one of the two
     # tests fail against a stub that is correct.
-    budget_stub = lambda: "MOCK BUDGET"          # noqa: E731
+    # The (recap, error) pair production returns — both callers unpack it.
+    budget_stub = lambda: ("MOCK BUDGET", None)   # noqa: E731
     stubs = stub_module(monkeypatch, david, {"budget": budget_stub})
     stub_module(monkeypatch, bot.commands, {"budget": budget_stub})
     stubs |= stub_module(monkeypatch, books, {
@@ -518,7 +519,9 @@ def test_a_slow_command_no_longer_freezes_the_bot():
         in_flight.set()
         time.sleep(STALL)
         events.append("blocking-call-returned")
-        return "MOCK BUDGET"
+        # The PAIR production returns: a double handing back a bare string
+        # would keep this test green against a shape budget() no longer has.
+        return "MOCK BUDGET", None
 
     async def other_traffic():
         while not in_flight.is_set():      # don't start before the call is running

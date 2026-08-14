@@ -300,7 +300,7 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
     monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
-    monkeypatch.setattr(bot.commands, "budget", lambda: "TOTAL")
+    monkeypatch.setattr(bot.commands, "budget", lambda: ("TOTAL", None))
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
     monkeypatch.setattr(expense_service, "find_expense_matches",
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
@@ -383,7 +383,8 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
         order.append("learn-end")
 
     monkeypatch.setattr(bot.learn, "handle_learn", slow_learn)
-    monkeypatch.setattr(bot.commands, "budget", lambda: order.append("budget") or "TOTAL")
+    monkeypatch.setattr(bot.commands, "budget",
+                        lambda: (order.append("budget"), ("TOTAL", None))[1])
 
     context = FakeContext()
 

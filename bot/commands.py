@@ -23,12 +23,15 @@ from telegram_text import reply
 
 
 async def cmd_budget(update, context, args):
-    result_text = await asyncio.to_thread(budget)
+    result_text, err = await asyncio.to_thread(budget)
     if result_text:
         # format_budget escapes the Notion category names it interpolates.
         await reply(update, result_text)
     else:
-        await update.message.reply_text("❌ Error: Could not calculate budget.")
+        # reply_text, not reply: `err` is Notion's own string and can carry `_`
+        # or `*`, and it is the one message that must survive to be read. Same
+        # reasoning as the three error reporters CLAUDE.md exempts.
+        await update.message.reply_text(f"❌ Could not calculate budget: {err}")
 
 
 async def cmd_diag(update, context, args):

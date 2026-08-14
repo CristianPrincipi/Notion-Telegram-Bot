@@ -109,6 +109,41 @@ def test_proactive_report_error_delivers_markdown_hostile_text_intact():
     assert "morning_briefing" in text
 
 
+# ─── send_budget_recap ─────────────────────────────────────────────────────────
+# The fourth reader of budget(), and the one that had no test at all: the guard-
+# revert pass for M2 found that dropping `err` from this branch turned nothing
+# red. It is also the reader you are least likely to notice — nobody is waiting
+# at the keyboard for the Sunday recap.
+
+
+def test_the_sunday_recap_names_why_it_could_not_fetch_the_budget(monkeypatch):
+    """"Could not fetch budget from Notion" reads the same for a 401, a 429 and a
+    renamed property, and only one of those is worth getting out of bed for."""
+    monkeypatch.setattr(david, "budget", lambda: (None, f"Notion 401: {HOSTILE}"))
+    context = FakeContext()
+
+    run(david.send_budget_recap(context))
+
+    _, text, kwargs = context.bot.sent_full[0]
+    assert "401" in text, f"the recap reported no cause: {text!r}"
+    assert HOSTILE in text
+    assert kwargs.get("parse_mode") is None, (
+        "the failure notice interpolates a raw Notion error — Markdown would let "
+        "it fail on exactly the message it exists to deliver")
+
+
+def test_the_sunday_recap_sends_the_recap_when_there_is_one(monkeypatch):
+    """The mirror: the success path must not start reporting errors."""
+    monkeypatch.setattr(david, "budget", lambda: ("💰 **Monthly Budget**", None))
+    context = FakeContext()
+
+    run(david.send_budget_recap(context))
+
+    _, text, _ = context.bot.sent_full[0]
+    assert "Monthly Budget" in text
+    assert "Could not fetch" not in text
+
+
 def test_proactive_report_error_accepts_a_plain_error_string():
     """Builders return (text, error) tuples, so `err` is not always an Exception."""
     context = job_context()

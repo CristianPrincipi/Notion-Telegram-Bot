@@ -73,7 +73,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
 | `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts |
 | `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
-| `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget`) | Notion HTTP, Telegram |
+| `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget` — the two fallible ones return `(value, error)`) | Notion HTTP, Telegram |
 | `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
 | `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
@@ -650,10 +650,19 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   meant. Unset, the first run resolves the month from Notion by title.
 - **`(value, error)` is still not universal**, but the remaining gaps are narrower and
   named:
-  - `budget.compute_budget()` returns `dict | None`, collapsing a Notion failure into
-    "nothing to report" for `briefing._budget_line` and `budget_watch._should_warn`.
-    This is the same class of bug the briefings had, one layer down. Asserted as a
-    known gap in `tests/test_briefings.py`.
+  - ~~`budget.compute_budget()` returns `dict | None`, collapsing a Notion failure
+    into "nothing to report" for `briefing._budget_line` and
+    `budget_watch._should_warn`.~~ Resolved: `compute_budget` and `budget` both
+    return `(value, error)` and neither returns a bare `None`. There is no third
+    state to design around — an empty month is a dict whose total is `0.0`, which
+    is exactly what stops the quiet month and the failed read from being the same
+    value. All four readers report: the `B` command and the Sunday recap
+    interpolate the reason instead of one generic sentence, the pacing warning
+    returns `(None, error)` where it used to go silent, and the morning briefing
+    says "I could not read your budget" beside the calendar half's equivalent
+    line and returns both errors joined. `test_pacing_is_silent_when_notion_is_down`
+    was the `known_bug` row asserting the old behaviour and was rewritten in the
+    same commit, per the convention above.
   - `calendar_client` returns `[], err` on failure — the failure value IS the
     legitimate empty value, which is the root cause every caller has to work around
     by checking `err` FIRST. Changing it ripples into `find_conflicts`,

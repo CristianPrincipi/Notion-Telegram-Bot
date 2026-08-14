@@ -5,13 +5,23 @@ Extracted from david.py so that BOTH the bot's existing `B` / weekly-recap
 commands AND the new proactive jobs (Morning Briefing, and Budget Pacing in
 Step 4) read from one source of truth.
 
-  compute_budget() -> dict | None   raw numbers + month pacing
-  format_budget(b) -> str           the existing recap string, built from the dict
-  budget()         -> str | None    convenience = format_budget(compute_budget())
+  compute_budget() -> (dict, error)   raw numbers + month pacing
+  format_budget(b) -> str             the recap string, built from the dict
+  budget()         -> (str, error)    convenience = format_budget(compute_budget())
 
-`budget()` keeps the exact contract the old david.py function had (returns the
-recap string, or None on a Notion error), so the existing call sites — the `B`
-command and send_weekly_budget — keep working unchanged.
+BOTH FALLIBLE FUNCTIONS RETURN (value, error), and neither ever returns a bare
+None. They used to: `None` meant "Notion failed" AND "there is nothing to
+report", which is the collapse CLAUDE.md names under "An error is never the same
+value as an empty result". It cost the same thing here it cost one layer up —
+`briefing._budget_line` dropped the pace line silently during an outage, and
+`budget_watch._should_warn` could not fire at all, so a month you were
+overspending went unreported for as long as Notion was unhappy.
+
+There is no third state to worry about: a month with no expenses is a perfectly
+good dict whose total is 0.0. That is the whole point — the empty month and the
+failed read are no longer the same value.
+
+`format_budget` is NOT fallible: it takes a dict and renders it.
 """
 
 import logging
@@ -33,11 +43,15 @@ EXPENSES_ID = os.environ.get("EXPENSES_ID")
 _TIMEZONE = pytz.timezone("Europe/Rome")
 
 
-def compute_budget() -> dict | None:
+def compute_budget() -> tuple[dict | None, str | None]:
     """Aggregate the current month's expenses and compute month pacing.
 
-    Returns None if the Notion query fails (same failure signal the old
-    budget() used). On success returns:
+    Returns (budget, error) — `(None, error)` if the Notion query fails, and
+    `(dict, None)` otherwise. Never `(None, None)`: a month with no expenses is
+    a dict whose total is 0.0, so a caller that gets no dict has a real failure
+    to report and cannot mistake it for a quiet month.
+
+    On success the dict is:
 
       {
         "per_category":     {name: amount, ...},
@@ -66,7 +80,7 @@ def compute_budget() -> dict | None:
     )
     if err:
         logger.error("compute_budget could not read the expenses: %s", err)
-        return None
+        return None, err
 
     per_category: dict[str, float] = {}
     total = 0.0
@@ -102,7 +116,7 @@ def compute_budget() -> dict | None:
         "on_pace":          total <= expected_to_date,
         "projected_total":  projected_total,
         "projected_over":   max(0.0, projected_total - BUDGET_CEILING),
-    }
+    }, None
 
 
 def format_budget(b: dict) -> str:
@@ -121,8 +135,13 @@ def format_budget(b: dict) -> str:
     return "\n".join(lines)
 
 
-def budget() -> str | None:
-    """compute + format. Returns the recap string, or None on a Notion error.
-    Drop-in replacement for the old david.py budget()."""
-    b = compute_budget()
-    return format_budget(b) if b is not None else None
+def budget() -> tuple[str | None, str | None]:
+    """compute + format. Returns (recap, error).
+
+    The error is passed through rather than swallowed so the two callers — the
+    `B` command and the Sunday recap — can print WHICH failure happened. Both
+    used to say "Could not fetch budget from Notion" for every cause, which is
+    the one sentence that fits a 401, a 429 and a renamed property equally badly.
+    """
+    b, err = compute_budget()
+    return (format_budget(b), None) if b is not None else (None, err)

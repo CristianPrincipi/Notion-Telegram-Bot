@@ -93,8 +93,9 @@ def test_budget_totals_and_groups_by_category():
         expense(2.50,  "Gift"),
     ])
 
-    text = david.budget()
+    text, err = david.budget()
 
+    assert err is None
     assert "**Food: €15.50**" in text
     assert "**Shopping: €30.00**" in text
     assert "**Gift: €2.50**" in text
@@ -110,7 +111,7 @@ def test_budget_lists_categories_biggest_first():
         expense(20.00, "Food"),
     ])
 
-    lines = david.budget().splitlines()
+    lines = david.budget()[0].splitlines()
     categories = [ln for ln in lines if ln.startswith("**") and "€" in ln and ":" in ln]
 
     assert categories[0].startswith("**Shopping")
@@ -139,7 +140,7 @@ def test_budget_survives_rows_with_no_amount_or_category():
         expense(5.00, "Food"),
     ])
 
-    text = david.budget()
+    text, _ = david.budget()
 
     assert "**Other: €10.00**" in text      # uncategorised falls back to Other
     assert "**Food: €5.00**" in text        # the null amount contributed 0
@@ -150,25 +151,60 @@ def test_budget_survives_rows_with_no_amount_or_category():
 def test_budget_with_no_expenses_yet():
     notion_query([])
 
-    text = david.budget()
+    text, err = david.budget()
 
+    assert err is None, "an empty month is not a failure"
     assert "**Spent: €0.00**" in text
     assert "**Remaining: €300.00**" in text
 
 
 @responses.activate
-def test_budget_returns_none_when_notion_rejects_the_query():
+def test_a_rejected_query_comes_back_as_an_error_not_as_an_empty_month():
+    """The collapse this milestone removed.
+
+    `None` meant "Notion failed" AND "nothing to report", so a 400 reached
+    `_budget_line` and `_should_warn` as an ordinary quiet month. Both halves
+    are asserted: no recap to print, and a non-empty reason to print instead.
+    """
+    notion_query([], status=400)
     notion_query([], status=400)
 
-    assert david.budget() is None
-    assert compute_budget() is None
+    text, err = david.budget()
+    assert text is None
+    assert err, "a failed query must come back with a reason"
+
+    b, err = compute_budget()
+    assert b is None
+    assert err
 
 
 @responses.activate
-def test_budget_returns_none_on_notion_auth_failure():
+def test_an_auth_failure_names_itself(caplog):
+    """A 401 is the failure most worth naming: it does not clear up on its own,
+    and 'Could not fetch budget from Notion' reads identically to a 429."""
     notion_query([], status=401)
 
-    assert david.budget() is None
+    text, err = david.budget()
+
+    assert text is None
+    assert "401" in err, f"the reason did not name the status: {err!r}"
+
+
+@responses.activate
+def test_an_empty_month_is_a_budget_not_an_error():
+    """THE MIRROR, and the reason there is no third state.
+
+    A month with nothing in it is a perfectly good dict whose total is 0.0. If
+    this ever came back as an error, every reader would report an outage on the
+    1st of the month.
+    """
+    notion_query([])
+
+    b, err = compute_budget()
+
+    assert err is None
+    assert b["total"] == 0.0
+    assert b["per_category"] == {}
 
 
 # ─── PACING (compute_budget only) ──────────────────────────────────────────────
@@ -177,7 +213,7 @@ def test_budget_returns_none_on_notion_auth_failure():
 def test_compute_budget_paces_against_the_month(frozen_june_10):
     notion_query([expense(100.00, "Food"), expense(50.00, "Shopping")])
 
-    b = compute_budget()
+    b, _ = compute_budget()
 
     assert b["total"]            == 150.00
     assert b["ceiling"]          == 300.00
@@ -195,7 +231,7 @@ def test_compute_budget_paces_against_the_month(frozen_june_10):
 def test_compute_budget_on_pace_reports_no_overspend(frozen_june_10):
     notion_query([expense(60.00, "Food")])
 
-    b = compute_budget()
+    b, _ = compute_budget()
 
     assert b["on_pace"] is True                 # 60 spent vs 100 expected
     assert b["projected_total"] == 180.00
@@ -206,7 +242,7 @@ def test_compute_budget_on_pace_reports_no_overspend(frozen_june_10):
 def test_compute_budget_with_no_expenses_has_no_top_category(frozen_june_10):
     notion_query([])
 
-    b = compute_budget()
+    b, _ = compute_budget()
 
     assert b["total"] == 0.0
     assert b["top_category"] is None
@@ -240,7 +276,7 @@ def test_the_b_command_and_the_shared_recap_agree_exactly(rows):
     notion_query(rows)
     notion_query(rows)
 
-    assert david.budget() == format_budget(compute_budget())
+    assert david.budget()[0] == format_budget(compute_budget()[0])
 
 
 def test_there_is_only_one_budget_implementation():

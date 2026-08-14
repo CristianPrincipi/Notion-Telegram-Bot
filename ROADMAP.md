@@ -34,7 +34,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 | Order | Milestone | Why here |
 | --- | --- | --- |
 | ~~1~~ ✅ | ~~**M1** — One truncation budget per Claude call~~ | Done. Smallest, self-contained, no new surface. Fixed a documented doctrine violation. |
-| 2 | **M2** — `compute_budget()` returns `(value, error)` | Contained blast radius; two tests already assert the wrong behaviour on purpose and are waiting to be flipped. |
+| ~~2~~ ✅ | ~~**M2** — `compute_budget()` returns `(value, error)`~~ | Done. Blast radius was wider than "contained": eight test files touch `budget()`, because every command-level test doubles it. |
 | 3 | **M3** — The Learn-nudge job | Highest product value. Independent of everything else. |
 | 4 | **M4** — Takeaway of the week | Same shape as M3 — do it while the proactive-builder pattern is fresh. |
 | 5 | **M5** — Split the last four `update`-taking modules | Pure refactor. Unlocks M6. |
@@ -148,7 +148,10 @@ like a full merge. You find out from a thin Manual entry months later.
 
 ---
 
-# M2 — `compute_budget()` returns `(value, error)`
+# M2 — `compute_budget()` returns `(value, error)` ✅ done
+
+_Landed on `budget-value-error`. `PLAN.md` holds the decisions and the
+guard-revert record._
 
 ## Why
 
@@ -186,40 +189,48 @@ expected to turn that test red, and the row is updated in the same commit.**
 
 ## To-do
 
-- [ ] `compute_budget()` returns `(dict, error)`; never a bare `None`.
-- [ ] `format_budget(b)` unchanged — it takes a dict and is not fallible.
-- [ ] `budget()` returns `(str, error)`.
-- [ ] `proactive/briefing.py` — `_budget_line` and `build_morning_briefing`
+- [x] `compute_budget()` returns `(dict, error)`; never a bare `None`.
+- [x] `format_budget(b)` unchanged — it takes a dict and is not fallible.
+- [x] `budget()` returns `(str, error)`.
+- [x] `proactive/briefing.py` — `_budget_line` and `build_morning_briefing`
       propagate the error into the `(text, error)` tuple the scheduler already
-      knows how to handle.
-- [ ] `proactive/budget_watch.py` — `_should_warn` / `build_pacing_warning`
+      knows how to handle. Two additions beyond the letter of this line: the
+      message SAYS the budget half is unknown (a vanished line is the same
+      silent degradation, one level down), and two errors are joined so a double
+      outage reports both instead of picking one.
+- [x] `proactive/budget_watch.py` — `_should_warn` / `build_pacing_warning`
       likewise: a read failure is `(None, error)`, a healthy month under the
-      threshold stays `(None, None)`.
-- [ ] `david.send_budget_recap` — interpolate the real error instead of the
+      threshold stays `(None, None)`. `_should_warn` now takes a dict — its
+      `if not b: return False` WAS the collapse, one function over.
+- [x] `david.send_budget_recap` — interpolate the real error instead of the
       generic sentence. Remember it sends **plain text**: it is one of the
       reporters `CLAUDE.md` exempts from `telegram_text` on purpose.
-- [ ] `bot/commands.py` — `cmd_budget` reports the error to the user.
-- [ ] Update `CLAUDE.md`'s "Open questions" — this is the first of the three
+- [x] `bot/commands.py` — `cmd_budget` reports the error to the user.
+- [x] Update `CLAUDE.md`'s "Open questions" — this is the first of the three
       named `(value, error)` gaps to close; strike it through with the reason
       rather than deleting the entry.
 
 ## Tests
 
-- [ ] `tests/test_budget.py:160` `test_budget_returns_none_when_notion_rejects_the_query`
+- [x] `tests/test_budget.py:160` `test_budget_returns_none_when_notion_rejects_the_query`
       and `:168` `test_budget_returns_none_on_notion_auth_failure` — both assert
       the current wrong behaviour. Rewrite them in the same commit to assert the
-      error is returned and is non-empty.
-- [ ] `tests/test_briefings.py:274` `test_pacing_is_silent_when_notion_is_down` —
+      error is returned and is non-empty. Renamed off "returns_none", plus a new
+      mirror asserting an EMPTY month is a dict and not an error.
+- [x] `tests/test_briefings.py:274` `test_pacing_is_silent_when_notion_is_down` —
       rewrite: a Notion failure now *reports*, and the docstring's "KNOWN GAP"
-      note comes out.
-- [ ] New: the morning briefing during a Notion outage still sends the calendar
+      note comes out. `test_morning_still_sends_events_when_notion_is_down`
+      asserted `err is None` on the same collapse and was rewritten with it.
+- [x] New: the morning briefing during a Notion outage still sends the calendar
       half **and** reports the budget error — the two must not be traded off.
-- [ ] New: a genuinely quiet month (query succeeds, nothing to warn about) is
+- [x] New: a genuinely quiet month (query succeeds, nothing to warn about) is
       still silent with no error. This is the assertion that stops the fix from
       turning every quiet day into an alert.
-- [ ] `tests/test_budget.py:246` `test_there_is_only_one_budget_implementation`
-      must still pass — do not grow a second copy while refactoring.
-- [ ] Full suite green, `ruff check .` clean.
+- [x] New, not planned: the Sunday recap's failure branch had **no test at all**
+      — found by the guard-revert pass. See the changelog.
+- [x] `tests/test_budget.py:246` `test_there_is_only_one_budget_implementation`
+      must still pass — do not grow a second copy while refactoring. Untouched.
+- [x] Full suite green (**918 passed**, up from 913), `ruff check .` clean.
 
 ---
 
@@ -596,6 +607,24 @@ Recorded so they are not re-proposed.
 
 # Changelog
 
+- **2026-08-14** — **M2 landed.** Three things worth carrying forward:
+  - **The Sunday recap's failure branch had no test at all.** Found by the
+    guard-revert pass: dropping `err` from `david.send_budget_recap` turned
+    nothing red. It is the reader you are least likely to notice by hand —
+    nobody is waiting at the keyboard for a Sunday-morning job — and it now has
+    two tests in `tests/test_error_reporting.py`, next to the reporters it
+    shares its plain-text rule with.
+  - **A source-level revert cannot reach a reader that stubs its source.**
+    Collapsing `compute_budget` back to a bare `None` turned only
+    `tests/test_budget.py` red; every reader doubles `compute_budget` or
+    `budget`, so each needed its own revert (drop the error in `cmd_budget`, in
+    `build_pacing_warning`, in `build_morning_briefing`, in the recap). Four
+    reverts, four named tests. Worth knowing before the next `(value, error)`
+    gap: budget the revert pass per READER, not per function.
+  - **Doubles are the real blast radius of a contract change.** Eight test files
+    touch `budget()` and five install a double for it. Each one had to start
+    returning the pair, or it would have kept passing against a shape production
+    no longer has — the `written_ok` lesson, one function over.
 - **2026-08-14** — **M1 landed.** Two things worth carrying forward:
   - **The accumulating inputs were checked and there is nothing there.** The
     obvious worry — that a Manual outgrowing `manual_text[:40000]`, or a Diet
