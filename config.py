@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 # Monthly budget ceiling, in euros. Override on Railway with BUDGET_CEILING.
 BUDGET_CEILING = float(os.environ.get("BUDGET_CEILING", "300"))
 
-# The Expenses column that relates a row to its month page. month.py follows this
-# relation to discover WHICH database the month pages live in, so it is named
-# once here rather than spelled out at each call site (notion_ids.py checks the
-# same column when it validates the Expenses schema).
+# The Expenses column that relates a row to its month page. services/month.py
+# follows this relation to discover WHICH database the month pages live in, so it
+# is named once here rather than spelled out at each call site
+# (services/notion_ids.py checks the same column when it validates the schema).
 EXPENSE_MONTH_RELATION = "Account"
 
 
@@ -290,12 +290,12 @@ BUDGET_PACING_MIN_DAY       = 5      # skip days 1-4: total/day projections are 
 BUDGET_PACING_THRESHOLD_PCT = 0.05   # only warn if projected to exceed the ceiling by >= 5%
 
 # Month Rollover — points the expense month at the new month's Notion page on the
-# 1st, creating or renaming that page if needed (see month.py).
+# 1st, creating or renaming that page if needed (see services/month.py).
 #
 # 00:05 local, and DAILY rather than monthly: running it daily is what makes a
 # FAILED or MISSED rollover retry tomorrow instead of waiting a month for the next
 # firing. The job RUNS every night; it only SPEAKS when the run lands on a month
-# David was not already on — see Rollover.rolled_over in month.py.
+# David was not already on — see Rollover.rolled_over in services/month.py.
 #
 # 00:05 is also chosen to sit clear of Europe/Rome's DST switches (02:00→03:00 in
 # March, 03:00→02:00 in October): a job scheduled inside that hour is either
@@ -385,9 +385,9 @@ REQUIRED_ENV = {
 }
 
 OPTIONAL_ENV = {
-    # OPTIONAL SINCE month.py STOPPED DEPENDING ON IT. It used to be required,
-    # and was contradicted by the module that reads it: month.py treats it as a
-    # first-boot SEED and resolves the real page from Notion by title, so David
+    # OPTIONAL SINCE services/month.py STOPPED DEPENDING ON IT. It used to be
+    # required, and was contradicted by the module that reads it: that module
+    # treats it as a first-boot SEED and resolves the real page by title, so David
     # starts and runs correctly with it unset. Leaving it in REQUIRED_ENV meant a
     # deploy without it died at startup over a value nothing needs — required by
     # contract, optional in practice, which is the kind of gap that gets

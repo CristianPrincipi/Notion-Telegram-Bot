@@ -8,7 +8,7 @@ almost always one of:
   • EXPENSES_ID is wrong / malformed in Railway
   • the database isn't shared with your Notion integration
   • a column was renamed (e.g. "Account" → "Conto"), so the API rejects the write
-  • the month page can't be resolved (see month.py and the `Month` command)
+  • the month page can't be resolved (see services/month.py and `Month`)
 
 None of these are visible from the generic error message. This module asks
 Notion directly and reports the real IDs + schema back, so you can copy the
@@ -36,7 +36,7 @@ import os
 import asyncio
 
 from config import EXPENSE_MONTH_RELATION
-from month import canonical_title, current_month_id
+from services.month import canonical_title, current_month_id
 from telegram_text import escape_md
 from clients.notion_client import (
     NOTION_BASE, notion_request, extract_rich_text, get_database, get_page_title,

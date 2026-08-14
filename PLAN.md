@@ -103,34 +103,34 @@ module: a shorthand resolved in the regex is a date rule nothing can unit-test.
 
 ## Milestone 4: `month.py`
 
-- [ ] `services/month.py` — everything, `run_month(*, notify, notify_md=None)`
+- [x] `services/month.py` — everything, `run_month(*, notify, notify_md=None)`
       replacing `handle_month`. `threading.RLock` and its comment move unchanged.
-- [ ] `bot/month.py` — `cmd_month` + `handle_month`.
-- [ ] Importers updated: `budget.py`, `services/expenses.py`,
+- [x] `bot/month.py` — `cmd_month` + `handle_month`.
+- [x] Importers updated: `budget.py`, `services/expenses.py`,
       `proactive/heartbeat.py`, `proactive/month_rollover.py`,
       `services/notion_ids.py`.
-- [ ] `bot/budget.py` created, `bot/commands.py` deleted, `david.py` retargeted.
-- [ ] `tests/test_month.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`,
+- [x] `bot/budget.py` created, `bot/commands.py` deleted, `david.py` retargeted.
+- [x] `tests/test_month.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`,
       `tests/test_router.py`, `tests/test_config_validate.py` retargeted.
-- [ ] A test driving `run_month` with a list's `append` and no Update.
-- [ ] Suite green, `ruff check .` clean.
+- [x] A test driving `run_month` with a list's `append` and no Update.
+- [x] Suite green, `ruff check .` clean.
 
 ## Milestone 5: the guards
 
-- [ ] `tests/test_layering.py` now covers four more modules — run it after each
+- [x] `tests/test_layering.py` now covers four more modules — run it after each
       one, not once at the end.
-- [ ] **Spy-retarget verification:** break each moved function deliberately and
+- [x] **Spy-retarget verification:** break each moved function deliberately and
       watch its router row go red. A stub left on the old module keeps the test
       green against nothing, which is the failure mode `SPY_HOMES` exists for.
-- [ ] `tests/test_concurrency.py`'s lock-key scan still finds the `CALENDAR_ID`
+- [x] `tests/test_concurrency.py`'s lock-key scan still finds the `CALENDAR_ID`
       lock after the move.
 
 ## Milestone 6: docs
 
-- [ ] `CLAUDE.md` — module map rows, the layer paragraph, and strike the "five
+- [x] `CLAUDE.md` — module map rows, the layer paragraph, and strike the "five
       modules never got the treatment" entry.
-- [ ] `README.md` — the Layout section.
-- [ ] `ROADMAP.md` — tick M5.
+- [x] `README.md` — the Layout section.
+- [x] `ROADMAP.md` — tick M5.
 
 ## Milestone 7: ship
 
@@ -162,4 +162,29 @@ when this lands.
 
 ## Changelog
 
-- Nothing yet.
+- **The four spy retargets were verified, not assumed, and it was worth doing.**
+  Bypassing each `handle_*` inside its `cmd_*` turned 4 router rows red for
+  `Remind` and 12 for `Get`/`Diag`/`DBs`/`Find`/`Month` together. Nothing in a
+  `SPY_HOMES` entry tells you whether it is correct — a wrong module reads
+  exactly like a right one, and the test goes green against nothing.
+- **`notion_ids.py` had no test file at all, and the split is what fixed that.**
+  Not an oversight: asserting anything about a diagnostic cost you a fake
+  Update, which is more effort than the assertion was worth. Five tests now,
+  including the one that matters — a 401 from Notion is reported as a 401 rather
+  than as "your integration can't see any databases", which sends you to the
+  wrong menu.
+- **The two `_send_long` copies were never covered either, for the same
+  reason.** The merge could have stopped splitting entirely with the whole suite
+  green. `tests/test_long_messages.py` drives a 200-bullet section and a
+  200-database listing through the real adapters; removing either `partial`
+  turns it red, which was checked.
+- **`bot/commands.py` went away rather than shrinking to one handler.** Decision
+  3 called it, and the file bore it out: after four splits its docstring was
+  entirely about a state of affairs that no longer existed. `cmd_budget` is
+  `bot/budget.py`, and the module docstring now says why that one never needed a
+  service — `budget.py` has been telegram-free since it was written.
+- **Ten stale `month.py` / `notion_ids.py` pointers in comments were repointed.**
+  Not cosmetic: `CLAUDE.md` already records what a stale pointer in a document
+  nobody recompiles is worth (`reminder.py:93`, by then at line 132). Comments
+  describing HISTORY were left alone — "used to live privately in notion_ids.py"
+  is still true.

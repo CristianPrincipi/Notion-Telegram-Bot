@@ -125,7 +125,7 @@ def setup_logging(level=None) -> None:
 # Written from handler coroutines on the event loop AND from the error handler,
 # and read from a worker thread when the heartbeat builds its report — so the
 # lock is a threading.Lock, not an asyncio one. An asyncio.Lock between two
-# threads acquires without ever blocking, which is the same trap month.py
+# threads acquires without ever blocking, which is the same trap services/month.py
 # documents.
 
 _counters_lock = threading.Lock()

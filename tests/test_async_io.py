@@ -31,12 +31,12 @@ import responses
 
 import david
 from services import implement, implement_diet, learn
-import month
+from services import month
 import page_lock
 from services import pkm
 import proactive.scheduler as scheduler
 from services import reminder
-import bot.commands
+import bot.budget
 import bot.implement
 import bot.learn
 from services import books, expenses
@@ -93,13 +93,13 @@ def david_stubs(monkeypatch):
     call time.
     """
     # ONE object installed in BOTH importers. `B` calls it through
-    # bot.commands, the Sunday recap through david, and the assertions below
+    # bot.budget, the Sunday recap through david, and the assertions below
     # compare function identity — so a second lambda would make one of the two
     # tests fail against a stub that is correct.
     # The (recap, error) pair production returns — both callers unpack it.
     budget_stub = lambda: ("MOCK BUDGET", None)   # noqa: E731
     stubs = stub_module(monkeypatch, david, {"budget": budget_stub})
-    stub_module(monkeypatch, bot.commands, {"budget": budget_stub})
+    stub_module(monkeypatch, bot.budget, {"budget": budget_stub})
     stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
         "find_Book_Page": lambda book_name: "book-page-id",
@@ -535,7 +535,7 @@ def test_a_slow_command_no_longer_freezes_the_bot():
     async def main():
         update = FakeUpdate(text="B")
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(bot.commands, "budget", slow_budget)
+            mp.setattr(bot.budget, "budget", slow_budget)
             await asyncio.gather(
                 david.handle_message(update, FakeContext()),
                 other_traffic(),

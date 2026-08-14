@@ -22,7 +22,7 @@ things are broken — it must not be able to fail on formatting.
 """
 
 from clients.calendar_client import get_events_for_day, now_local
-from month import canonical_title, current_month_id
+from services.month import canonical_title, current_month_id
 from clients.notion_client import get_database
 from observability import snapshot
 

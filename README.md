@@ -149,8 +149,8 @@ That page's ID used to be `MONTH_ID` in Railway, updated by hand on the 1st —
 and forgetting did not fail loudly: expenses kept being written into *last*
 month's page and `B` kept answering with last month's total.
 
-`month.py` now answers "which page do this month's expenses belong to?" from
-Notion instead. A month page is identified by its title, in one format —
+`services/month.py` now answers "which page do this month's expenses belong to?"
+from Notion instead. A month page is identified by its title, in one format —
 `August 2026` — and each run:
 
 1. uses the page titled `August 2026` (ignoring case and extra spaces), renaming
@@ -343,8 +343,8 @@ double-target a row.
 The month rollover is a find-then-mutate cycle too, but it is **not** in that
 table: it is reached from worker threads (an expense write resolving a stale
 month, the nightly job) rather than from coroutines, and an `asyncio.Lock`
-between two threads acquires without ever blocking. `month.py` serialises it with
-a `threading.RLock` instead — same rule, right primitive.
+between two threads acquires without ever blocking. `services/month.py`
+serialises it with a `threading.RLock` instead — same rule, right primitive.
 
 ## Development
 
@@ -370,7 +370,8 @@ to turn its row red, and the row should be updated in the same commit.
 david.py     entry point: the command registry, its dispatch loop, the generated
              help, job + handler registration, the global error handler
 bot/         Telegram adapters — parse the update, call a service, send the reply
-services/    the work itself: expenses, books, learn, implement, implement_diet
+services/    the work itself: expenses, books, learn, implement, implement_diet,
+             reminder, pkm, notion_ids, month
 clients/     the wire: Notion, Google Calendar, Anthropic, Telegram file download
 config.py    constants, schedules, timeouts and the environment contract
 ```

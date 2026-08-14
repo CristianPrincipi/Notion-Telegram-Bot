@@ -120,8 +120,8 @@ async def _month_rollover_job(context: ContextTypes.DEFAULT_TYPE):
     # The old comment here claimed nothing user-written is interpolated. That held
     # only for the success path — format_rollover's ERROR branch interpolates a
     # raw Notion error string, so the rollover failure notice was the message most
-    # likely to be rejected. month.py escapes it now, and send() retries plain if
-    # anything still slips through.
+    # likely to be rejected. services/month.py escapes it now, and send() retries
+    # plain if anything still slips through.
     await _run_job(context, "month_rollover", build_rollover_message, markdown=True)
 
 
