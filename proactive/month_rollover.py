@@ -1,8 +1,8 @@
 """
 Month Rollover — the job that keeps expenses landing in the right month.
 
-month.py owns the work and the wording; this module owns the one thing that is a
-*proactive* decision: when the job is worth interrupting you for.
+services/month.py owns the work and the wording; this module owns the one thing
+that is a *proactive* decision: when the job is worth interrupting you for.
 
   • the MONTH moved → say so, with the new page ID. In a healthy deploy that is
     the 1st and only the 1st.
@@ -30,7 +30,7 @@ whoever asked for it and can only happen once a month. See
 month.Rollover.rolled_over.
 """
 
-from month import ensure_current_month_page, format_rollover
+from services.month import ensure_current_month_page, format_rollover
 
 
 def build_rollover_message() -> tuple:

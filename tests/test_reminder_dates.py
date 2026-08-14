@@ -37,8 +37,8 @@ import pytest
 
 from clients import calendar_client
 import david
-import reminder
-from conftest import FakeUpdate, run
+from conftest import FakeUpdate, run, with_update
+from services import reminder
 
 
 def freeze(monkeypatch, *, year, month, day, hour, minute=0):
@@ -235,7 +235,7 @@ def test_the_confirmation_spells_the_year_out(monkeypatch, calendar):
     freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
     update = FakeUpdate(text="Remind Dentist 06.08.2027 - 09.00")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("Friday 06 August 2027 at 09:00")
 
@@ -246,7 +246,7 @@ def test_the_confirmation_calls_out_a_different_year(monkeypatch, calendar):
     freeze(monkeypatch, year=2026, month=12, day=20, hour=10)
     update = FakeUpdate(text="Remind Dentist 12.06 - 14.30")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("that is *2027*, not this year")
 
@@ -255,7 +255,7 @@ def test_a_reminder_this_year_does_not_get_the_year_warning(monkeypatch, calenda
     freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
     update = FakeUpdate(text="Remind Dentist 06.08 - 14.00")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("Reminder set!")
     assert not update.message.replied_with("not this year")
@@ -269,7 +269,7 @@ def test_the_refusal_reaches_the_user_instead_of_an_event(monkeypatch, calendar)
                         lambda name, start, minutes: (created.append(start), "")[1])
     update = FakeUpdate(text="Remind Dentist 06.08 - 09.00")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert created == [], "created an event for a date it was supposed to query"
     assert update.message.replied_with("already past")
@@ -280,7 +280,7 @@ def test_the_command_still_accepts_a_bare_date(monkeypatch, calendar):
     freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
     update = FakeUpdate(text="Remind Dentist 12.09 - 14.30")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("Reminder set!")
 
@@ -337,7 +337,7 @@ def test_the_help_advertises_only_date_forms_the_parser_accepts(monkeypatch):
 # retired, and its own section below covers what happens when it is typed.
 
 def parse_command(text):
-    """Route a whole Remind command the way handle_remind does."""
+    """Route a whole Remind command the way run_remind does."""
     match = re.match(reminder.REMIND_PATTERN, text.strip())
     if not match:
         return None, None, "no match"
@@ -495,7 +495,7 @@ def test_a_bare_t_never_reaches_create_event(monkeypatch, calendar):
                         lambda name, start, minutes: (created.append(start), "")[1])
     update = FakeUpdate(text="Remind Dentist t 10")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert created == [], "created an event for a token that names no day"
     assert update.message.replied_with("no longer a date")
@@ -711,7 +711,7 @@ def test_a_past_td_never_reaches_create_event(monkeypatch, calendar):
                         lambda name, start, minutes: (created.append(start), "")[1])
     update = FakeUpdate(text="Remind Dentist td 09.00")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert created == [], "created an event that can never ping"
     assert update.message.replied_with("already past")
@@ -778,7 +778,7 @@ def test_the_confirmation_spells_out_the_day_the_shorthand_resolved_to(monkeypat
     freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
     update = FakeUpdate(text="Remind Dentist tr 10")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("Friday 07 August 2026 at 10:00")
 
@@ -790,7 +790,7 @@ def test_the_confirmation_spells_out_today_too(monkeypatch, calendar):
     freeze(monkeypatch, year=2026, month=8, day=6, hour=15)
     update = FakeUpdate(text="Remind Dentist td 18")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert update.message.replied_with("Thursday 06 August 2026 at 18:00")
 
@@ -810,3 +810,39 @@ def test_a_dst_refusal_names_the_date_not_the_token(monkeypatch):
     assert dt is None
     assert "29.03.2026" in err, f"the refusal did not name the date: {err}"
     assert "on tr " not in err, f"the refusal echoed the raw token: {err}"
+
+
+# ─── THE SPLIT ─────────────────────────────────────────────────────────────────
+# reminder.py used to take `update` and reply through telegram_text itself, so it
+# could only ever be driven by a bot handler. Every other test in this file still
+# passes an Update, because they assert on what the USER is told and
+# with_update() binds the real bot-layer channels. This one asserts the property
+# that made the split worth doing.
+
+def test_the_service_runs_with_no_update_at_all(monkeypatch, calendar):
+    """THE PROOF THE SPLIT WORKED.
+
+    A list's `append` is a complete implementation of the notify interface —
+    `notify_md` defaults to `notify`, so one function is the whole contract. If
+    this ever needs a fake Update again, something has been welded back to
+    Telegram and tests/test_layering.py should already have said so.
+    """
+    freeze(monkeypatch, year=2026, month=8, day=6, hour=10)
+    said = []
+
+    run(reminder.run_remind("Remind Dentist tr 10", notify=_async(said.append)))
+
+    assert any("Reminder set!" in message for message in said)
+    assert any("Friday 07 August 2026 at 10:00" in message for message in said)
+
+
+def _async(fn):
+    """`notify` is awaited, and a list's append is not a coroutine function.
+
+    Kept here rather than in conftest: this is the only test that needs it, and
+    the point being made is that the interface is one callable — wrapping it is
+    a detail of THIS caller, exactly as a scheduled job's logger would be.
+    """
+    async def call(text):
+        return fn(text)
+    return call

@@ -109,7 +109,7 @@ def _client() -> anthropic.Anthropic:
 # ─── DAILY SPEND GUARD ─────────────────────────────────────────────────────────
 # Guarded by a threading.Lock, not page_lock: this is reached from worker
 # threads, and an asyncio.Lock between two threads acquires without ever
-# blocking. Same reasoning as month.py.
+# blocking. Same reasoning as services/month.py.
 
 _lock = threading.Lock()
 _spend = {"day": "", "usd": 0.0, "calls": 0}

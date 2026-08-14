@@ -6,7 +6,7 @@ WHAT THIS LOCKS DOWN
 on the 1st did not fail: expenses kept being written into LAST month's page and
 `B` kept answering with last month's total. Nothing in the logs said so.
 
-month.py replaces it with a resolution rule, and a rule is only worth having if
+services/month.py replaces it with a resolution rule, and a rule is only worth having if
 it is idempotent — the job runs every night, the `Month` command can be sent at
 any time, and an expense write can resolve the month too. So most of the file
 asserts the same thing from different angles: running it again changes nothing
@@ -27,9 +27,9 @@ from datetime import datetime
 import pytest
 import responses
 
-import month as month_module
-from conftest import EXPENSES_ID, NOTION_BASE, FakeUpdate, run
-from month import (
+from conftest import EXPENSES_ID, NOTION_BASE, FakeUpdate, run, with_update
+from services import month as month_module
+from services.month import (
     ADOPTED, CREATED, RENAMED, UNCHANGED,
     canonical_title, current_month_id, ensure_current_month_page,
     format_rollover, period_key,
@@ -54,7 +54,7 @@ PAGES_URL           = f"{NOTION_BASE}/pages"
 def fresh_month(monkeypatch):
     """Reset the module's cache and pin the clock to 1 August 2026.
 
-    month.py deliberately keeps state across calls — that is what makes the
+    services/month.py deliberately keeps state across calls — that is what makes the
     common path a memory read rather than a Notion query — so every test starts
     from a known one. The cache is memory-only: there is no state file to
     redirect, which is why this fixture no longer needs tmp_path.
@@ -765,7 +765,7 @@ def test_the_month_command_reports_the_page_it_resolved():
     notion_month_database([month_page("August 2026")])
     update = FakeUpdate(text="Month")
 
-    run(month_module.handle_month(update))
+    run(month_module.run_month(**with_update(update)))
 
     assert update.message.replied_with(AUGUST_PAGE)
     assert update.message.replied_with("August 2026")
@@ -777,6 +777,29 @@ def test_the_month_command_answers_even_when_nothing_changed(monkeypatch):
                         lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", UNCHANGED))
     update = FakeUpdate(text="Month")
 
-    run(month_module.handle_month(update))
+    run(month_module.run_month(**with_update(update)))
 
     assert update.message.replied_with("August 2026")
+
+
+def test_the_month_command_runs_with_no_update_at_all(monkeypatch):
+    """THE PROOF THE SPLIT WORKED.
+
+    The rollover was already callable from the nightly job — proactive/ has read
+    ensure_current_month_page all along — but the COMMAND was not: it took an
+    update and replied through telegram_text, so the thing that reports the
+    result to a human could only ever be a bot handler. A list's `append` is the
+    whole interface now.
+    """
+    monkeypatch.setattr(month_module, "ensure_current_month_page",
+                        lambda: month_module.Rollover(AUGUST_PAGE, "August 2026", CREATED))
+    said = []
+
+    async def notify(text):
+        said.append(text)
+
+    run(month_module.run_month(notify=notify))
+
+    assert any("August 2026" in message for message in said)
+    assert any(AUGUST_PAGE in message for message in said), (
+        "the page ID is the whole reason you send Month by hand")

@@ -37,7 +37,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 | ~~2~~ ✅ | ~~**M2** — `compute_budget()` returns `(value, error)`~~ | Done. Blast radius was wider than "contained": eight test files touch `budget()`, because every command-level test doubles it. |
 | ~~3~~ ✅ | ~~**M3** — The Learn-nudge job~~ | Done. Highest product value. Independent of everything else. |
 | ~~4~~ ✅ | ~~**M4** — Takeaway of the week~~ | Done. Same shape as M3, and done while the proactive-builder pattern was fresh. |
-| 5 | **M5** — Split the last four `update`-taking modules | Pure refactor. Unlocks M6. |
+| ~~5~~ ✅ | ~~**M5** — Split the last four `update`-taking modules~~ | Done. Pure refactor. Unlocks M6. |
 | 6 | **M6** — On-demand calendar: `Agenda`, and cancelling a reminder | Wants `reminder.py` split first (M5). |
 
 M1–M4 are independent of each other and of M5/M6 — reorder them freely. **M6
@@ -409,7 +409,10 @@ knowledge base you only ever write to is not a knowledge base.
 
 ---
 
-# M5 — Split the last four `update`-taking modules
+# M5 — Split the last four `update`-taking modules ✅ done
+
+_Landed on `split-update-modules`, one commit per module. `PLAN.md` holds the
+decisions and the spy-retarget verification record._
 
 ## Why
 
@@ -438,54 +441,58 @@ Three concrete gains:
   `CLAUDE.md` is explicit that a fix hidden inside a move is a fix nobody
   reviewed. **Move code only.** Every defect you notice on the way — note it
   here in the backlog, do not fix it in the same commit.
+  **Landed as one COMMIT per module on one branch**, because this file's own
+  workflow section asks for one PR per milestone and the two rules collide.
+  Each commit leaves `ruff check .` clean and the suite green on its own, so a
+  reviewer still reads them one at a time; CI gates them once. Move-only held.
 - **`_send_long`.** `pkm.py:221` and `notion_ids.py:271` each carry their own
   message-splitting helper. They are telegram concerns and must stay in `bot/`
   — and this is the moment to notice they are two copies of one thing.
 
 ## To-do
 
-- [ ] **`reminder.py`** → `services/reminder.py` (the work, `notify` /
+- [x] **`reminder.py`** → `services/reminder.py` (the work, `notify` /
       `notify_md`, no `update`) + a thin adapter in `bot/`.
-      - [ ] `REMIND_PATTERN` and the token grammar stay with the service; what a
+      - [x] `REMIND_PATTERN` and the token grammar stay with the service; what a
             token *means* stays in `clients/calendar_client.py`. **Do not
             collapse that split** — a shorthand resolved in the regex is a date
             rule nothing can unit-test.
-      - [ ] The `page_lock(CALENDAR_ID)` acquisition moves with the service.
-- [ ] **`pkm.py`** → `services/pkm.py` + adapter; `_send_long` stays in `bot/`.
-- [ ] **`notion_ids.py`** → `services/notion_ids.py` + adapters for `Diag`,
+      - [x] The `page_lock(CALENDAR_ID)` acquisition moves with the service.
+- [x] **`pkm.py`** → `services/pkm.py` + adapter; `_send_long` stays in `bot/`.
+- [x] **`notion_ids.py`** → `services/notion_ids.py` + adapters for `Diag`,
       `Find`, `DBs`; its `_send_long` stays in `bot/` and is merged with pkm's.
-- [ ] **`month.py`** → `services/month.py` + adapter for the `Month` command.
-      - [ ] Update the importers: `budget.py`, `services/expenses.py`,
+- [x] **`month.py`** → `services/month.py` + adapter for the `Month` command.
+      - [x] Update the importers: `budget.py`, `services/expenses.py`,
             `proactive/heartbeat.py`, `proactive/month_rollover.py`.
-      - [ ] The `threading.RLock` and its comment move unchanged.
-- [ ] Delete the now-empty one-line delegators from `bot/commands.py` as each
+      - [x] The `threading.RLock` and its comment move unchanged.
+- [x] Delete the now-empty one-line delegators from `bot/commands.py` as each
       module lands, or repoint them.
-- [ ] `CLAUDE.md` — module map rows, and strike the "five modules never got the
+- [x] `CLAUDE.md` — module map rows, and strike the "five modules never got the
       treatment" entry under "Left by the layering split".
-- [ ] `README.md` — the Layout section.
+- [x] `README.md` — the Layout section.
 
 ## Tests
 
-- [ ] **`tests/test_router.py` `SPY_HOMES` must move with each function.** This
+- [x] **`tests/test_router.py` `SPY_HOMES` must move with each function.** This
       is the one that bites: a spy only works if it is installed on the module
       whose namespace the caller resolves the name through *at call time*. A
       stub left on the old module keeps the test green against nothing. Verify
       by deliberately breaking the moved function and watching its router row go
       red.
-- [ ] `tests/test_layering.py` now covers four more modules — it should go red
+- [x] `tests/test_layering.py` now covers four more modules — it should go red
       first if any `import telegram`, `update` parameter, or direct
       `reply_text` / `send_message` survives the move. Run it after each module,
       not once at the end.
-- [ ] `tests/test_reminder_dates.py` (812 lines), `tests/test_pkm.py`,
+- [x] `tests/test_reminder_dates.py` (812 lines), `tests/test_pkm.py`,
       `tests/test_month.py` (782 lines) — retarget imports; assertions should
       not need to change. **If an assertion changes, that is a behaviour change
       hiding in a refactor — stop and split it out.**
-- [ ] Add one test per module that drives the service with a list's `append` as
+- [x] Add one test per module that drives the service with a list's `append` as
       `notify` and **no Update at all** — that is the proof the split worked,
       and it is what `conftest.with_update` exists alongside.
-- [ ] `tests/test_concurrency.py`'s lock-key scan reads source paths — check it
+- [x] `tests/test_concurrency.py`'s lock-key scan reads source paths — check it
       still finds the `CALENDAR_ID` lock after `reminder.py` moves.
-- [ ] Full suite green after **each** module, not just at the end.
+- [x] Full suite green after **each** module, not just at the end.
 
 ---
 
@@ -626,6 +633,17 @@ related milestone puts you in the file already.
 - [ ] `services/books.py` bounds `extract_quote_from_pdf` with
       `clients.telegram_files.DOWNLOAD_TIMEOUT_SECONDS` — right duration, wrong
       name.
+- [ ] `bot/long_messages.py` splits by LENGTH, so a long Markdown report can be
+      cut between an opening `*` and its closing one, leaving an unbalanced
+      entity in each half. Inherited from `notion_ids.py`'s copy and mitigated
+      rather than fixed: `telegram_text.reply` retries such a chunk plain. Now
+      that there is one splitter, fixing it once is finally possible — it wants
+      a chunker that tracks open entities across a boundary.
+- [ ] `bot/long_messages.py` does not break a single line longer than the limit;
+      it goes out as its own oversized chunk and Telegram rejects it. Nothing in
+      David produces one today (the longest is a 64-char UUID in backticks), and
+      inventing a hard split during a pure move would have been a fix nobody
+      reviewed.
 
 # Considered and declined
 
@@ -643,6 +661,30 @@ Recorded so they are not re-proposed.
   place a model is named) for a feature the text commands already cover.
 
 # Changelog
+
+- **2026-08-14** — **M5 landed.** Three things worth carrying forward:
+  - **A `SPY_HOMES` entry cannot be verified by reading it.** A spy only works
+    if it is installed on the module whose namespace the caller resolves the
+    name through at CALL time, and every wrong answer still *looks* right in the
+    table. Each of the four was checked by bypassing its `handle_*` inside
+    `cmd_*` and watching the router rows go red — 4 rows for `Remind`, 12 for
+    the other three together. Do this on every move; it costs a minute and it is
+    the only thing standing between the router table and passing against
+    nothing.
+  - **The two `_send_long` copies were never tested, and that was the
+    transport's fault rather than an oversight.** Both were reachable only
+    through a fake Update, and no test built a message long enough to split — so
+    the merge into `bot/long_messages.py` could have stopped splitting entirely
+    with the suite green. The same shape explains why `notion_ids.py` had no
+    test file at all: when asserting anything costs you a fake Update, thin
+    coverage is what you get. Splitting the module is what made five tests
+    cheap.
+  - **Which channel splits had to stay per-adapter.** `Get` splits the PLAIN
+    channel (a retrieved section is arbitrary Notion content); `Diag`/`Find`/
+    `DBs` split the MARKDOWN one (every ID is in a `code span`). A single global
+    decision would have been one line shorter and would have silently cost one
+    of the two — the IDs stop being one tap to copy, or a section with a stray
+    asterisk stops arriving.
 
 - **2026-08-14** — **M4 landed.** Two findings, one of them about testing:
   - **A test that asserts on the final MESSAGE cannot see a collection bug that

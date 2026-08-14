@@ -58,7 +58,9 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
-| `bot/commands.py` | The one-line delegators for commands whose feature module still takes `update` itself: `B`, `Month`, `Diag`, `DBs`, `Find`, `Get`, `Remind` | Anything more than the forward — see the open question |
+| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py` | The adapters for the four modules the layering split left behind: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
+| `bot/budget.py` | `B`. The one handler that never needed a split: `budget.py` is telegram-free, so this does the offloading and picks the channel itself | Aggregation, recap wording |
+| `bot/long_messages.py` | `split_for_telegram` / `send_long` — the **one** splitter for a reply over Telegram's limit, and it is bound where `notify` is | Which channel splits — that is each adapter's decision |
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
 | `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the `Source URL` property, the duplicate check and its ` !` override) | Manual merging; the unverified marker's TEXT (that is `config.py`) |
@@ -72,19 +74,21 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
 | `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts |
-| `month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `Month` handler | Expense writes, budget maths |
+| `services/month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `run_month` | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget` — the two fallible ones return `(value, error)`) | Notion HTTP, Telegram |
-| `pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
-| `reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
-| `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
+| `services/pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
+| `services/reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
+| `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
 | `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) and the `Implemented` property name | Sending; un-ticking the checkbox (nothing does) |
 | `proactive/takeaway.py` | `build_takeaway` — one takeaway bullet resurfaced weekly. Owns finding the takeaways section in a page (`takeaways_in`) and the bounded skip-and-retry over pages that have none | Sending; the heading's TEXT (that is `config.TAKEAWAYS_HEADING`) |
 
-`month.py`, `budget.py`, `pkm.py`, `reminder.py` and `notion_ids.py` are still at the
-root and four of them still take `update` — they were out of scope for the layering
-work and are named as follow-ups under Open questions. Everything new goes in a layer.
+`budget.py` is the last module at the root, and it belongs there: it is
+telegram-free already, so `bot/budget.py` is a real adapter rather than a
+placeholder. The other four — `month.py`, `pkm.py`, `reminder.py`,
+`notion_ids.py` — were split into `services/` + `bot/` and are now under
+`tests/test_layering.py`, which could not see them at the root.
 
 New features get a module. `david.py` routes to them; it does not absorb them.
 
@@ -412,10 +416,10 @@ is not terse.
 No local mirror, no local database, no cached copy treated as authoritative. Railway's
 filesystem is ephemeral — anything written locally dies with the container. Caches for
 performance are fine *if deleting them is harmless*, and the safest place for one is
-**memory**: `month.py` holds the resolved page for the life of the process and a fresh
+**memory**: `services/month.py` holds the resolved page for the life of the process and a fresh
 container just asks Notion again, at a cost of two API calls.
 
-`month.py` used to persist that cache to `.month_state.json`, and removing it is
+`services/month.py` used to persist that cache to `.month_state.json`, and removing it is
 instructive. The saving was negligible on a platform that deletes the file every deploy —
 but the file had quietly become load-bearing, because while it existed the fallback path
 behind it was never reached, and that path handed back a stale `MONTH_ID` **without asking
@@ -511,7 +515,7 @@ The ambiguous path releases the lock while it waits for your number — holding 
 across a reply would stall every expense write for as long as you took to answer,
 and the selection writes by page ID, so it has no lookup left to protect.
 
-`month.py` uses a `threading.RLock`, not `page_lock`: its cycle is reached from worker
+`services/month.py` uses a `threading.RLock`, not `page_lock`: its cycle is reached from worker
 threads, and an `asyncio.Lock` between two threads acquires without ever blocking.
 
 ## Testing
@@ -660,7 +664,7 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
     safeguard is optional and refusing costs you the command; here the checkbox
     is the whole feature, so there is nothing to degrade to — listing everything
     is noise and listing nothing is indistinguishable from "you are caught up".
-- ~~**`MONTH_ID` is in `REQUIRED_ENV` but `month.py` treats it as an optional seed.**~~
+- ~~**`MONTH_ID` is in `REQUIRED_ENV` but `services/month.py` treats it as an optional seed.**~~
   Resolved: it is in `OPTIONAL_ENV` now, which is what the module reading it always
   meant. Unset, the first run resolves the month from Notion by title.
 - **`(value, error)` is still not universal**, but the remaining gaps are narrower and
@@ -681,27 +685,40 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   - `calendar_client` returns `[], err` on failure — the failure value IS the
     legitimate empty value, which is the root cause every caller has to work around
     by checking `err` FIRST. Changing it ripples into `find_conflicts`,
-    `reminder.handle_remind` and three test files.
-  - `reminder.handle_remind` discards the `find_conflicts` error into `_`, so a
+    `services.reminder.run_remind` and three test files.
+  - `services.reminder.run_remind` discards the `find_conflicts` error into `_`, so a
     calendar read failure is indistinguishable from "the slot is clear". Deliberate
     (a failed check degrades to no warning rather than blocking the reminder) but
     undocumented until now. Named by FUNCTION, not by line: this entry said
     `reminder.py:93` and the line had since moved to 132, which is what a line
-    number in a document nobody recompiles is always eventually worth.
+    number in a document nobody recompiles is always eventually worth. (The
+    function has since been renamed by the M5 split, which a line number would
+    have survived and a stale name would not — so the name is worth keeping
+    current, and that is a cost the line number does not avoid, only hide.)
 
 ### Left by the layering split, deliberately
 
 Each of these was seen while moving code and NOT changed, because that PR was a pure
 refactor and a fix hidden inside a move is a fix nobody reviewed.
 
-- **Five modules never got the treatment.** `month.py`, `budget.py`, `pkm.py`,
-  `reminder.py` and `notion_ids.py` are still at the root, and all but `budget.py` still
-  take `update` and reply through `telegram_text` themselves — `pkm.handle_get`,
-  `reminder.handle_remind`, `month.handle_month` and the three `notion_ids` handlers.
-  They are the same welding the split removed everywhere else: none of them can be run
-  from a scheduled job or driven from a test without a fake Update. `bot/commands.py`
-  exists to hold their one-line adapters until each is split into a service and a
-  handler, and the layering guard cannot see them because they are not under `services/`.
+- ~~**Five modules never got the treatment.** `month.py`, `budget.py`, `pkm.py`,
+  `reminder.py` and `notion_ids.py` are still at the root…~~ Resolved: four of
+  them are `services/` + `bot/` pairs now, under the layering guard that could
+  not see them at the root, and `bot/commands.py` — which existed only to hold
+  their one-line delegators — is gone. `budget.py` stays at the root and is not
+  an omission: it never took an `update`, so `bot/budget.py` is a real adapter.
+  Two things the split produced that are worth knowing:
+  - **`_send_long` was two copies of one splitter**, one private to `pkm.py` and
+    one to `notion_ids.py`. It is `bot/long_messages.py` now, and WHICH channel
+    it wraps is each adapter's decision: `Get` splits the plain channel because a
+    retrieved section is arbitrary Notion content, the ID diagnostics split the
+    Markdown one because every ID is in a `code span`. Bound as
+    `partial(send_long, notify)`, which is itself a notify — so a service still
+    calls its channel once with the whole message and never learns it was split.
+  - **A `SPY_HOMES` entry is only correct if the spy sits in the namespace the
+    caller resolves through at CALL time.** Each of the four was verified by
+    bypassing its `handle_*` inside `cmd_*` and watching the router rows go red;
+    a stub left on the old module would have kept them green against nothing.
 - **`escape_md` drags python-telegram-bot into `services/`.** A service formats its own
   Markdown, which is correct — escaping belongs at the interpolation site — but the
   function lives in `telegram_text.py`, which imports `telegram.error.BadRequest` for the

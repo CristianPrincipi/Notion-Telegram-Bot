@@ -36,7 +36,7 @@ from clients.notion_client import (
     CREATED_DESC, body_excerpt, notion_request, query_database, set_archived, update_page,
 )
 from config import EXPENSE_MONTH_RELATION
-from month import current_month_id
+from services.month import current_month_id
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from telegram_text import escape_md
 
@@ -92,7 +92,7 @@ def add_Expenses(name, amount, category):
     # The month page, resolved now rather than read from MONTH_ID at import. That
     # is what fixes the other half of the same bug: the date was already right at
     # a month boundary, but the relation still pointed at the previous month's
-    # page until the environment variable was updated by hand. See month.py.
+    # page until the environment variable was updated by hand. See services/month.py.
     month_id = current_month_id()
     if not month_id:
         logger.error("add_Expenses: no month page resolved — send `Month`, or check `Diag`.")

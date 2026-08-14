@@ -29,15 +29,15 @@ from types import SimpleNamespace
 import pytest
 
 from clients import calendar_client
-import bot.commands
+import bot.budget
 import bot.implement
 import bot.learn
 import david
 from services import books
 from services import expenses as expense_service
 import page_lock
-import reminder
-from conftest import FakeContext, FakeUpdate, run, written_ok
+from services import reminder
+from conftest import FakeContext, FakeUpdate, run, with_update, written_ok
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -237,7 +237,7 @@ def test_two_overlapping_reminders_still_warn_about_each_other(monkeypatch):
 
     async def one(name):
         update = FakeUpdate(text=f"Remind {name} 12.06 - 14.30")
-        await reminder.handle_remind(update, update.message.text)
+        await reminder.run_remind(update.message.text, **with_update(update))
         return update
 
     async def main():
@@ -300,7 +300,7 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
     monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
-    monkeypatch.setattr(bot.commands, "budget", lambda: ("TOTAL", None))
+    monkeypatch.setattr(bot.budget, "budget", lambda: ("TOTAL", None))
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
     monkeypatch.setattr(expense_service, "find_expense_matches",
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
@@ -383,7 +383,7 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
         order.append("learn-end")
 
     monkeypatch.setattr(bot.learn, "handle_learn", slow_learn)
-    monkeypatch.setattr(bot.commands, "budget",
+    monkeypatch.setattr(bot.budget, "budget",
                         lambda: (order.append("budget"), ("TOTAL", None))[1])
 
     context = FakeContext()
@@ -413,7 +413,7 @@ ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID"}
 # Repo-relative paths, not bare filenames: locking code lives in packages now,
 # and two files in different packages can share a name.
 LOCKING_MODULES = ["services/expenses.py", "services/implement.py",
-                   "services/implement_diet.py", "reminder.py"]
+                   "services/implement_diet.py", "services/reminder.py"]
 
 # Every directory David's own code lives in. The scan below used to be
 # REPO.glob("*.py"), which stopped at the repo root — so a module that moved

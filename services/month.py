@@ -8,8 +8,8 @@ and that page's ID was `MONTH_ID` in Railway. On the 1st of each month you had t
 create the new page in Notion, copy its ID, paste it into Railway and wait for a
 redeploy. Forget, and nothing breaks loudly: expenses keep being written — into
 LAST month's page — and `B` keeps answering with last month's total. The
-diagnostic in notion_ids.py even ended with "this is a manual monthly step for
-now (I can automate it if you want)".
+diagnostic in services/notion_ids.py even ended with "this is a manual monthly
+step for now (I can automate it if you want)".
 
 This module is that automation. It owns one question — *which page do this
 month's expenses belong to?* — and answers it from Notion rather than from an
@@ -81,7 +81,7 @@ from config import EXPENSE_MONTH_RELATION
 from clients.notion_client import (
     create_page, get_database, get_page_title, query_database, rich, update_page,
 )
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 
 logger = logging.getLogger(__name__)
 
@@ -505,15 +505,22 @@ def format_rollover(result: Rollover) -> str:
     return f"{headline}: *{result.title}*\n`{result.page_id}`\n{detail}"
 
 
-# ─── TELEGRAM HANDLER ──────────────────────────────────────────────────────────
+# ─── THE COMMAND ───────────────────────────────────────────────────────────────
 
-async def handle_month(update):
+async def run_month(*, notify, notify_md=None) -> None:
     """`Month` — run the rollover now and report, whether or not it changed anything.
 
     The manual counterpart to the scheduled job: the same idempotent call, so
     sending it twice is harmless. Useful right after fixing a Notion permission,
     and it prints the current page ID.
+
+    The report goes out on the Markdown channel — format_rollover puts the page
+    ID in a `code span` so it is one tap to copy, and escapes the Notion error on
+    the failure path. The progress line is plain because there is nothing in it
+    to format.
     """
-    await update.message.reply_text("🗓️ Checking the monthly expenses page…")
+    notify_md = notify_md or notify
+
+    await notify("🗓️ Checking the monthly expenses page…")
     result = await asyncio.to_thread(ensure_current_month_page)
-    await reply(update, format_rollover(result))
+    await notify_md(format_rollover(result))

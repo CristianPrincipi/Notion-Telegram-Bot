@@ -37,9 +37,13 @@ from dataclasses import dataclass, field
 
 import pytest
 
-import bot.commands
+import bot.budget
 import bot.implement
 import bot.learn
+import bot.month
+import bot.notion_ids
+import bot.pkm
+import bot.reminder
 import david
 from services import books, expenses, learn
 from conftest import FakeContext, FakeUpdate, run, written_ok
@@ -105,13 +109,13 @@ SPY_TARGETS = [
 ]
 
 SPY_HOMES = {
-    "budget":               bot.commands,
-    "handle_diag":          bot.commands,
-    "handle_dbs":           bot.commands,
-    "handle_month":         bot.commands,
-    "handle_find":          bot.commands,
-    "handle_get":           bot.commands,
-    "handle_remind":        bot.commands,
+    "budget":               bot.budget,
+    "handle_diag":          bot.notion_ids,
+    "handle_dbs":           bot.notion_ids,
+    "handle_month":         bot.month,
+    "handle_find":          bot.notion_ids,
+    "handle_get":           bot.pkm,
+    "handle_remind":        bot.reminder,
     "handle_learn":         bot.learn,
     "handle_implement":     bot.implement,
     "add_New_Book":         books,
@@ -758,7 +762,7 @@ def test_delete_expense_distinguishes_the_three_lookup_outcomes(router, monkeypa
 
 
 def test_budget_reports_a_notion_failure(router, monkeypatch):
-    monkeypatch.setattr(bot.commands, "budget",
+    monkeypatch.setattr(bot.budget, "budget",
                         lambda: (None, "Notion 401: API token is invalid"))
     update = FakeUpdate(text="B")
 

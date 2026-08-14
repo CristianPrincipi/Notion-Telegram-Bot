@@ -96,10 +96,11 @@ def test_the_error_explains_what_each_missing_var_is_for(env):
 def test_month_id_is_optional(env, caplog):
     """It is a first-boot SEED, not a live value.
 
-    month.py resolves the current month page from Notion by title and caches the
-    answer, so David starts and runs correctly with MONTH_ID unset. It was in
-    REQUIRED_ENV anyway, which killed a deploy over a variable nothing reads —
-    and invited the fix of pasting a stale page ID back in to silence the error.
+    services/month.py resolves the current month page from Notion by title and
+    caches the answer, so David starts and runs correctly with MONTH_ID unset.
+    It was in REQUIRED_ENV anyway, which killed a deploy over a variable nothing
+    reads — and invited the fix of pasting a stale page ID back in to silence the
+    error.
     """
     env.delenv("MONTH_ID")
 

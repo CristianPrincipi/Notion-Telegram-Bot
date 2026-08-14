@@ -32,7 +32,7 @@ from datetime import datetime
 import pytz
 
 from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
-from month import current_month_id
+from services.month import current_month_id
 from clients.notion_client import query_database
 from telegram_text import escape_md
 

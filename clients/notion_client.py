@@ -165,7 +165,7 @@ CREATED_DESC = [{"timestamp": "created_time", "direction": "descending"}]
 #
 # RLock, not asyncio.Lock: these functions run inside asyncio.to_thread workers,
 # and an asyncio lock shared between two THREADS acquires without ever blocking,
-# so it would read as protection and provide none. Same reasoning month.py
+# so it would read as protection and provide none. Same reasoning services/month.py
 # documents for the same reason.
 _title_props: dict[str, str] = {}
 _title_props_lock = threading.RLock()
@@ -279,7 +279,7 @@ def get_database(db_id: str):
     """GET a database object by ID — its title, and the schema of every column.
 
     Returns (db_object, error). Used to read a relation column's target database
-    (month.py) and to check the Expenses schema (notion_ids.py).
+    (services/month.py) and to check the Expenses schema (services/notion_ids.py).
     """
     if not db_id:
         return None, "No database ID provided."
