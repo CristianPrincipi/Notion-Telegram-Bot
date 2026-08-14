@@ -22,6 +22,7 @@ WEEKLY    = "budget_recap"
 ROLLOVER  = "month_rollover"
 HEARTBEAT = "heartbeat"
 NUDGE     = "learn_nudge"
+TAKEAWAY  = "takeaway"
 
 CHAT_ID = "-1001234567"
 
@@ -49,7 +50,7 @@ def trigger_fields(job):
 def test_every_job_is_registered(scheduled):
     """The regression this fixes: three of these were previously never attached."""
     assert set(jobs_by_name(scheduled)) == {
-        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT, NUDGE}
+        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT, NUDGE, TAKEAWAY}
 
 
 @pytest.mark.parametrize("name, hour, minute", [
@@ -60,6 +61,7 @@ def test_every_job_is_registered(scheduled):
     (WEEKLY, 9, 30),
     (HEARTBEAT, 20, 30),
     (NUDGE, 10, 0),
+    (TAKEAWAY, 11, 0),
 ])
 def test_each_job_fires_at_its_configured_time(scheduled, name, hour, minute):
     assert trigger_fields(jobs_by_name(scheduled)[name]) == (hour, minute)
@@ -275,3 +277,25 @@ def test_the_learn_nudge_has_the_saturday_morning_slot_to_itself(scheduled):
     assert trigger_fields(jobs[NUDGE]) == (10, 0)
     assert [name for name, job in jobs.items()
             if trigger_fields(job) == (10, 0)] == [NUDGE]
+
+
+# ─── THE TAKEAWAY ──────────────────────────────────────────────────────────────
+
+def test_the_takeaway_runs_weekly_on_sunday(scheduled):
+    """Weekly: a resurfaced idea sent daily is wallpaper."""
+    days = str(jobs_by_name(scheduled)[TAKEAWAY].job.trigger.fields[4])
+
+    assert set(days.split(",")) == {"sun"}, f"takeaway fires on {days}"
+
+
+def test_the_three_sunday_jobs_are_an_hour_apart_or_more(scheduled):
+    """Sunday now carries the budget recap, the takeaway and the heartbeat.
+    test_no_two_jobs_share_a_slot catches an exact collision; this catches them
+    bunching into one buzz you stop reading."""
+    jobs = jobs_by_name(scheduled)
+    sunday = sorted(trigger_fields(jobs[name]) for name in (WEEKLY, TAKEAWAY, HEARTBEAT))
+
+    minutes = [h * 60 + m for h, m in sunday]
+    gaps = [b - a for a, b in zip(minutes, minutes[1:])]
+
+    assert all(gap >= 60 for gap in gaps), f"Sunday jobs are {gaps} minutes apart"

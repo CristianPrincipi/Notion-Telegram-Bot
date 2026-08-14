@@ -12,7 +12,8 @@ from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
 from config import (
     ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, KNOWLEDGE_RECALL_TYPES, LEARN_TYPES,
-    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS, UNVERIFIED_NOTE,
+    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS,
+    TAKEAWAYS_HEADING, UNVERIFIED_NOTE,
 )
 from clients.notion_client import (
     CREATED_DESC, create_page, database_property_type, get_page_title,
@@ -526,7 +527,9 @@ def build_notion_blocks(summary: dict, source: str, content_type: str = "") -> l
     # Key takeaways
     takeaways = summary.get("key_takeaways", [])
     if takeaways:
-        blocks.append(_heading2("✅ Key Takeaways"))
+        # The constant, not the literal: proactive/takeaway.py finds this section
+        # by matching that same string.
+        blocks.append(_heading2(TAKEAWAYS_HEADING))
         for t in takeaways:
             blocks.append(_bullet(t))
 

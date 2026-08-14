@@ -24,12 +24,14 @@ from config import (
     MONTH_ROLLOVER_HOUR, MONTH_ROLLOVER_MINUTE,
     HEARTBEAT_DAY, HEARTBEAT_HOUR, HEARTBEAT_MINUTE,
     LEARN_NUDGE_DAY, LEARN_NUDGE_HOUR, LEARN_NUDGE_MINUTE,
+    TAKEAWAY_DAY, TAKEAWAY_HOUR, TAKEAWAY_MINUTE,
 )
 from proactive.briefing import build_morning_briefing, build_evening_briefing
 from proactive.budget_watch import build_pacing_warning
 from proactive.heartbeat import build_heartbeat
 from proactive.learn_nudge import build_nudge
 from proactive.month_rollover import build_rollover_message
+from proactive.takeaway import build_takeaway
 from telegram_text import send
 
 logger = logging.getLogger(__name__)
@@ -133,6 +135,12 @@ async def _learn_nudge_job(context: ContextTypes.DEFAULT_TYPE):
     await _run_job(context, "learn_nudge", build_nudge)
 
 
+async def _takeaway_job(context: ContextTypes.DEFAULT_TYPE):
+    # Plain for the same reason, more so: the message is a whole sentence Claude
+    # wrote about someone else's book.
+    await _run_job(context, "takeaway", build_takeaway)
+
+
 def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
@@ -194,5 +202,13 @@ def register_all(application, chat_id):
         name="learn_nudge",
     )
 
+    jq.run_daily(
+        _takeaway_job,
+        time=time(hour=TAKEAWAY_HOUR, minute=TAKEAWAY_MINUTE, tzinfo=_TZ),
+        days=(TAKEAWAY_DAY,),
+        chat_id=chat_id,
+        name="takeaway",
+    )
+
     logger.info("Proactive jobs registered: morning_briefing, evening_briefing, "
-                "budget_pacing, month_rollover, heartbeat, learn_nudge.")
+                "budget_pacing, month_rollover, heartbeat, learn_nudge, takeaway.")

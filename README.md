@@ -121,6 +121,7 @@ All times Europe/Rome, configured in `config.py` and attached by
 | 20:30 Sunday | `heartbeat` | Calendar/Notion/month probes + activity counts. **Always sends** |
 | 09:30 Sunday | `budget_recap` | Full per-category budget recap |
 | 10:00 Saturday | `learn_nudge` | Learn pages saved over a week ago and never merged into a Manual. Silent when there are none |
+| 11:00 Sunday | `takeaway` | One `✅ Key Takeaways` bullet from a random Learn page, with the page it came from |
 
 The two briefings replaced the old `send_daily_reminders` job, which sent both
 today's and tomorrow's events at 07:30. Running both would have sent today's
