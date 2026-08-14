@@ -1,163 +1,164 @@
-# Plan: M3 — the Learn-nudge job (proactive Step 6)
+# Plan: M4 — takeaway of the week (proactive Step 5)
 
 _Last updated: 2026-08-14_
 
-Branch: `learn-nudge`, off `main` at `4a2c3f1`.
-Baseline before any change: **918 passed**, `ruff check .` clean.
+Branch: `takeaway-of-the-week`, off `main` at the M3 merge.
+Baseline before any change: **939 passed**, `ruff check .` clean.
 
-Both Implement paths tick an `Implemented` checkbox (`services/implement.py:947`,
-`services/implement_diet.py:722` and `:776`) and **nothing in the codebase reads
-it**. `CLAUDE.md` lists it under Open questions; `proactive/__init__.py` lists it
-as Step 6.
-
-The consequence is structural rather than cosmetic: the capture half of the
-knowledge pipeline is automated and the act-on-it half depends entirely on you
-remembering which pages you saved and never merged. This closes the loop, and as
-a side effect makes the checkbox mean something.
+A weekly message resurfacing one `✅ Key Takeaways` bullet from a random Learn
+page. Listed as Step 5 in `proactive/__init__.py` and never built. Cheapest item
+on the roadmap: pure Notion read, **no Anthropic call**, no new dependency. The
+value is that a personal knowledge base you only ever write to is not a knowledge
+base.
 
 ## Decisions taken before writing code
 
-**1. "Pending" = `Implemented` unchecked AND created more than N days ago.**
-Nudging about something saved an hour ago trains you to ignore the nudge. Both
-halves go in ONE Notion filter (`{"and": [...]}`) rather than being fetched and
-sieved here — the query is the right place for a predicate Notion can evaluate,
-and a client-side copy would be a second definition of "pending".
+**1. The heading becomes one constant, and that is the first commit.**
+`services/learn.py:529` writes `_heading2("✅ Key Takeaways")` and this reader
+will look for it. Two string literals in two modules is exactly how
+`UNVERIFIED_MARKER` was nearly reworded in one place and silently undetected in
+the other. `config.TAKEAWAYS_HEADING`, used by both, plus a test that drives the
+WRITER and then the READER so the two cannot drift.
 
-**Consequence worth stating: the boundary is Notion's, not ours.** `before` is
-strict, so a page created exactly N days ago is NOT yet nudged; it becomes
-eligible a moment later. Since the sieve runs in Notion, no test of this module
-can assert the boundary from its OUTPUT — the fake returns whatever rows it is
-given. So the test asserts the **request**: that the cutoff sent is `now - N
-days` and the operator is `before`. That is the whole of what decides the
-boundary, and it is the honest thing to pin.
+**2. The chooser is a parameter, not a seed.** `build_takeaway(*, choose=random.choice)`.
+Seeding is global state that another test can disturb, and it pins the algorithm
+rather than the decision. A parameter lets a test pass `lambda seq: seq[0]` and
+assert on an exact page — and it is used for BOTH choices (which page, which
+bullet), so there is one source of randomness to control.
 
-**2. A missing `Implemented` column is `(None, error)` — this job refuses.**
-Deliberately the OPPOSITE asymmetry to `services/learn.py`'s `Source URL` check,
-and the reason is that the two safeguards sit differently to their feature.
-There, the dedup check is optional and refusing costs you the whole command, so
-it degrades. Here the checkbox IS the feature: with no column there is no nudge
-to degrade to, and the alternatives are listing every Learn page ever (noise) or
-listing nothing (indistinguishable from "you are all caught up" — the exact
-collapse M2 just finished removing). It is reported weekly, not silently.
+**3. Sampling is without replacement, and attempts are bounded.** A page picked
+and found to have no takeaways is removed from the pool, so the bound counts
+distinct pages rather than dice rolls — otherwise a database of 3 pages could
+burn 5 attempts on the same one. Exhausting the bound is `(None, None)`: a
+database with no takeaways anywhere is not an error, it is a quiet week.
 
-`database_property_type` has three outcomes and all three are handled
-separately: `("checkbox", None)` proceeds, `(None, None)` is the missing column,
-`(None, error)` is a schema read that failed and says so in different words.
+**4. A page read that FAILS is not the same as a page with no takeaways**, and
+this is the trap the whole milestone sits over. If a failed `get_children` just
+moved on to the next page, then a Notion outage — where every read fails —
+exhausts the attempts and returns `(None, None)`: silence, meaning "nothing to
+say". That is the bug M2 spent a milestone removing.
 
-**3. Plain text, not Markdown.** Page titles are user data and can carry `*` and
-`_`. `_run_job`'s default is plain and the briefings already use it; the nudge
-carries nothing that needs formatting.
+So the first read error is remembered, and the outcome follows
+`build_morning_briefing`'s shape rather than choosing between the two:
 
-**4. No page links.** Telegram plain text cannot carry an inline link, and five
-raw Notion URLs is a wall. Each row is a title plus its age, and the message
-closes with the command shape (`Implement [page] - [Area]`) so the action is one
-copy away.
+    (text, None)   found a takeaway, nothing went wrong
+    (text, error)  found one, but a page could not be read — send AND report
+    (None, error)  found none, and at least one read failed
+    (None, None)   found none, everything was readable — a genuinely quiet week
 
-**5. Cadence — weekly, Saturday 10:00.** Daily makes it noise. Every existing
-slot is taken (00:05 rollover, 07:30 morning, 09:30 Sunday recap, 13:00 pacing,
-20:00 evening, 20:30 Sunday heartbeat) and `test_no_two_jobs_share_a_slot`
-asserts uniqueness, so the slot is deliberately clear of all six. Saturday
-morning is when acting on it is realistic.
+**5. An unverified source stays labelled when it is resurfaced.** Not in the
+roadmap, added deliberately and cheaply: `Learn book X` pages carry
+`config.UNVERIFIED_MARKER` in their body, and a takeaway lifted out of one and
+sent on its own is a recollection presented as a fact with its provenance
+stripped. The blocks are already in hand, `config.is_unverified_source` already
+exists, and the line costs one `if`. This is the same reasoning that put the
+marker in the page body rather than in a property.
 
-**6. `now_local()` is the clock.** Never `datetime.now()` — `CLAUDE.md` names
-`clients/calendar_client.now_local` as the project clock, and both the cutoff and
-every "N days ago" are computed from it.
+**6. Bullets are collected from the heading to the NEXT HEADING**, not to the end
+of the page. On a David-written page the takeaways are last, so the two rules
+agree today — which is exactly why the stricter one has to be written now, while
+nothing depends on the accident.
 
-## Milestone 1: config
+## Milestone 1: the shared constant
 
-- [x] `config.py`: `LEARN_NUDGE_DAY` (the named `SATURDAY` constant, **never a
-      bare integer at a `run_daily` call site** — that is how the budget recap
-      ran on the wrong days for months), `LEARN_NUDGE_HOUR`, `LEARN_NUDGE_MINUTE`,
-      `LEARN_NUDGE_STALE_DAYS`, `LEARN_NUDGE_MAX_ITEMS`, with the reasoning above.
+- [x] `config.TAKEAWAYS_HEADING = "✅ Key Takeaways"`, with the two-modules
+      reasoning.
+- [x] `services/learn.py:529` uses it.
 
-## Milestone 2: the builder
+## Milestone 2: config
 
-- [x] New `proactive/learn_nudge.py`, `build_nudge() -> (text, error)`, modelled
-      on `proactive/budget_watch.py`. A builder never sends.
-- [x] Schema pre-check via `database_property_type(LEARN_ID, "Implemented")`,
-      all three outcomes handled distinctly.
-- [x] `query_database` (it paginates) with the compound filter and
-      `created_time` ascending, so the oldest debt is named first.
-- [x] Cap at `LEARN_NUDGE_MAX_ITEMS` and name the overflow count. A list of forty
-      is the same as no list.
-- [x] Title via `get_page_title` — it resolves whatever the title column is
-      called, which is the bug `search_page_in_db` had.
-- [x] `LEARN_ID` unset → `(None, error)`, in the same family as
-      `implement_diet`'s `DIET_ID` check.
+- [x] Day/hour/minute for the job, named weekday constant, in a free slot (every
+      existing one is taken and `test_no_two_jobs_share_a_slot` asserts that).
+- [x] `TAKEAWAY_MAX_ATTEMPTS`.
 
-## Milestone 3: registration
+## Milestone 3: the builder
 
-- [x] `proactive/scheduler.py` — `_learn_nudge_job` + a `run_daily` with
-      `days=(LEARN_NUDGE_DAY,)`, `chat_id=`, `name="learn_nudge"`, following the
-      heartbeat's shape exactly. Add it to the log line at the end of
-      `register_all`.
+- [x] New `proactive/takeaway.py`, `build_takeaway(*, choose=random.choice) -> (text, error)`.
+- [x] Query `LEARN_ID` (`query_database` paginates), choose a page, read its
+      children, find the heading, collect the bullets under it.
+- [x] Skip-and-retry without replacement, bounded; the four outcomes above.
+- [x] Name the source page, and mark it when the source is unverified.
 
-## Milestone 4: tests
+## Milestone 4: registration
 
-- [x] New `tests/test_learn_nudge.py`:
-  - [x] Pages older than the threshold with `Implemented` unchecked are listed.
-  - [x] A page checked as implemented is never listed — asserted through the
-        FILTER, since that is where the exclusion happens.
-  - [x] The boundary: the cutoff sent to Notion is `now - N days` and the
-        operator is `before` (decision 1).
-  - [x] Nothing pending → `(None, None)`, genuinely silent.
-  - [x] A Notion read failure → `(None, error)`, **not** silence. Without this
-        test the builder repeats the bug M2 exists to fix.
-  - [x] A missing `Implemented` column reports, and its message differs from a
-        failed schema read.
-  - [x] More pending than the cap → the message names the overflow count.
-  - [x] A title containing `*` and `_` does not break the send — driven through
-        the real scheduler job, because that is where a parse_mode would be.
-  - [x] Oldest first.
-- [x] `tests/test_scheduler.py` — `test_every_job_is_registered` asserts the
-      exact set and must gain the new name; plus its slot, its day, and that it
-      still shares no slot with anything.
-- [x] `tests/test_layering.py` passes untouched (`proactive/` is already scanned)
-      — confirm rather than assume.
-- [x] **Guard-revert pass**: four guards reverted one at a time — the read
-      failure collapsed to silence, `if err` / `if prop_type is None` folded into
-      one `if not prop_type`, the cap removed, and the sort flipped to
-      descending. All four turned a named test red.
-- [x] Full suite green: **939 passed**, up from 918. `ruff check .` clean.
+- [x] `proactive/scheduler.py` — `_takeaway_job`, `run_daily` with `days=`,
+      `chat_id=`, `name="takeaway"`. Plain text: bullets and titles are user data.
 
-## Milestone 5: docs
+## Milestone 5: tests
 
-- [x] `README.md` — the "Scheduled messages" table.
-- [x] `CLAUDE.md` — the Open-questions entry saying the checkbox has no reader is
-      now false; strike it with the reason. Module map gains the row.
-- [x] `proactive/__init__.py` — mark Step 6 implemented.
-- [x] `ROADMAP.md` — tick M3 as it lands.
+- [x] New `tests/test_takeaway.py`:
+  - [x] A page with takeaways produces a message naming the page.
+  - [x] Bullets are collected only up to the next heading — not the whole rest
+        of the page.
+  - [x] A page with no takeaways section is skipped, not reported as an error.
+  - [x] A database where NO page has takeaways → `(None, None)` after a bounded
+        number of attempts (assert it terminates AND that it stopped at the
+        bound).
+  - [x] The same page is never tried twice.
+  - [x] A Notion QUERY failure → `(None, error)`.
+  - [x] A page READ failure with no takeaway found anywhere → `(None, error)`,
+        not silence (decision 4).
+  - [x] A page read failure with a takeaway found elsewhere → `(text, error)`.
+  - [x] The chooser is injectable, so the test is deterministic.
+  - [x] A takeaway from an unverified page says so.
+- [x] The writer/reader constant test: build a page via the REAL
+      `services/learn.build_notion_blocks`, hand those blocks to the takeaway
+      reader, assert it finds them. Two `in` checks in two modules is how a
+      string gets reworded in one of them.
+- [x] `tests/test_scheduler.py` — registration, slot, day, no collision.
+- [x] `tests/test_async_io.py` — `PROACTIVE_JOBS` gains the job (it is what
+      asserts the builder runs off the event loop).
+- [x] **Guard-revert pass**: three guards reverted one at a time. The read
+      failure collapsed to a skip and the without-replacement removal each turned
+      named tests red immediately. The third — letting collection run past the
+      next heading — turned NOTHING red, and that is in `## Changelog`.
+- [x] Full suite green: **962 passed**, up from 939. `ruff check .` clean.
 
-## Milestone 6: ship
+## Milestone 6: docs
 
-- [ ] Commit on `learn-nudge`, push, PR, CI green, merge.
+- [x] `README.md` scheduled-messages table.
+- [x] `proactive/__init__.py` — mark Step 5 implemented.
+- [x] `CLAUDE.md` — module map row.
+- [x] `ROADMAP.md` — tick M4.
 
-## Changelog
+## Milestone 7: ship
 
-- **Two error cases were not in the plan and are now in the code.** A column
-  named `Implemented` that is not a CHECKBOX (a text field, say) would make the
-  filter a 400 reported weekly as an outage; it now says what the type is. And
-  `database_property_type`'s failure branch needed wording that could not be
-  mistaken for the missing-column one — "add a column" and "Notion is down" want
-  opposite reactions, and the guard-revert pass confirmed a single
-  `if not prop_type` merges them.
-- **The age is decoration and is treated as such.** A page with no `created_time`
-  is still listed, without an age, rather than dropped or shown as "0 days ago" —
-  which would put the oldest debt in the list looking like the newest. The parse
-  catches `TypeError` as well as `ValueError`, because `now_local()` is tz-aware
-  and a naive stamp fails at the subtraction rather than at the parse.
+- [ ] Commit, push, PR, CI green, merge.
 
 ## Open questions
 
-- **Whether the `Implemented` column actually exists in the live database is not
-  knowable from here.** `services/implement.py:947` discards `update_page`'s
-  `(ok, error)`, so if the column is missing that write has been 400ing silently
-  on every Implement run, and the first nudge will report the missing column
-  rather than a list. That is the correct outcome either way — it surfaces a
-  failure that has been invisible — but it is worth checking the Notion database
-  before assuming the data is there. Fixing the discarded error itself is
-  **out of scope**: it is a one-line change in a file this milestone does not
-  otherwise touch, and it is already named in `ROADMAP.md`'s M3 notes.
-- **Nothing un-ticks the checkbox.** A page merged into a Manual is implemented
-  forever, even if the Manual section is later rewritten. Recorded so it is not
-  mistaken for an oversight.
+- **Every page is fetched to choose one.** `query_database` returns the whole
+  Learn database (paginated) and the choice happens in Python, because "has a
+  takeaways section" is in the page BODY and Notion cannot filter on it. Fine at
+  this size and for a weekly job; recorded so it is not mistaken for an
+  oversight.
+- **Nothing remembers which takeaways have been sent**, so the same bullet can
+  come round twice. Storing that would need state, and Notion is the only
+  durable store David has — a "last resurfaced" property is a schema change on a
+  database the user owns. Out of scope, and repetition is not obviously wrong for
+  a resurfacing job.
+
+
+## Changelog
+
+- **The heading-boundary test was passing against nothing, and the revert pass is
+  what found it.** `test_the_bullets_stop_at_the_next_heading` built the whole
+  message and asserted the stray line was absent from it. With the boundary
+  removed it stayed green: the deterministic chooser takes the FIRST bullet, so a
+  wrongly-collected extra one at the end never reached the text being asserted
+  on. Rewritten to assert on `takeaways_in`'s output — the thing the guard
+  actually produces — with the end-to-end version kept alongside it and a chooser
+  that picks the LAST bullet, which is where the bug lands. Both go red on the
+  revert now.
+- **Notion's write shape is not its read shape.** `notion_client.rich()` emits
+  `{"text": {"content": …}}`; the API's response carries `{"plain_text": …}`,
+  which is what `extract_rich_text` reads. So the writer/reader cross-check could
+  not hand `build_notion_blocks`' output straight to the reader — it would be
+  testing a shape production never sees. The test converts
+  (`as_notion_returns_it`, documented as the round trip) rather than the reader
+  learning to accept both: widening production code so a fixture passes is the
+  wrong direction, and it would have hidden exactly this asymmetry from the next
+  person.
+- **Decision 5 (the unverified label) survived contact with the code cheaply**,
+  as expected: the blocks are already in hand for the takeaways scan, so
+  `is_unverified_source(blocks_to_text(blocks))` costs no extra read.

@@ -117,6 +117,15 @@ UNVERIFIED_NOTE = (
 )
 
 
+# The H2 a Learn page's takeaways live under. ONE string, because it is written
+# by services/learn.py and read by proactive/takeaway.py — and a heading reworded
+# in the writer while the reader still looks for the old text does not fail, it
+# just quietly stops finding anything, which is a silent weekly job rather than
+# an error. Exactly the trap UNVERIFIED_MARKER above is written to avoid, and the
+# reason that one is a constant too.
+TAKEAWAYS_HEADING = "✅ Key Takeaways"
+
+
 def is_unverified_source(text: str) -> bool:
     """True if this page text carries the unverified-source marker.
 
@@ -336,6 +345,26 @@ LEARN_NUDGE_STALE_DAYS = 7
 # How many get named. A list of forty is the same as no list: it is a backlog,
 # not a task. The rest are counted, so the size of the debt is still visible.
 LEARN_NUDGE_MAX_ITEMS = 5
+
+# Takeaway of the Week — one bullet from one Learn page's takeaways, resurfaced.
+#
+# Sunday 11:00: a reading slot, an hour clear of the 09:30 recap and well clear
+# of the 20:30 heartbeat. Weekly because it is a nudge to think, not an alert —
+# daily would turn a resurfaced idea into wallpaper.
+TAKEAWAY_DAY    = SUNDAY
+TAKEAWAY_HOUR   = 11
+TAKEAWAY_MINUTE = 0
+
+# How many DISTINCT pages to open looking for a takeaways section before giving
+# up for the week. Bounded because a database whose pages have no takeaways —
+# every `Learn book` page whose summary came back without any, and everything
+# saved before that section existed — would otherwise be opened one at a time,
+# forever, on a worker thread.
+#
+# The pages are sampled WITHOUT replacement, so this counts pages rather than
+# dice rolls: with replacement, a three-page database could spend all five
+# attempts on the same page.
+TAKEAWAY_MAX_ATTEMPTS = 5
 
 
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────

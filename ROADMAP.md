@@ -36,7 +36,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 | ~~1~~ ✅ | ~~**M1** — One truncation budget per Claude call~~ | Done. Smallest, self-contained, no new surface. Fixed a documented doctrine violation. |
 | ~~2~~ ✅ | ~~**M2** — `compute_budget()` returns `(value, error)`~~ | Done. Blast radius was wider than "contained": eight test files touch `budget()`, because every command-level test doubles it. |
 | ~~3~~ ✅ | ~~**M3** — The Learn-nudge job~~ | Done. Highest product value. Independent of everything else. |
-| 4 | **M4** — Takeaway of the week | Same shape as M3 — do it while the proactive-builder pattern is fresh. |
+| ~~4~~ ✅ | ~~**M4** — Takeaway of the week~~ | Done. Same shape as M3, and done while the proactive-builder pattern was fresh. |
 | 5 | **M5** — Split the last four `update`-taking modules | Pure refactor. Unlocks M6. |
 | 6 | **M6** — On-demand calendar: `Agenda`, and cancelling a reminder | Wants `reminder.py` split first (M5). |
 
@@ -336,7 +336,10 @@ side-effect, makes the checkbox mean something.
 
 ---
 
-# M4 — Takeaway of the week (proactive Step 5)
+# M4 — Takeaway of the week (proactive Step 5) ✅ done
+
+_Landed on `takeaway-of-the-week`. `PLAN.md` holds the decisions and the
+guard-revert record._
 
 ## Why
 
@@ -365,34 +368,44 @@ knowledge base you only ever write to is not a knowledge base.
 
 ## To-do
 
-- [ ] Move `"✅ Key Takeaways"` into `config.py` as a named constant; update
+- [x] Move `"✅ Key Takeaways"` into `config.py` as a named constant; update
       `services/learn.py:529` to use it.
-- [ ] `config.py`: day/hour/minute for the job (named weekday constant).
-- [ ] New `proactive/takeaway.py` with `build_takeaway() -> (text, error)`.
-- [ ] Query `LEARN_ID`, choose a page, read its children, locate the takeaways
+- [x] `config.py`: day/hour/minute for the job (named weekday constant).
+- [x] New `proactive/takeaway.py` with `build_takeaway() -> (text, error)`.
+- [x] Query `LEARN_ID`, choose a page, read its children, locate the takeaways
       heading, collect the bullets that follow it until the next heading.
-- [ ] Skip-and-retry for pages with no takeaways, with a bounded attempt count;
+- [x] Skip-and-retry for pages with no takeaways, with a bounded attempt count;
       exhausting it is `(None, None)`, not an error.
-- [ ] Include the source page title so the takeaway is traceable.
-- [ ] Register in `proactive/scheduler.register_all`.
-- [ ] `README.md` scheduled-messages table; `proactive/__init__.py` mark Step 5.
+- [x] Include the source page title so the takeaway is traceable.
+- [x] Register in `proactive/scheduler.register_all`.
+- [x] `README.md` scheduled-messages table; `proactive/__init__.py` mark Step 5.
 
 ## Tests
 
-- [ ] New `tests/test_takeaway.py`:
-  - [ ] A page with takeaways produces a message naming the page.
-  - [ ] Bullets are collected only up to the next heading — not the whole rest
-        of the page.
-  - [ ] A page with no takeaways section is skipped, not reported as an error.
-  - [ ] A database where **no** page has takeaways → `(None, None)` after a
+- [x] New `tests/test_takeaway.py`:
+  - [x] A page with takeaways produces a message naming the page.
+  - [x] Bullets are collected only up to the next heading — not the whole rest
+        of the page. Asserted on the COLLECTED LIST, not on the message: written
+        the other way it stayed green with the boundary removed. See the
+        changelog.
+  - [x] A page with no takeaways section is skipped, not reported as an error.
+  - [x] A database where **no** page has takeaways → `(None, None)` after a
         bounded number of attempts (assert it terminates).
-  - [ ] A Notion read failure → `(None, error)`.
-  - [ ] The chooser is injectable, so the test is deterministic.
-- [ ] A test that the writer and the reader use the **same** constant — write a
+  - [x] A Notion read failure → `(None, error)`. Split in two, because the
+        distinction is the whole milestone: no takeaway found AND a read failed
+        is `(None, error)`, while a takeaway found DESPITE a failed read is
+        `(text, error)` — send and report, never one or the other.
+  - [x] The chooser is injectable, so the test is deterministic.
+- [x] A test that the writer and the reader use the **same** constant — write a
       page via the Learn builder, read it back via the takeaway builder. Two
       `in` checks in two modules is how a string gets reworded in one of them.
-- [ ] `tests/test_scheduler.py` — registration.
-- [ ] Full suite green, `ruff check .` clean.
+  - [x] Not planned, added: the same page is never opened twice (the bound
+        counts pages, not dice rolls), a bullet BEFORE the heading is not a
+        takeaway, and a takeaway lifted from an unverified page still says so.
+- [x] `tests/test_scheduler.py` — registration, plus one asserting the three
+      Sunday jobs stay an hour apart rather than merely not colliding.
+- [x] `tests/test_async_io.py` — `PROACTIVE_JOBS` gains the job.
+- [x] Full suite green (**962 passed**, up from 939), `ruff check .` clean.
 
 ---
 
@@ -631,6 +644,22 @@ Recorded so they are not re-proposed.
 
 # Changelog
 
+- **2026-08-14** — **M4 landed.** Two findings, one of them about testing:
+  - **A test that asserts on the final MESSAGE cannot see a collection bug that
+    lands outside the chooser's pick.** `test_the_bullets_stop_at_the_next_heading`
+    was written end-to-end and stayed GREEN with the heading boundary removed:
+    the deterministic chooser takes the first bullet, so a wrongly-collected
+    extra one at the end never reached the text it asserted on. Found by the
+    guard-revert pass, and the fix is the general lesson — put the assertion on
+    what the guard PRODUCES (`takeaways_in`), and keep the end-to-end one with a
+    chooser that picks the last item.
+  - **Notion's write shape and read shape differ, and a writer/reader
+    cross-check has to model the round trip.** `notion_client.rich()` emits
+    `{"text": {"content": …}}`; Notion's response carries `{"plain_text": …}`,
+    which is what `extract_rich_text` reads. Handing the writer's own blocks
+    straight to the reader tests a shape production never sees. The test
+    converts (`as_notion_returns_it`) rather than the reader widening to accept
+    both — widening production code to satisfy a fixture is the wrong direction.
 - **2026-08-14** — **M3 landed.** Two notes for whoever builds M4, which reads
   the same database:
   - **A predicate evaluated by Notion cannot be tested from the builder's

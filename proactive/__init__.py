@@ -17,12 +17,13 @@ Build order (see the roadmap):
           reminder.handle_remind when an event is CREATED rather than on a
           schedule
   Step 4  budget_watch   (pacing / overspend)  ← implemented
-  Step 5  knowledge.takeaway_of_the_week
+  Step 5  takeaway.build_takeaway             ← implemented
   Step 6  learn_nudge.build_nudge              ← implemented
   Step 7  tasks          (overdue follow-up + Done command, needs state)
 
-Step 6 is what finally gives the `Implemented` checkbox a reader. Both Implement
-paths had been ticking it since they were written, and nothing anywhere looked at
-it — so the capture half of the pipeline was automated and the act-on-it half was
-entirely down to memory.
+Steps 5 and 6 are the two that read Notion back OUT. Everything else in David
+pushes into it: Step 6 gives the `Implemented` checkbox a reader at last (both
+Implement paths had been ticking it since they were written, and nothing looked
+at it), and Step 5 resurfaces a takeaway, because a knowledge base you only ever
+write to is not a knowledge base.
 """

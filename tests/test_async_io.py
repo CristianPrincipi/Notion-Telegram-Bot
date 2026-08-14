@@ -375,6 +375,7 @@ PROACTIVE_JOBS = [
     ("_month_rollover_job",   "build_rollover_message"),
     ("_heartbeat_job",        "build_heartbeat"),
     ("_learn_nudge_job",      "build_nudge"),
+    ("_takeaway_job",         "build_takeaway"),
 ]
 
 
