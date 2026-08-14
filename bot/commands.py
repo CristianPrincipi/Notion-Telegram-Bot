@@ -1,11 +1,14 @@
 """The handlers whose feature module still takes `update` itself.
 
-`B`, `Month`, `Diag`, `DBs`, `Find`, `Get` and `Remind` are one-liners because
-budget.py, month.py, notion_ids.py, pkm.py and reminder.py have not been split
-into a service and an adapter — they were out of scope for this refactor and are
-named as follow-up work in PLAN.md. Until they are, the adapter for each is the
-single line that forwards the update, and this module is where those lines live
-rather than in david.py.
+`B`, `Month`, `Diag`, `DBs`, `Find` and `Get` are one-liners because budget.py,
+month.py, notion_ids.py and pkm.py have not been split into a service and an
+adapter — they were out of scope for this refactor and are named as follow-up
+work in PLAN.md. Until they are, the adapter for each is the single line that
+forwards the update, and this module is where those lines live rather than in
+david.py.
+
+`Remind` used to be here too; reminder.py is split, so its adapter is
+bot/reminder.py — a real one, binding the notify pair.
 
 `B` is the exception that already reads right: budget.py is telegram-free today,
 so this handler does the offloading and the formatting decision itself, which is
@@ -18,7 +21,6 @@ from budget import budget
 from month import handle_month
 from notion_ids import handle_dbs, handle_diag, handle_find
 from pkm import handle_get
-from reminder import handle_remind
 from telegram_text import reply
 
 
@@ -52,7 +54,3 @@ async def cmd_find(update, context, args):
 
 async def cmd_get(update, context, args):
     await handle_get(update, args["text"])
-
-
-async def cmd_remind(update, context, args):
-    await handle_remind(update, args["text"])

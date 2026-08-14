@@ -20,7 +20,7 @@ from clients.calendar_client import (
     find_conflicts, CALENDAR_ID, DEFAULT_EVENT_MINUTES,
 )
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 from datetime import timedelta
 
 # Remind [Name] [Date] [- ][Time]
@@ -103,12 +103,13 @@ def _format_conflict_warning(new_name: str, start_dt, end_dt, conflicts: list) -
     return "\n".join(lines)
 
 
-async def handle_remind(update, user_text: str):
+async def run_remind(user_text: str, *, notify, notify_md=None) -> None:
     """Parse a Remind command, create the calendar event, confirm, and flag conflicts."""
+    notify_md = notify_md or notify
+
     match = re.match(REMIND_PATTERN, user_text.strip())
     if not match:
-        await reply(
-            update,
+        await notify_md(
             "📅 *Reminder usage:*\n"
             "`Remind [Name] [Date] [Time]`\n\n"
             "Examples:\n"
@@ -128,10 +129,10 @@ async def handle_remind(update, user_text: str):
     # Validate + parse into a Europe/Rome datetime
     start_dt, err = parse_date_time(date_str, time_str)
     if err:
-        await update.message.reply_text(f"❌ {err}")
+        await notify(f"❌ {err}")
         return
 
-    await reply(update, f"⏳ Adding *{escape_md(name)}* to your calendar…")
+    await notify_md(f"⏳ Adding *{escape_md(name)}* to your calendar…")
 
     # Detect overlaps against the proposed slot BEFORE creating the event, so the
     # new event itself can't show up in the results. A failed check degrades
@@ -153,12 +154,11 @@ async def handle_remind(update, user_text: str):
             link, err = await asyncio.to_thread(
                 create_event, name, start_dt, DEFAULT_EVENT_MINUTES)
     except PageBusy:
-        await update.message.reply_text(
-            "⏳ Another reminder is still being created. Try again in a moment.")
+        await notify("⏳ Another reminder is still being created. Try again in a moment.")
         return
 
     if err:
-        await update.message.reply_text(f"❌ Could not create the event: {err}")
+        await notify(f"❌ Could not create the event: {err}")
         return
 
     # Confirmation — include a heads-up if the appointment is before the morning poll
@@ -183,11 +183,11 @@ async def handle_remind(update, user_text: str):
     if start_dt.hour < 8:
         msg += "\n\n⚠️ This is before 08:00 — the morning ping arrives at 07:30, so for very early events rely on Google's 1-hour alert."
 
-    await reply(update, msg)
+    await notify_md(msg)
 
     # Conflict heads-up — separate, plain text, only when there's a real overlap.
     if conflicts:
-        await update.message.reply_text(_format_conflict_warning(name, start_dt, end_dt, conflicts))
+        await notify(_format_conflict_warning(name, start_dt, end_dt, conflicts))
 
 
 # build_today_message, build_tomorrow_message and _format_event_line used to live

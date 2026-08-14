@@ -1,164 +1,165 @@
-# Plan: M4 — takeaway of the week (proactive Step 5)
+# Plan: M5 — split the last four `update`-taking modules
 
 _Last updated: 2026-08-14_
 
-Branch: `takeaway-of-the-week`, off `main` at the M3 merge.
-Baseline before any change: **939 passed**, `ruff check .` clean.
+Branch: `split-update-modules`, off `main` at the M4 merge (`f0209cc`).
+Baseline before any change: **962 passed**, `ruff check .` clean.
 
-A weekly message resurfacing one `✅ Key Takeaways` bullet from a random Learn
-page. Listed as Step 5 in `proactive/__init__.py` and never built. Cheapest item
-on the roadmap: pure Notion read, **no Anthropic call**, no new dependency. The
-value is that a personal knowledge base you only ever write to is not a knowledge
-base.
+`reminder.py`, `pkm.py`, `notion_ids.py` and `month.py` are still at the repo
+root and still take `update`, replying through `telegram_text` themselves.
+`CLAUDE.md` names them as deliberate follow-ups from the layering split, and
+`bot/commands.py` exists only to hold their one-line adapters until this
+happens. Splitting them makes them callable from a job, drivable from a test
+with no fake `Update`, and — the part that lasts — puts them under
+`tests/test_layering.py`, which today cannot see them at all.
+
+**This is a pure refactor. Move code only.** Every defect noticed on the way is
+recorded under `## Found while moving` and fixed in a later PR, because a fix
+hidden inside a move is a fix nobody reviewed.
 
 ## Decisions taken before writing code
 
-**1. The heading becomes one constant, and that is the first commit.**
-`services/learn.py:529` writes `_heading2("✅ Key Takeaways")` and this reader
-will look for it. Two string literals in two modules is exactly how
-`UNVERIFIED_MARKER` was nearly reworded in one place and silently undetected in
-the other. `config.TAKEAWAYS_HEADING`, used by both, plus a test that drives the
-WRITER and then the READER so the two cannot drift.
+**1. One COMMIT per module, one PR for the milestone.** The roadmap asks for one
+PR per module; `ROADMAP.md`'s own workflow section asks for one PR per
+milestone. The two split the difference badly, so: one branch, four commits,
+each of which leaves `ruff check .` clean and the full suite green on its own.
+A reviewer reads them one at a time; CI gates them once.
 
-**2. The chooser is a parameter, not a seed.** `build_takeaway(*, choose=random.choice)`.
-Seeding is global state that another test can disturb, and it pins the algorithm
-rather than the decision. A parameter lets a test pass `lambda seq: seq[0]` and
-assert on an exact page — and it is used for BOTH choices (which page, which
-bullet), so there is one source of randomness to control.
+**2. The seam is the existing `handle_*` adapter, and it keeps its name and its
+signature.** `handle_remind(update, user_text)` moves from `reminder.py` to
+`bot/reminder.py` and becomes two lines: bind `for_update(update)`, call
+`services.reminder.run_remind(user_text, notify=…, notify_md=…)`. That is what
+`bot/learn.py` already does, and it means `tests/test_router.py` needs only a
+`SPY_HOMES` change — the spy names and their recorded argument names do not
+move, so the router table keeps asserting the same thing about the same call.
 
-**3. Sampling is without replacement, and attempts are bounded.** A page picked
-and found to have no takeaways is removed from the pool, so the bound counts
-distinct pages rather than dice rolls — otherwise a database of 3 pages could
-burn 5 attempts on the same one. Exhausting the bound is `(None, None)`: a
-database with no takeaways anywhere is not an error, it is a quiet week.
+**3. One `bot/` module per feature, and `bot/commands.py` goes away.** Its
+docstring is entirely about a state of affairs this milestone ends. Its four
+delegators become `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py` and
+`bot/month.py`, matching `bot/books.py` / `bot/expenses.py` / `bot/learn.py`;
+`cmd_budget` — the one handler in there that already reads right, because
+`budget.py` is telegram-free — becomes `bot/budget.py`.
 
-**4. A page read that FAILS is not the same as a page with no takeaways**, and
-this is the trap the whole milestone sits over. If a failed `get_children` just
-moved on to the next page, then a Notion outage — where every read fails —
-exhausts the attempts and returns `(None, None)`: silence, meaning "nothing to
-say". That is the bug M2 spent a milestone removing.
+**4. `_send_long` becomes one implementation, and it is bound where `notify`
+is.** `pkm.py:221` splits plain text; `notion_ids.py:271` splits Markdown. Same
+splitter, two senders. It cannot move into `services/` (it is a Telegram limit)
+and the service cannot import `bot/`, so the adapter wraps the channel that
+needs it:
 
-So the first read error is remembered, and the outcome follows
-`build_morning_briefing`'s shape rather than choosing between the two:
+    notify, notify_md = for_update(update)
+    await run_get(text, notify=partial(send_long, notify), notify_md=notify_md)
 
-    (text, None)   found a takeaway, nothing went wrong
-    (text, error)  found one, but a page could not be read — send AND report
-    (None, error)  found none, and at least one read failed
-    (None, None)   found none, everything was readable — a genuinely quiet week
+The service just calls `notify(long_text)`. Which channel splits stays exactly
+where it is today — plain for `Get`, Markdown for the diagnostics — so no
+message changes shape, and there is one splitter instead of two.
 
-**5. An unverified source stays labelled when it is resurfaced.** Not in the
-roadmap, added deliberately and cheaply: `Learn book X` pages carry
-`config.UNVERIFIED_MARKER` in their body, and a takeaway lifted out of one and
-sent on its own is a recollection presented as a fact with its provenance
-stripped. The blocks are already in hand, `config.is_unverified_source` already
-exists, and the line costs one `if`. This is the same reasoning that put the
-marker in the page body rather than in a property.
+**5. `services/month.py` keeps its `threading.RLock` verbatim.** It is reached
+from worker threads, and an `asyncio.Lock` between two threads acquires without
+ever blocking. The comment saying so moves with it, unedited.
 
-**6. Bullets are collected from the heading to the NEXT HEADING**, not to the end
-of the page. On a David-written page the takeaways are last, so the two rules
-agree today — which is exactly why the stricter one has to be written now, while
-nothing depends on the accident.
+**6. `REMIND_PATTERN` stays with the service; what a token MEANS stays in
+`clients/calendar_client.py`.** Not collapsing that split is the point of the
+module: a shorthand resolved in the regex is a date rule nothing can unit-test.
 
-## Milestone 1: the shared constant
+## Milestone 1: `reminder.py`
 
-- [x] `config.TAKEAWAYS_HEADING = "✅ Key Takeaways"`, with the two-modules
-      reasoning.
-- [x] `services/learn.py:529` uses it.
+- [x] `services/reminder.py` — `run_remind(user_text, *, notify, notify_md=None)`,
+      carrying `REMIND_PATTERN`, `_format_conflict_warning` and the
+      `page_lock(CALENDAR_ID)` acquisition unchanged.
+- [x] `bot/reminder.py` — `cmd_remind` + `handle_remind(update, user_text)`.
+- [x] `david.py` imports `cmd_remind` from `bot.reminder`.
+- [x] Delete `reminder.py`.
+- [x] `tests/test_reminder_dates.py`, `tests/test_async_io.py`,
+      `tests/test_concurrency.py` — retarget imports; no assertion changes.
+- [x] `tests/test_concurrency.py` `LOCKING_MODULES` — `services/reminder.py`.
+      `test_every_locking_module_is_actually_checked` fails until it is updated.
+- [x] `tests/test_router.py` `SPY_HOMES["handle_remind"] = bot.reminder`.
+- [x] A test driving `run_remind` with a list's `append` and no Update at all.
+- [x] Suite green, `ruff check .` clean.
 
-## Milestone 2: config
+## Milestone 2: `pkm.py`
 
-- [x] Day/hour/minute for the job, named weekday constant, in a free slot (every
-      existing one is taken and `test_no_two_jobs_share_a_slot` asserts that).
-- [x] `TAKEAWAY_MAX_ATTEMPTS`.
+- [ ] `bot/long_messages.py` — `send_long(send, text)`, the one splitter.
+- [ ] `services/pkm.py` — `run_get(user_text, *, notify, notify_md=None)`;
+      `_send_long` deleted from it.
+- [ ] `bot/pkm.py` — `cmd_get` + `handle_get`, binding `notify` through
+      `partial(send_long, notify)`.
+- [ ] `david.py`, `tests/test_pkm.py`, `tests/test_async_io.py`,
+      `tests/test_router.py` retargeted.
+- [ ] A test driving `run_get` with a list's `append` and no Update.
+- [ ] Suite green, `ruff check .` clean.
 
-## Milestone 3: the builder
+## Milestone 3: `notion_ids.py`
 
-- [x] New `proactive/takeaway.py`, `build_takeaway(*, choose=random.choice) -> (text, error)`.
-- [x] Query `LEARN_ID` (`query_database` paginates), choose a page, read its
-      children, find the heading, collect the bullets under it.
-- [x] Skip-and-retry without replacement, bounded; the four outcomes above.
-- [x] Name the source page, and mark it when the source is unverified.
+- [ ] `services/notion_ids.py` — `run_diag`, `run_find(query)`, `run_dbs`, plus
+      the already-pure `search_all` / `list_db_pages` / `build_diagnostic_report`
+      and the `__main__` block.
+- [ ] `bot/notion_ids.py` — the three adapters, binding `notify_md` through
+      `send_long` (the Markdown channel is the one that splits here).
+- [ ] `ruff.toml` per-file-ignore repointed to `services/notion_ids.py`.
+- [ ] `david.py`, `tests/test_router.py` retargeted.
+- [ ] A test driving `run_dbs` / `run_find` with a list's `append` and no Update.
+- [ ] Suite green, `ruff check .` clean.
 
-## Milestone 4: registration
+## Milestone 4: `month.py`
 
-- [x] `proactive/scheduler.py` — `_takeaway_job`, `run_daily` with `days=`,
-      `chat_id=`, `name="takeaway"`. Plain text: bullets and titles are user data.
+- [ ] `services/month.py` — everything, `run_month(*, notify, notify_md=None)`
+      replacing `handle_month`. `threading.RLock` and its comment move unchanged.
+- [ ] `bot/month.py` — `cmd_month` + `handle_month`.
+- [ ] Importers updated: `budget.py`, `services/expenses.py`,
+      `proactive/heartbeat.py`, `proactive/month_rollover.py`,
+      `services/notion_ids.py`.
+- [ ] `bot/budget.py` created, `bot/commands.py` deleted, `david.py` retargeted.
+- [ ] `tests/test_month.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`,
+      `tests/test_router.py`, `tests/test_config_validate.py` retargeted.
+- [ ] A test driving `run_month` with a list's `append` and no Update.
+- [ ] Suite green, `ruff check .` clean.
 
-## Milestone 5: tests
+## Milestone 5: the guards
 
-- [x] New `tests/test_takeaway.py`:
-  - [x] A page with takeaways produces a message naming the page.
-  - [x] Bullets are collected only up to the next heading — not the whole rest
-        of the page.
-  - [x] A page with no takeaways section is skipped, not reported as an error.
-  - [x] A database where NO page has takeaways → `(None, None)` after a bounded
-        number of attempts (assert it terminates AND that it stopped at the
-        bound).
-  - [x] The same page is never tried twice.
-  - [x] A Notion QUERY failure → `(None, error)`.
-  - [x] A page READ failure with no takeaway found anywhere → `(None, error)`,
-        not silence (decision 4).
-  - [x] A page read failure with a takeaway found elsewhere → `(text, error)`.
-  - [x] The chooser is injectable, so the test is deterministic.
-  - [x] A takeaway from an unverified page says so.
-- [x] The writer/reader constant test: build a page via the REAL
-      `services/learn.build_notion_blocks`, hand those blocks to the takeaway
-      reader, assert it finds them. Two `in` checks in two modules is how a
-      string gets reworded in one of them.
-- [x] `tests/test_scheduler.py` — registration, slot, day, no collision.
-- [x] `tests/test_async_io.py` — `PROACTIVE_JOBS` gains the job (it is what
-      asserts the builder runs off the event loop).
-- [x] **Guard-revert pass**: three guards reverted one at a time. The read
-      failure collapsed to a skip and the without-replacement removal each turned
-      named tests red immediately. The third — letting collection run past the
-      next heading — turned NOTHING red, and that is in `## Changelog`.
-- [x] Full suite green: **962 passed**, up from 939. `ruff check .` clean.
+- [ ] `tests/test_layering.py` now covers four more modules — run it after each
+      one, not once at the end.
+- [ ] **Spy-retarget verification:** break each moved function deliberately and
+      watch its router row go red. A stub left on the old module keeps the test
+      green against nothing, which is the failure mode `SPY_HOMES` exists for.
+- [ ] `tests/test_concurrency.py`'s lock-key scan still finds the `CALENDAR_ID`
+      lock after the move.
 
 ## Milestone 6: docs
 
-- [x] `README.md` scheduled-messages table.
-- [x] `proactive/__init__.py` — mark Step 5 implemented.
-- [x] `CLAUDE.md` — module map row.
-- [x] `ROADMAP.md` — tick M4.
+- [ ] `CLAUDE.md` — module map rows, the layer paragraph, and strike the "five
+      modules never got the treatment" entry.
+- [ ] `README.md` — the Layout section.
+- [ ] `ROADMAP.md` — tick M5.
 
 ## Milestone 7: ship
 
-- [ ] Commit, push, PR, CI green, merge.
+- [ ] Commit per module, push, PR, CI green, merge.
+
+## Found while moving
+
+Recorded rather than fixed — see decision 0 above. Add to `ROADMAP.md`'s backlog
+when this lands.
+
+- **`services/reminder.py` discards the `find_conflicts` error into `_`**, so a
+  calendar read failure is indistinguishable from "the slot is clear". Already
+  named in `CLAUDE.md`'s open questions; the move does not change it, and the
+  entry's file path needs updating there.
+- **`bot/long_messages.py`'s splitter can cut between a `*` and its closing
+  one**, leaving an unbalanced entity in each half. `notion_ids.py` carried that
+  as a KNOWN LIMITATION comment; it moves with the code, unfixed.
+- **`services/notion_ids.py` reads `NOTION_KEY` from the environment itself**
+  even though `clients/notion_client.py` owns the header. It is used only as a
+  "is anything configured at all" probe in the diagnostic. Left as found.
 
 ## Open questions
 
-- **Every page is fetched to choose one.** `query_database` returns the whole
-  Learn database (paginated) and the choice happens in Python, because "has a
-  takeaways section" is in the page BODY and Notion cannot filter on it. Fine at
-  this size and for a weekly job; recorded so it is not mistaken for an
-  oversight.
-- **Nothing remembers which takeaways have been sent**, so the same bullet can
-  come round twice. Storing that would need state, and Notion is the only
-  durable store David has — a "last resurfaced" property is a schema change on a
-  database the user owns. Out of scope, and repetition is not obviously wrong for
-  a resurfacing job.
-
+- **`_send_long`'s two copies differed by one character** — pkm's `.rstrip()`
+  against notion_ids' `.rstrip("\n")`. The merged one keeps `.rstrip("\n")`, so
+  a chunk ending in trailing spaces keeps them. Nothing asserts either, and
+  Telegram renders both identically; recorded so the choice is visible rather
+  than silent.
 
 ## Changelog
 
-- **The heading-boundary test was passing against nothing, and the revert pass is
-  what found it.** `test_the_bullets_stop_at_the_next_heading` built the whole
-  message and asserted the stray line was absent from it. With the boundary
-  removed it stayed green: the deterministic chooser takes the FIRST bullet, so a
-  wrongly-collected extra one at the end never reached the text being asserted
-  on. Rewritten to assert on `takeaways_in`'s output — the thing the guard
-  actually produces — with the end-to-end version kept alongside it and a chooser
-  that picks the LAST bullet, which is where the bug lands. Both go red on the
-  revert now.
-- **Notion's write shape is not its read shape.** `notion_client.rich()` emits
-  `{"text": {"content": …}}`; the API's response carries `{"plain_text": …}`,
-  which is what `extract_rich_text` reads. So the writer/reader cross-check could
-  not hand `build_notion_blocks`' output straight to the reader — it would be
-  testing a shape production never sees. The test converts
-  (`as_notion_returns_it`, documented as the round trip) rather than the reader
-  learning to accept both: widening production code so a fixture passes is the
-  wrong direction, and it would have hidden exactly this asymmetry from the next
-  person.
-- **Decision 5 (the unverified label) survived contact with the code cheaply**,
-  as expected: the blocks are already in hand for the takeaways scan, so
-  `is_unverified_source(blocks_to_text(blocks))` costs no extra read.
+- Nothing yet.

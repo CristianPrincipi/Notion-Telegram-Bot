@@ -35,7 +35,7 @@ import month
 import page_lock
 import pkm
 import proactive.scheduler as scheduler
-import reminder
+from services import reminder
 import bot.commands
 import bot.implement
 import bot.learn
@@ -337,7 +337,7 @@ def test_remind_calls_google_calendar_off_the_loop(offloaded, monkeypatch):
     })
     update = FakeUpdate(text="Remind Dentist 12.06 - 14.30")
 
-    run(reminder.handle_remind(update, update.message.text))
+    run(reminder.run_remind(update.message.text, **with_update(update)))
 
     assert offloaded == expect(stubs, "find_conflicts", "create_event")
     assert update.message.replied_with("Reminder set")

@@ -12,9 +12,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 import config
 import expense_safety
 from bot.books import cmd_add_book, cmd_add_quote
-from bot.commands import (
-    cmd_budget, cmd_dbs, cmd_diag, cmd_find, cmd_get, cmd_month, cmd_remind,
-)
+from bot.commands import cmd_budget, cmd_dbs, cmd_diag, cmd_find, cmd_get, cmd_month
 from bot.documents import handle_document
 from bot.expenses import (
     AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_undo, cmd_update_expense,
@@ -22,6 +20,7 @@ from bot.expenses import (
 )
 from bot.implement import cmd_implement
 from bot.learn import cmd_learn
+from bot.reminder import cmd_remind
 from budget import budget
 from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
 from observability import record_command, record_error, set_correlation_id, setup_logging
