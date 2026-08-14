@@ -79,6 +79,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
+| `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) and the `Implemented` property name | Sending; un-ticking the checkbox (nothing does) |
 
 `month.py`, `budget.py`, `pkm.py`, `reminder.py` and `notion_ids.py` are still at the
 root and four of them still take `update` — they were out of scope for the layering
@@ -642,9 +643,22 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   you stop reading. The plan message is the checkpoint.
 - **`Learn book` is not de-duplicated.** It has no URL. The equivalent would be a
   title match against `LETTI_ID`, which is a fuzzy-match decision of its own.
-- **The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
-  checkbox described as feeding it; `proactive/__init__.py` lists it as Step 6, with Step 5
-  (takeaway of the week) and Step 7 (tasks). The checkbox is written and never read.
+- ~~**The Learn-nudge job does not exist.** Both Implement paths tick an `Implemented`
+  checkbox described as feeding it; the checkbox is written and never read.~~
+  Resolved: `proactive/learn_nudge.py` reads it weekly (Saturday 10:00) and names the
+  pages you saved over `LEARN_NUDGE_STALE_DAYS` ago and never merged. Step 5
+  (takeaway of the week) and Step 7 (tasks) are still unbuilt. Two things about it
+  are worth keeping straight:
+  - **"Pending" is decided by Notion, in one filter**, not fetched and sieved in
+    Python. So the boundary is Notion's `before`, which is strict — a page exactly
+    N days old is not yet named — and no test can assert that from the builder's
+    output. `test_the_staleness_cutoff_is_now_minus_the_threshold` asserts the
+    REQUEST instead, which is where the behaviour lives.
+  - **A missing `Implemented` column refuses**, which is the OPPOSITE of the
+    `Source URL` asymmetry two paragraphs down, and deliberately so. There the
+    safeguard is optional and refusing costs you the command; here the checkbox
+    is the whole feature, so there is nothing to degrade to — listing everything
+    is noise and listing nothing is indistinguishable from "you are caught up".
 - ~~**`MONTH_ID` is in `REQUIRED_ENV` but `month.py` treats it as an optional seed.**~~
   Resolved: it is in `OPTIONAL_ENV` now, which is what the module reading it always
   meant. Unset, the first run resolves the month from Notion by title.

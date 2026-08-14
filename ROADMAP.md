@@ -35,7 +35,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 | --- | --- | --- |
 | ~~1~~ ✅ | ~~**M1** — One truncation budget per Claude call~~ | Done. Smallest, self-contained, no new surface. Fixed a documented doctrine violation. |
 | ~~2~~ ✅ | ~~**M2** — `compute_budget()` returns `(value, error)`~~ | Done. Blast radius was wider than "contained": eight test files touch `budget()`, because every command-level test doubles it. |
-| 3 | **M3** — The Learn-nudge job | Highest product value. Independent of everything else. |
+| ~~3~~ ✅ | ~~**M3** — The Learn-nudge job~~ | Done. Highest product value. Independent of everything else. |
 | 4 | **M4** — Takeaway of the week | Same shape as M3 — do it while the proactive-builder pattern is fresh. |
 | 5 | **M5** — Split the last four `update`-taking modules | Pure refactor. Unlocks M6. |
 | 6 | **M6** — On-demand calendar: `Agenda`, and cancelling a reminder | Wants `reminder.py` split first (M5). |
@@ -234,7 +234,10 @@ expected to turn that test red, and the row is updated in the same commit.**
 
 ---
 
-# M3 — The Learn-nudge job (proactive Step 6)
+# M3 — The Learn-nudge job (proactive Step 6) ✅ done
+
+_Landed on `learn-nudge`. `PLAN.md` holds the decisions and the guard-revert
+record._
 
 ## Why
 
@@ -257,8 +260,14 @@ side-effect, makes the checkbox mean something.
   A list of forty is the same as no list.
 - **What if the column does not exist?** `clients/notion_client.py:219`
   `database_property_type(db_id, property_name)` already answers this and is
-  cached per database. Follow the `Source URL` asymmetry in `services/learn.py`:
-  the safeguard is optional, so **degrade and say so once**, do not refuse.
+  cached per database. ~~Follow the `Source URL` asymmetry in
+  `services/learn.py`: the safeguard is optional, so **degrade and say so
+  once**, do not refuse.~~ **Decided the other way, and the to-do below already
+  said so:** it REFUSES with an explanatory error. The `Source URL` asymmetry
+  does not transfer, because there the safeguard is optional and refusing costs
+  you the command, whereas here the checkbox IS the feature — there is nothing
+  to degrade to, and both alternatives (list everything, list nothing) are worse
+  than saying why.
   Note the checkbox write at `services/implement.py:883` currently discards
   `update_page`'s `(ok, error)` — if the column is missing, that write has been
   400ing silently on every run. Worth checking your Notion database before
@@ -268,47 +277,62 @@ side-effect, makes the checkbox mean something.
 
 ## To-do
 
-- [ ] `config.py`: nudge day/hour/minute constants (use the named weekday
+- [x] `config.py`: nudge day/hour/minute constants (use the named weekday
       constants — **never a bare integer at a `run_daily` call site**; that is
       how the budget recap ran on the wrong days for months), the staleness
       threshold in days, and the list cap.
-- [ ] New `proactive/learn_nudge.py` with `build_nudge() -> (text, error)`.
+- [x] New `proactive/learn_nudge.py` with `build_nudge() -> (text, error)`.
       Model it on `proactive/budget_watch.py` — a builder never sends.
-- [ ] Query `LEARN_ID` with a compound filter (`Implemented` is `false`,
+- [x] Query `LEARN_ID` with a compound filter (`Implemented` is `false`,
       `created_time` before the cutoff). Use `query_database`, which paginates.
-- [ ] Schema pre-check with `database_property_type`; on absence return
+- [x] Schema pre-check with `database_property_type`; on absence return
       `(None, <explanatory error>)` rather than an empty nudge.
-- [ ] Sort oldest-first and cap the list; name the overflow count.
-- [ ] Register in `proactive/scheduler.register_all` with a `name=` and a
+- [x] Sort oldest-first and cap the list; name the overflow count.
+- [x] Register in `proactive/scheduler.register_all` with a `name=` and a
       `chat_id=`, following the existing five jobs exactly.
-- [ ] Decide Markdown vs plain: page titles are user data and can contain `*`
+- [x] Decide Markdown vs plain: page titles are user data and can contain `*`
       and `_`. Either send plain (like the briefings) or escape every
       interpolated title via `telegram_text.escape_md`.
-- [ ] `README.md` — add the row to the "Scheduled messages" table.
-- [ ] `CLAUDE.md` — the Open-questions entry saying the checkbox has no reader
+- [x] `README.md` — add the row to the "Scheduled messages" table.
+- [x] `CLAUDE.md` — the Open-questions entry saying the checkbox has no reader
       is now false. Strike it through with the reason.
-- [ ] `proactive/__init__.py` — mark Step 6 implemented.
+- [x] `proactive/__init__.py` — mark Step 6 implemented.
 
 ## Tests
 
-- [ ] New `tests/test_learn_nudge.py`:
-  - [ ] Pages older than the threshold with `Implemented` unchecked are listed.
-  - [ ] A page checked as implemented is **never** listed.
-  - [ ] A page newer than the threshold is not listed (the boundary: exactly N
-        days old — decide which side it falls on and assert it).
-  - [ ] Nothing pending → `(None, None)`, i.e. genuinely silent.
-  - [ ] A Notion read failure → `(None, error)`, **not** silence. This is the
+- [x] New `tests/test_learn_nudge.py`:
+  - [x] Pages older than the threshold with `Implemented` unchecked are listed.
+  - [x] A page checked as implemented is **never** listed — asserted on the
+        FILTER, not the output. The sieve runs in Notion, so a fake returns
+        whatever rows it is handed and an output-level assertion would pass
+        against a filter asking for entirely the wrong thing.
+  - [x] A page newer than the threshold is not listed (the boundary: exactly N
+        days old — decide which side it falls on and assert it). Decided:
+        `before` is strict, so exactly N days old is NOT yet named. Same caveat
+        — asserted as the cutoff and the operator sent to Notion, which is the
+        whole of what decides it.
+  - [x] Nothing pending → `(None, None)`, i.e. genuinely silent.
+  - [x] A Notion read failure → `(None, error)`, **not** silence. This is the
         whole point of the `(text, error)` contract; without this test the
         builder repeats the bug M2 exists to fix.
-  - [ ] A missing `Implemented` column reports rather than silently listing
+  - [x] A missing `Implemented` column reports rather than silently listing
         everything or nothing.
-  - [ ] More pending than the cap → the message names the overflow count.
-  - [ ] A page title containing `*` and `_` does not break the send.
-- [ ] `tests/test_scheduler.py` — the job is registered, with the right name and
-      on the right day/time.
-- [ ] `tests/test_layering.py` should pass untouched (`proactive/` is already in
-      the scanned package list) — confirm rather than assume.
-- [ ] Full suite green, `ruff check .` clean.
+  - [x] More pending than the cap → the message names the overflow count.
+  - [x] A page title containing `*` and `_` does not break the send — driven
+        through the real scheduler job, since that is where a `parse_mode` would
+        be added.
+  - [x] Not planned, added: a failed schema read is not reported as a missing
+        column, a column of the wrong TYPE says so, an undated page is still
+        listed rather than shown as "0 days ago", and the cutoff comes from
+        `now_local()` rather than `datetime.now()`.
+- [x] `tests/test_scheduler.py` — the job is registered, with the right name and
+      on the right day/time. `test_every_job_is_registered` asserts the exact set
+      of names, so it fails until the new one is added — by design.
+- [x] `tests/test_layering.py` should pass untouched (`proactive/` is already in
+      the scanned package list) — confirm rather than assume. Confirmed.
+      `tests/test_async_io.py`'s `PROACTIVE_JOBS` table also needed the new job:
+      it is what asserts the builder runs off the event loop.
+- [x] Full suite green (**939 passed**, up from 918), `ruff check .` clean.
 
 ---
 
@@ -607,6 +631,19 @@ Recorded so they are not re-proposed.
 
 # Changelog
 
+- **2026-08-14** — **M3 landed.** Two notes for whoever builds M4, which reads
+  the same database:
+  - **A predicate evaluated by Notion cannot be tested from the builder's
+    output.** "Pending" is one compound filter, so the fake returns whatever
+    rows it is handed and only the REQUEST carries the behaviour. The tests
+    assert the filter body, and the boundary (`before` is strict, so exactly N
+    days old is not yet named) is asserted there too. M4 chooses a page in
+    PYTHON, so its equivalent assertions can be on the output — the difference
+    is worth noticing rather than copying this file's shape blindly.
+  - **The missing-column case refuses rather than degrades**, reversing this
+    file's own recommendation. See M3's decision list for why the `Source URL`
+    asymmetry does not transfer; the short version is that the checkbox is the
+    feature, not a safeguard on it.
 - **2026-08-14** — **M2 landed.** Three things worth carrying forward:
   - **The Sunday recap's failure branch had no test at all.** Found by the
     guard-revert pass: dropping `err` from `david.send_budget_recap` turned

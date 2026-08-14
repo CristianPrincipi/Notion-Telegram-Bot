@@ -21,6 +21,7 @@ PACING    = "budget_pacing"
 WEEKLY    = "budget_recap"
 ROLLOVER  = "month_rollover"
 HEARTBEAT = "heartbeat"
+NUDGE     = "learn_nudge"
 
 CHAT_ID = "-1001234567"
 
@@ -48,7 +49,7 @@ def trigger_fields(job):
 def test_every_job_is_registered(scheduled):
     """The regression this fixes: three of these were previously never attached."""
     assert set(jobs_by_name(scheduled)) == {
-        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT}
+        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT, NUDGE}
 
 
 @pytest.mark.parametrize("name, hour, minute", [
@@ -58,6 +59,7 @@ def test_every_job_is_registered(scheduled):
     (EVENING, 20, 0),
     (WEEKLY, 9, 30),
     (HEARTBEAT, 20, 30),
+    (NUDGE, 10, 0),
 ])
 def test_each_job_fires_at_its_configured_time(scheduled, name, hour, minute):
     assert trigger_fields(jobs_by_name(scheduled)[name]) == (hour, minute)
@@ -252,3 +254,24 @@ def test_the_heartbeat_does_not_collide_with_the_evening_briefing(scheduled):
     jobs = jobs_by_name(scheduled)
 
     assert trigger_fields(jobs[EVENING]) != trigger_fields(jobs[HEARTBEAT])
+
+
+# ─── THE LEARN NUDGE ───────────────────────────────────────────────────────────
+
+def test_the_learn_nudge_runs_weekly_on_saturday(scheduled):
+    """Weekly, for the mirror of the heartbeat's reason: the heartbeat always
+    speaks so daily would be noise, and this one's list barely changes between
+    one day and the next, so daily would be the same noise."""
+    days = str(jobs_by_name(scheduled)[NUDGE].job.trigger.fields[4])
+
+    assert set(days.split(",")) == {"sat"}, f"learn nudge fires on {days}"
+
+
+def test_the_learn_nudge_has_the_saturday_morning_slot_to_itself(scheduled):
+    """test_no_two_jobs_share_a_slot covers collisions in general; this names the
+    slot, so moving the nudge onto an occupied one fails with the reason."""
+    jobs = jobs_by_name(scheduled)
+
+    assert trigger_fields(jobs[NUDGE]) == (10, 0)
+    assert [name for name, job in jobs.items()
+            if trigger_fields(job) == (10, 0)] == [NUDGE]

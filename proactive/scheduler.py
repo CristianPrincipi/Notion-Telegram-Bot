@@ -23,10 +23,12 @@ from config import (
     BUDGET_PACING_HOUR, BUDGET_PACING_MINUTE,
     MONTH_ROLLOVER_HOUR, MONTH_ROLLOVER_MINUTE,
     HEARTBEAT_DAY, HEARTBEAT_HOUR, HEARTBEAT_MINUTE,
+    LEARN_NUDGE_DAY, LEARN_NUDGE_HOUR, LEARN_NUDGE_MINUTE,
 )
 from proactive.briefing import build_morning_briefing, build_evening_briefing
 from proactive.budget_watch import build_pacing_warning
 from proactive.heartbeat import build_heartbeat
+from proactive.learn_nudge import build_nudge
 from proactive.month_rollover import build_rollover_message
 from telegram_text import send
 
@@ -125,6 +127,12 @@ async def _heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
     await _run_job(context, "heartbeat", build_heartbeat)
 
 
+async def _learn_nudge_job(context: ContextTypes.DEFAULT_TYPE):
+    # Plain, like the briefings: every line interpolates a Notion page title,
+    # which is user data and routinely carries _ and *.
+    await _run_job(context, "learn_nudge", build_nudge)
+
+
 def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
@@ -175,5 +183,16 @@ def register_all(application, chat_id):
         name="heartbeat",
     )
 
+    # Weekly, like the heartbeat and for the mirror-image reason: the heartbeat
+    # always speaks, so daily would be noise; this one's list barely changes
+    # between one day and the next, so daily would be the same noise.
+    jq.run_daily(
+        _learn_nudge_job,
+        time=time(hour=LEARN_NUDGE_HOUR, minute=LEARN_NUDGE_MINUTE, tzinfo=_TZ),
+        days=(LEARN_NUDGE_DAY,),
+        chat_id=chat_id,
+        name="learn_nudge",
+    )
+
     logger.info("Proactive jobs registered: morning_briefing, evening_briefing, "
-                "budget_pacing, month_rollover, heartbeat.")
+                "budget_pacing, month_rollover, heartbeat, learn_nudge.")
