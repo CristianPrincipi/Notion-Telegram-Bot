@@ -25,10 +25,11 @@ channel, with the whole suite green.
 
 from functools import partial
 
+import bot.notion_ids
 import bot.pkm
 from bot.long_messages import LIMIT, send_long, split_for_telegram
 from conftest import FakeUpdate, run
-from services import pkm
+from services import notion_ids, pkm
 
 
 # ─── THE SPLITTER ──────────────────────────────────────────────────────────────
@@ -128,3 +129,25 @@ def test_get_splits_the_plain_channel(monkeypatch):
     assert all("parse_mode" not in kwargs for kwargs in body), (
         "the retrieved section was sent as Markdown — it is arbitrary Notion "
         "content and cannot survive it")
+
+
+def test_the_id_diagnostics_split_the_markdown_channel(monkeypatch):
+    """The other binding, and the reason the choice is per-adapter rather than
+    global: this report is David's own markup, and the IDs are in code spans so
+    they are one tap to copy into Railway. Sending it plain would still deliver
+    it — and would quietly cost the thing it is for."""
+    monkeypatch.setattr(notion_ids, "search_all",
+                        lambda query="", only=None: ([
+                            {"object": "database", "id": f"{i:032d}",
+                             "title": [{"plain_text": f"Database {i} " + "long name " * 6}]}
+                            for i in range(200)], None))
+    update = FakeUpdate(text="DBs")
+
+    run(bot.notion_ids.handle_dbs(update))
+
+    assert update.message.replied_with("Database 199"), "the tail of the list never arrived"
+    assert len(update.message.replies) > 3, "the database list went out whole"
+    assert all(len(text) <= LIMIT for text, _ in update.message.replies)
+    listing = [kwargs for text, kwargs in update.message.replies if "Database 199" in text]
+    assert all(kwargs.get("parse_mode") == "Markdown" for kwargs in listing), (
+        f"the ID report lost its Markdown: {listing}")

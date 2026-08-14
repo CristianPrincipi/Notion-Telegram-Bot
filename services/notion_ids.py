@@ -11,19 +11,25 @@ almost always one of:
   • the month page can't be resolved (see month.py and the `Month` command)
 
 None of these are visible from the generic error message. This module asks
-Notion directly and reports the real IDs + schema back to Telegram, so you can
-copy the correct values straight into Railway's environment variables.
+Notion directly and reports the real IDs + schema back, so you can copy the
+correct values straight into Railway's environment variables.
 
-COMMANDS (wired in david.py)
-----------------------------
+COMMANDS (adapters in bot/notion_ids.py, wired in david.py)
+-----------------------------------------------------------
   Diag           full diagnostic: EXPENSES_ID, its schema, and the month page
   Find [query]   search every page/database the integration can see → return IDs
   DBs            list every database the integration can access → name + ID
 
 Everything here is READ-ONLY. Nothing writes to or deletes from Notion.
 
+THE REPORTS GO OUT ON THE MARKDOWN CHANNEL, which is the opposite of `Get` and
+is deliberate: every ID is in a `code span` so it is one tap to copy into
+Railway, and every interpolated value — a database title, a column name, a
+Notion error — is escaped here at the interpolation site. Splitting a long
+report to fit Telegram is the adapter's job; see bot/long_messages.py.
+
 It also runs standalone (prints to logs) if you ever prefer that route:
-  temporarily set the Railway start command to `python notion_ids.py`.
+  temporarily set the Railway start command to `python -m services.notion_ids`.
 """
 
 import os
@@ -31,7 +37,7 @@ import asyncio
 
 from config import EXPENSE_MONTH_RELATION
 from month import canonical_title, current_month_id
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 from clients.notion_client import (
     NOTION_BASE, notion_request, extract_rich_text, get_database, get_page_title,
 )
@@ -266,58 +272,38 @@ def build_diagnostic_report() -> list:
     return blocks
 
 
-# ─── TELEGRAM HANDLERS ─────────────────────────────────────────────────────────
+# ─── THE COMMANDS ──────────────────────────────────────────────────────────────
 
-async def _send_long(update, text: str, parse_mode: str = "Markdown"):
-    """Send text, splitting on newlines to stay under Telegram's 4096-char limit.
-
-    KNOWN LIMITATION, mitigated rather than fixed: the split point is chosen by
-    length, so a long report can be cut between an opening `*` and its closing
-    one, leaving an unbalanced entity in each half. _esc() protects the individual
-    values but cannot protect David's own formatting across a chunk boundary.
-    Going through telegram_text.reply means such a chunk degrades to plain text
-    instead of being dropped.
-    """
-    LIMIT = 3800
-    if len(text) <= LIMIT:
-        await reply(update, text, parse_mode=parse_mode)
-        return
-    chunk = ""
-    for line in text.split("\n"):
-        if len(chunk) + len(line) + 1 > LIMIT and chunk:
-            await reply(update, chunk.rstrip("\n"), parse_mode=parse_mode)
-            chunk = ""
-        chunk += line + "\n"
-    if chunk.strip():
-        await reply(update, chunk.rstrip("\n"), parse_mode=parse_mode)
-
-
-async def handle_diag(update):
+async def run_diag(*, notify, notify_md=None) -> None:
     """`Diag` — full read-only diagnostic of the expense/budget Notion wiring."""
-    await update.message.reply_text("🩺 Running Notion diagnostic — a few API calls, one moment…")
+    notify_md = notify_md or notify
+
+    await notify("🩺 Running Notion diagnostic — a few API calls, one moment…")
     try:
         blocks = await asyncio.to_thread(build_diagnostic_report)
     except Exception as e:
-        await update.message.reply_text(f"❌ Diagnostic crashed: {type(e).__name__}: {e}")
+        await notify(f"❌ Diagnostic crashed: {type(e).__name__}: {e}")
         return
     for block in blocks:
-        await _send_long(update, block)
+        await notify_md(block)
 
 
-async def handle_find(update, query: str):
+async def run_find(query: str, *, notify, notify_md=None) -> None:
     """`Find [query]` — search pages + databases by name, return their IDs."""
+    notify_md = notify_md or notify
+
     query = (query or "").strip()
     if not query:
-        await reply(update, "Usage: `Find [name]`\ne.g. `Find July` or `Find Expenses`")
+        await notify_md("Usage: `Find [name]`\ne.g. `Find July` or `Find Expenses`")
         return
 
-    await update.message.reply_text(f"🔍 Searching Notion for “{query}”…")
+    await notify(f"🔍 Searching Notion for “{query}”…")
     results, err = await asyncio.to_thread(search_all, query)
     if err:
-        await update.message.reply_text(f"❌ Search failed: {err}")
+        await notify(f"❌ Search failed: {err}")
         return
     if not results:
-        await update.message.reply_text(
+        await notify(
             f"No page or database matching “{query}”.\n"
             "If you expected one, it may not be shared with your integration."
         )
@@ -331,18 +317,20 @@ async def handle_find(update, query: str):
         else:
             lines.append(f"📄 {_esc(get_page_title(obj))}  _(page)_")
         lines.append(f"  `{oid}`")
-    await _send_long(update, "\n".join(lines))
+    await notify_md("\n".join(lines))
 
 
-async def handle_dbs(update):
+async def run_dbs(*, notify, notify_md=None) -> None:
     """`DBs` — list every database the integration can access, with IDs."""
-    await update.message.reply_text("🔍 Listing databases your integration can access…")
+    notify_md = notify_md or notify
+
+    await notify("🔍 Listing databases your integration can access…")
     dbs, err = await asyncio.to_thread(search_all, "", "database")
     if err:
-        await update.message.reply_text(f"❌ Search failed: {err}")
+        await notify(f"❌ Search failed: {err}")
         return
     if not dbs:
-        await update.message.reply_text(
+        await notify(
             "⚠️ Your integration can't see any databases.\n"
             "In Notion, open each database → ••• → Connections → add your integration."
         )
@@ -352,7 +340,7 @@ async def handle_dbs(update):
     for db in dbs:
         lines.append(f"• {_esc(db_title(db))}")
         lines.append(f"  `{_short(db.get('id', ''))}`")
-    await _send_long(update, "\n".join(lines))
+    await notify_md("\n".join(lines))
 
 
 # ─── STANDALONE FALLBACK (prints to Railway logs) ─────────────────────────────

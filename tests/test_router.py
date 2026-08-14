@@ -40,6 +40,7 @@ import pytest
 import bot.commands
 import bot.implement
 import bot.learn
+import bot.notion_ids
 import bot.pkm
 import bot.reminder
 import david
@@ -108,10 +109,10 @@ SPY_TARGETS = [
 
 SPY_HOMES = {
     "budget":               bot.commands,
-    "handle_diag":          bot.commands,
-    "handle_dbs":           bot.commands,
+    "handle_diag":          bot.notion_ids,
+    "handle_dbs":           bot.notion_ids,
     "handle_month":         bot.commands,
-    "handle_find":          bot.commands,
+    "handle_find":          bot.notion_ids,
     "handle_get":           bot.pkm,
     "handle_remind":        bot.reminder,
     "handle_learn":         bot.learn,

@@ -91,15 +91,15 @@ module: a shorthand resolved in the regex is a date rule nothing can unit-test.
 
 ## Milestone 3: `notion_ids.py`
 
-- [ ] `services/notion_ids.py` — `run_diag`, `run_find(query)`, `run_dbs`, plus
+- [x] `services/notion_ids.py` — `run_diag`, `run_find(query)`, `run_dbs`, plus
       the already-pure `search_all` / `list_db_pages` / `build_diagnostic_report`
       and the `__main__` block.
-- [ ] `bot/notion_ids.py` — the three adapters, binding `notify_md` through
+- [x] `bot/notion_ids.py` — the three adapters, binding `notify_md` through
       `send_long` (the Markdown channel is the one that splits here).
-- [ ] `ruff.toml` per-file-ignore repointed to `services/notion_ids.py`.
-- [ ] `david.py`, `tests/test_router.py` retargeted.
-- [ ] A test driving `run_dbs` / `run_find` with a list's `append` and no Update.
-- [ ] Suite green, `ruff check .` clean.
+- [x] `ruff.toml` per-file-ignore repointed to `services/notion_ids.py`.
+- [x] `david.py`, `tests/test_router.py` retargeted.
+- [x] A test driving `run_dbs` / `run_find` with a list's `append` and no Update.
+- [x] Suite green, `ruff check .` clean.
 
 ## Milestone 4: `month.py`
 
