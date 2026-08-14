@@ -188,6 +188,32 @@ ANTHROPIC_MAX_TOKENS = 8192    # output cap. Stays well under the ~16k above whi
 # thing from a thin Manual entry you discover months later.
 SUMMARY_INPUT_CHARS = 100_000
 
+# INPUT caps for the two Implement paths: how much of the SOURCE page one merge
+# may be given. Separate from SUMMARY_INPUT_CHARS above, and not one number
+# shared between them, because each bounds a different input:
+#
+#   MANUAL_SOURCE_CHARS   the Learn page's text, in the flat-Manual prompts
+#                         (services/implement.py: route, merge, first-run build)
+#   DIET_SUMMARY_CHARS    the Learn page's text, in the Diet toggle-tree prompts
+#                         (services/implement_diet.py: route, merge)
+#
+# They are lower than SUMMARY_INPUT_CHARS because these prompts are not only
+# source text: each also carries the current content of every section being
+# merged into, and that half is sent WHOLE (Hard Rule 3 — a section is sent
+# entire or not at all, because the merge's reply replaces what is on the page).
+#
+# Each of these was five anonymous literals — `source_text[:60000]` at three
+# call sites and `summary_text[:50000]` at two — so a long Learn page merged into
+# a Manual from its first 60k characters and the reply read exactly like a full
+# merge. Same defect as the extractor/summariser pair documented above, one layer
+# along. services.implement.fit_to_budget is now the only place either cut
+# happens, it logs the pre-truncation length at WARNING, and it says so in the
+# reply. The prompt builders must NOT re-slice: with a cap at both ends, a source
+# of exactly the budget and one cut down to it are the same string, and the
+# warning stops being reliable at its own boundary.
+MANUAL_SOURCE_CHARS = 60_000
+DIET_SUMMARY_CHARS  = 50_000
+
 # Retries on 429 / 5xx / 529 and network errors, with exponential backoff. The
 # Notion client has had this for ages; the Anthropic calls did not, so a single
 # rate-limit response after two minutes of transcript fetching threw the whole

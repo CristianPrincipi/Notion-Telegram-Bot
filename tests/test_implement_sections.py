@@ -22,9 +22,11 @@ Claude is stubbed throughout; `tests/test_anthropic_client.py` covers the call
 itself.
 """
 
+import logging
+
 import pytest
 
-from config import UNVERIFIED_MARKER
+from config import MANUAL_SOURCE_CHARS, UNVERIFIED_MARKER, UNVERIFIED_NOTE
 from services import implement
 from conftest import FakeUpdate, run, with_update, written_nothing, written_ok
 
@@ -93,6 +95,7 @@ def manual(monkeypatch):
         "append_written": written_nothing(),
         "recorded": [],           # [(source_title, unverified)] per ledger write
         "source_text": "SOURCE BODY",
+        "merge_source": None,     # what the merge call was given as the SOURCE
     }
 
     def get_children(page_id):
@@ -108,6 +111,7 @@ def manual(monkeypatch):
 
     def merge_sections(targets, source_text, source_title, unverified=False):
         state["merge_targets"] = [dict(t) for t in targets]
+        state["merge_source"] = source_text
         state["merge_unverified"] = unverified
         return {"updates": state["updates"]}, None
 
@@ -505,6 +509,156 @@ def test_the_ledger_creates_its_own_section_when_there_is_none(ledger):
     entry = ledger["writes"][-1]
     assert entry["types"] == ["heading_2", "bulleted_list_item"]
     assert "Sources" in entry["texts"][0]
+
+
+# ─── 8. ONE INPUT BUDGET, APPLIED ONCE, OUT LOUD ───────────────────────────────
+# The source half of both prompts used to be sliced at the call site — three
+# `source_text[:60000]` in this module, two `summary_text[:50000]` in the Diet
+# one, none of them related to any named constant and none of them mentioned in
+# the reply. So a long Learn page merged into a Manual from its first 60k
+# characters and the run reported a clean success. Same defect as the
+# extractor/summariser pair that SUMMARY_INPUT_CHARS exists for, one layer along:
+# what you get is a thin Manual entry months later with no way to tell which
+# entries were affected.
+#
+# Two properties, and they need separate tests because either alone is passable
+# with the bug still present: the cut happens ONCE (here), and the builders do
+# not cut again (below, against the real functions).
+
+
+def source_text_of(state) -> str:
+    """The text run_implement will actually see for the fixture's source page.
+
+    Not the same string as state["source_text"]: blocks_to_text decorates each
+    block ("- " for a bullet), and the boundary tests below are only meaningful
+    if they are exact about the value the cap is compared against.
+    """
+    return implement.blocks_to_text([leaf("src-1", state["source_text"])])
+
+
+def set_source_length(state, length: int) -> str:
+    """Make the source page produce exactly `length` characters of text."""
+    state["source_text"] = "x" * length
+    state["source_text"] = "x" * (2 * length - len(source_text_of(state)))
+    assert len(source_text_of(state)) == length
+    return source_text_of(state)
+
+
+def test_an_oversized_source_reaches_both_calls_already_at_the_cap(manual):
+    """THE ONE THAT SAYS THE CUT HAPPENED, AND WHERE."""
+    set_source_length(manual, MANUAL_SOURCE_CHARS + 5_000)
+
+    implement_it()
+
+    assert len(manual["route_prompt"]["source"]) == MANUAL_SOURCE_CHARS
+    assert len(manual["merge_source"]) == MANUAL_SOURCE_CHARS
+
+
+def test_the_prompt_builders_do_not_cut_again(monkeypatch):
+    """THE ONE THAT SAYS THE SECOND CAP IS GONE.
+
+    Not lowered, not moved — gone. Driven against the real builders with only
+    Anthropic stubbed, because a cap at both ends makes a source of exactly the
+    budget and one cut down to it the same string, and the truncation warning
+    becomes unreliable at exactly its own boundary. That is the property the
+    `run_learn` copy of this rule is written for, and it applies here unchanged.
+    """
+    prompts = []
+    monkeypatch.setattr(implement, "complete_json",
+                        lambda system, user, schema, **kw: (prompts.append(user), ({}, None))[1])
+
+    oversized = "x" * (MANUAL_SOURCE_CHARS + 5_000)
+    implement.route_sections(["Perfect Process"], oversized, "T")
+    implement.merge_sections([{"path": "Perfect Process", "style": "bullet", "text": "now"}],
+                             oversized, "T")
+    implement.build_manual(oversized, "Brain — T", "T")
+
+    for name, prompt in zip(["route_sections", "merge_sections", "build_manual"], prompts):
+        assert prompt.count("x") == len(oversized), (
+            f"{name} sliced its source again: it carried {prompt.count('x')} of "
+            f"{len(oversized)} characters")
+
+
+def test_the_reply_says_the_source_was_truncated(manual):
+    """A partial merge you are told about is a different object from one you find
+    months later. The reply is the only place you can be told at the time."""
+    set_source_length(manual, MANUAL_SOURCE_CHARS + 5_000)
+
+    update = implement_it()
+
+    assert update.message.replied_with("merging from the first"), (
+        f"nothing said the source was cut: {update.message.reply_texts}")
+    assert update.message.replied_with(f"{MANUAL_SOURCE_CHARS + 5_000:,}"), (
+        "the warning did not say how long the source actually was")
+
+
+def test_a_source_within_budget_is_never_reported_as_truncated(manual):
+    """The mirror. A warning that always fires is not a warning."""
+    update = implement_it()
+
+    assert not update.message.replied_with("merging from the first"), (
+        f"a short source was reported as truncated: {update.message.reply_texts}")
+
+
+def test_a_source_of_exactly_the_budget_is_not_truncated(manual):
+    """THE BOUNDARY — of the WARNING, and only of the warning.
+
+    Be precise about what this does not do: it does NOT prove the second cap is
+    gone. A builder slicing at the same number the caller cut to is a no-op, so
+    this stays green with `[:60000]` put back — verified by doing exactly that.
+    `test_the_prompt_builders_do_not_cut_again` is the one that sees it, because
+    it drives the builders with text the caller never cut.
+
+    What it guards is the thing that made the old bug undetectable from the
+    outside: at the boundary, "a source of exactly the budget" and "a source cut
+    down to it" are the same string, so a warning that fires here would be
+    indistinguishable from one that fires correctly.
+    """
+    set_source_length(manual, MANUAL_SOURCE_CHARS)
+
+    update = implement_it()
+
+    assert len(manual["merge_source"]) == MANUAL_SOURCE_CHARS
+    assert not update.message.replied_with("merging from the first"), (
+        f"a source of exactly the budget was called partial: "
+        f"{update.message.reply_texts}")
+
+
+def test_the_cut_is_logged_with_the_length_before_it(manual, caplog):
+    """The reply scrolls away; the log is what is left afterwards, and the
+    pre-truncation length is the only number that says how much was lost."""
+    set_source_length(manual, MANUAL_SOURCE_CHARS + 5_000)
+
+    with caplog.at_level(logging.WARNING, logger="services.implement"):
+        implement_it()
+
+    cuts = [r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING and "cut to" in r.getMessage()]
+    assert cuts, "the truncation was not logged at WARNING"
+    assert str(MANUAL_SOURCE_CHARS + 5_000) in cuts[0], (
+        f"the log line does not carry the length before the cut: {cuts[0]}")
+
+
+def test_the_unverified_marker_survives_the_cut(manual):
+    """If truncation could drop the marker it would silently disarm the
+    additions-only rule on exactly the long recollections that most need it.
+
+    It cannot, because Learn writes the callout as the FIRST block of the page —
+    above the TL;DR — so a head-slice always keeps it. That is a property of the
+    two modules agreeing, which is why it is asserted here rather than assumed
+    from reading one of them.
+    """
+    manual["source_text"] = UNVERIFIED_NOTE + "\n" + "x" * (MANUAL_SOURCE_CHARS + 5_000)
+
+    update = implement_it()
+
+    assert len(manual["merge_source"]) == MANUAL_SOURCE_CHARS
+    assert UNVERIFIED_MARKER in manual["merge_source"], "the cut dropped the marker"
+    assert manual["merge_unverified"] is True, "the merge was not told the source is unverified"
+    # And the rule it arms still engages: the default updates drop
+    # "Prime the material", which an unverified source may not do.
+    assert update.message.replied_with("Held back")
+    assert manual["deletes"] == []
 
 
 def test_the_ledger_only_ever_appends(ledger):

@@ -26,6 +26,7 @@ cheaper, it is broken.
 
 import pytest
 
+from config import DIET_SUMMARY_CHARS, UNVERIFIED_MARKER, UNVERIFIED_NOTE
 from services import implement_diet
 from conftest import FakeUpdate, run, with_update
 
@@ -211,6 +212,139 @@ def test_every_routed_section_survives_into_the_merge_and_the_write(diet, writes
         f"routed {MULTI} but wrote {[u['path'] for u in writes]}")
     # "*3*" — the count is bold in the Markdown David actually sends.
     assert update.message.replied_with("*3* of 3 routed section(s) modified")
+
+
+# ─── ONE INPUT BUDGET, APPLIED ONCE, OUT LOUD ──────────────────────────────────
+# Both prompt builders used to slice the summary at `[:50000]` — a number related
+# to nothing, mentioned nowhere, and duplicated. A long Learn page merged into
+# the Diet tree from its first 50k characters and the run reported a clean
+# success. run_implement_diet now cuts once, to DIET_SUMMARY_CHARS, and says so.
+#
+# Anthropic is stubbed here rather than the builders, so these assertions run
+# against the REAL prompts: a cap left at a call site would show up as a shorter
+# summary in the captured text, which is precisely what a fixture that stubbed
+# route_sections could not see.
+
+
+def _summary_in(prompt: str) -> str:
+    """The SOURCE half of a prompt — everything after the summary header."""
+    return prompt.split("=== SUMMARY: ", 1)[1].split(" ===\n", 1)[1]
+
+
+def long_summary(monkeypatch, length: int, prefix: str = "") -> None:
+    """Point the fixture's summary page at a body of exactly `length` characters.
+
+    Measured through blocks_to_text rather than assumed, because it decorates
+    each block ("- " for a bullet) and these are boundary assertions.
+    """
+    def body_of(text):
+        return [bullet("s-1", text)]
+
+    # Probed with one character rather than none: blocks_to_text SKIPS an empty
+    # block, so measuring against "" reads the decoration as zero.
+    overhead = len(implement_diet.blocks_to_text(body_of("y"))) - 1
+    blocks = body_of(prefix + "x" * (length - len(prefix) - overhead))
+    assert len(implement_diet.blocks_to_text(blocks)) == length
+
+    pages = dict(PAGE, **{"summary-1": blocks})
+    monkeypatch.setattr(implement_diet, "get_children",
+                        lambda block_id: (list(pages.get(block_id, [])), None))
+
+
+def test_an_oversized_summary_is_cut_once_and_neither_prompt_cuts_again(diet, writes):
+    """THE ONE THAT SAYS THERE IS ONE CAP AND WHERE IT IS.
+
+    Both prompts carry exactly the budget: shorter would mean a second slice
+    survived at a call site, longer would mean the cut never happened.
+    """
+    long_summary(diet, DIET_SUMMARY_CHARS + 5_000)
+    claude = Claude()
+    drive(claude, diet)
+
+    assert len(_summary_in(claude.route_prompt)) == DIET_SUMMARY_CHARS
+    assert len(_summary_in(claude.merge_prompt)) == DIET_SUMMARY_CHARS
+
+
+def test_the_prompt_builders_do_not_cut_again(monkeypatch):
+    """THE ONLY TEST THAT CAN SEE A SECOND CAP, so it is worth saying why.
+
+    Once run_implement_diet cuts to DIET_SUMMARY_CHARS, a builder slicing at the
+    same number is a no-op — every end-to-end assertion above passes with both
+    caps in place. Found exactly that way: `[:50000]` was put back into
+    merge_sections and the whole file stayed green.
+
+    So the builders are driven DIRECTLY, with a summary that never went through
+    the caller's cut. That is what makes the difference visible, and it is why
+    the rule is "the caller owns the cap" rather than "cap it somewhere".
+    """
+    prompts = []
+    monkeypatch.setattr(implement_diet, "complete_json",
+                        lambda system, user, schema=None, **kw:
+                            (prompts.append(user), ({}, None))[1])
+
+    oversized = "x" * (DIET_SUMMARY_CHARS + 5_000)
+    implement_diet.route_sections(["Goals>Fat Loss>Strategies"], oversized, "T")
+    implement_diet.merge_sections({"Goals>Fat Loss>Strategies": "now"}, oversized, "T")
+
+    for name, prompt in zip(["route_sections", "merge_sections"], prompts):
+        assert prompt.count("x") == len(oversized), (
+            f"{name} sliced its summary again: it carried {prompt.count('x')} of "
+            f"{len(oversized)} characters")
+
+
+def test_the_reply_says_the_summary_was_truncated(diet, writes):
+    """A partial merge you are told about is a different object from one you find
+    months later."""
+    long_summary(diet, DIET_SUMMARY_CHARS + 5_000)
+    update = drive(Claude(), diet)
+
+    assert update.message.replied_with("merging from the first"), (
+        f"nothing said the summary was cut: {update.message.reply_texts}")
+    assert update.message.replied_with(f"{DIET_SUMMARY_CHARS + 5_000:,}"), (
+        "the warning did not say how long the summary actually was")
+
+
+def test_a_summary_within_budget_is_never_reported_as_truncated(diet, writes):
+    """The mirror. A warning that always fires is not a warning."""
+    update = drive(Claude(), diet)
+
+    assert not update.message.replied_with("merging from the first"), (
+        f"a short summary was reported as truncated: {update.message.reply_texts}")
+
+
+def test_a_summary_of_exactly_the_budget_is_not_truncated(diet, writes):
+    """THE BOUNDARY — of the WARNING, and only of the warning.
+
+    It does NOT prove the second cap is gone: a builder slicing at the number
+    the caller already cut to is a no-op, and this stays green with `[:50000]`
+    put back. `test_the_prompt_builders_do_not_cut_again` above is the one that
+    sees that. What this guards is that a summary exactly at the budget is not
+    announced as partial — at the boundary, a source of the budget and one cut
+    down to it are the same string, so a warning firing here says nothing.
+    """
+    long_summary(diet, DIET_SUMMARY_CHARS)
+    claude = Claude()
+    update = drive(claude, diet)
+
+    assert len(_summary_in(claude.merge_prompt)) == DIET_SUMMARY_CHARS
+    assert not update.message.replied_with("merging from the first"), (
+        f"a summary of exactly the budget was called partial: "
+        f"{update.message.reply_texts}")
+
+
+def test_the_unverified_marker_survives_the_cut(diet, writes):
+    """The cut runs before is_unverified_source, so it could disarm the warning
+    on exactly the long recollections that most need it. It does not, because
+    Learn writes the marker as the FIRST block of the page — a property of two
+    modules agreeing, which is why it is asserted rather than read."""
+    long_summary(diet, DIET_SUMMARY_CHARS + 5_000, prefix=UNVERIFIED_NOTE + " ")
+    claude = Claude()
+    update = drive(claude, diet)
+
+    assert UNVERIFIED_MARKER in _summary_in(claude.merge_prompt), "the cut dropped the marker"
+    assert update.message.replied_with("Unverified source"), (
+        f"the plan did not say the summary is a recollection: "
+        f"{update.message.reply_texts}")
 
 
 def test_sections_that_were_not_routed_are_never_fetched_or_sent(diet, writes):

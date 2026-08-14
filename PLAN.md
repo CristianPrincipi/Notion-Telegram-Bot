@@ -1,204 +1,230 @@
-# Plan: `Remind` gets two shorthands — `td` for today, `tr` for tomorrow
+# Plan: M1 — one truncation budget per Claude call (the Implement paths)
 
-_Last updated: 2026-08-11_
+_Last updated: 2026-08-14_
 
-Branch: `remind-td-tr`, off `main` at `a3aa627`.
-Baseline before any change: **873 passed**, `ruff check .` clean.
+Branch: `implement-one-budget`, off `main` at `cba66a0`.
+Baseline before any change: **900 passed**, `ruff check .` clean.
 
-`t` currently means tomorrow. It is the only one-letter date token, which is what
-makes it a bad one: there is no room for today next to it, and the letter itself
-does not say which day it picked. The command grows a matched pair instead —
-`td` today, `tr` tomorrow — and `t` is retired.
+`CLAUDE.md`: *"A budget belongs to whatever consumes it, and there is one of it."*
+Learn obeys it. Implement does not, five times over, with three different numbers
+and no comment at any of them:
 
-Two decisions were taken before writing this, both in the direction the rest of
-this command already leans (refuse rather than resolve):
+| Site | Slice |
+| --- | --- |
+| `services/implement.py:331` — `route_sections` | `source_text[:60000]` |
+| `services/implement.py:404` — `merge_sections` | `source_text[:60000]` |
+| `services/implement.py:641` — `build_manual` | `source_text[:60000]` |
+| `services/implement_diet.py:367` — routing | `summary_text[:50000]` |
+| `services/implement_diet.py:432` — merge | `summary_text[:50000]` |
 
-1. **`t` is refused BY NAME, not dropped from the grammar.** It stays a legal
-   token in `REMIND_PATTERN` and `parse_date_time` refuses it with a message
-   naming both replacements. Dropping it from the pattern would produce the
-   generic usage message, which does not say why the thing you have always typed
-   stopped working — and the one outcome that must be impossible is `t` quietly
-   meaning a different day than it used to.
-2. **`td` with a time already past today is refused.** `t` could never name a
-   past moment; `td` can. A calendar event in the past pings nothing — Google's
-   1-hour alert is gone and the morning poll has already run — so booking it is a
-   silent no-op confirmed as "Reminder set!". That is the exact shape of the bug
-   `PAST_GRACE` exists for, one token over.
+So a long Learn page is merged into a Manual from its first 60k characters (50k
+on the Diet path) and the reply reads exactly like a full merge. Same shape as
+the extractor/summariser bug that is already documented as the reason the rule
+exists — you find out from a thin Manual entry months later, with no way to tell
+which entries were affected.
 
-The split the command is built on is kept: **`REMIND_PATTERN` decides which
-tokens are legal, `parse_date_time` decides what they mean.** Both refusals above
-are meanings, so both live in `clients/calendar_client.py`.
+## Decisions taken before writing code
 
-## Milestone 1: The meaning layer — `clients/calendar_client.py`
+**1. Two constants, one per path, each named for the input it bounds:
+`MANUAL_SOURCE_CHARS = 60_000` and `DIET_SUMMARY_CHARS = 50_000`.**
+Per-path rather than unified, and named for the input rather than for the
+milestone, so a second budget on either path can be added beside its sibling
+instead of overloading a shared number.
 
-- [x] Replace `TOMORROW_TOKENS = {"t", "tomorrow"}` with three sets:
-      `TODAY_TOKENS = {"td", "today"}`, `TOMORROW_TOKENS = {"tr", "tomorrow"}`,
-      `RETIRED_TOKENS = {"t"}`. The long forms stay — a shorthand nobody
-      remembers is worse than none, which is why `tomorrow` was accepted already.
-- [x] `parse_date_time`: refuse `RETIRED_TOKENS` first, before any date maths.
-      The message names both replacements and echoes the time that was typed
-      (`Use `tr 10` for tomorrow or `td 10` for today`) — it cannot name the
-      appointment, because `parse_date_time` is not given it and passing the name
-      down would be a handler concern leaking into the date rules.
-      **Refused before `_parse_clock` too**, which was not in the plan: with a bad
-      time as well, `t` is the thing to fix either way, and a message about the
-      time sends the reader after the wrong problem.
-- [x] `TODAY_TOKENS` branch: build today's date, `_localize` it (so a DST-broken
-      hour is still refused, and refused for the DST reason rather than as
-      "past"), then refuse if the result is **strictly** before `now`.
-- [x] The past-today refusal names the resolved date, the time asked for and the
-      time it is now, and offers both escapes: `tr` for tomorrow, or an explicit
-      year (`06.08.2026`) to record something that already happened — an explicit
-      year is already taken at face value, past or not, so the escape exists.
-- [x] `dt == now` is NOT past. The boundary is asserted rather than left to luck.
-- [x] The `TOMORROW_TOKENS` branch keeps its current behaviour unchanged, and its
-      comment keeps saying why it needs no past check: tomorrow is a future
-      calendar day by construction.
-- [x] Update the three comments that name `t`: the token block above
-      `TOMORROW_TOKENS`, `_localize`'s note on why a refusal names the date rather
-      than the token, and `parse_date_time`'s docstring table of accepted forms.
-- [x] The `Invalid date format` message (thrown for an unparseable `DD.MM`) still
-      ends with "or `t` for tomorrow" — retarget it to `td`/`tr`.
+Both are **separate from `SUMMARY_INPUT_CHARS`** and stay separate: that budget
+covers a prompt that is nothing but source text, these cover prompts that also
+carry the sections being merged into.
 
-## Milestone 2: The token layer — `reminder.py`
+**1b. `MANUAL_EXISTING_CHARS` / `DIET_TREE_CHARS` are NOT added, because there is
+nothing to name.** The accumulating inputs were the right thing to look for —
+they are the ones that grow without bound — but both caps were removed by the
+sectioning work and survive only as prose about the code that was deleted:
 
-- [x] `REMIND_PATTERN`'s date group becomes
-      `tomorrow|today|tr|td|t|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?`, longest-first.
-      ~~and a test pins every token rather than trusting that~~ — the test exists
-      and passes, but the ORDER turned out not to be what makes it pass. See
-      `## Changelog`; the comment now says so rather than claiming a guard.
-- [x] The existing `(?![\w.])` lookahead is left exactly as it is — it already
-      covers the new tokens (`td4` fails it the same way `t4` does). Verified by
-      removal, with a test named for the new tokens, because a guard that only
-      has a test for the token it was written against is half a guard.
-- [x] Rewrite the pattern's comment block: it currently explains `t`, and the
-      parenthetical about "today" being rejected by luck rather than design is now
-      wrong — `today` is a legal token.
-- [x] The usage message (`handle_remind`'s no-match reply) advertises `td` and
-      `tr` with an example of each.
-- [x] Module docstring examples updated.
+| Reference | What it is |
+| --- | --- |
+| `services/implement.py:12` | module docstring, "It **used to** send the ENTIRE Manual… truncated at 40k on the way IN" |
+| `services/implement_diet.py:296` | comment, "`decide_updates` **used to** send CURRENT_TREE… sliced at `[:30000]`" |
+| `tests/test_implement_sections.py:12`, `:343` | test docstrings naming the old cap |
 
-## Milestone 3: The generated help — `david.py`
+`grep -rn "\[:[0-9_]\{4,\}\]"` over the repo returns five live slices: the three
+`source_text[:60000]` and two `summary_text[:50000]` this milestone removes, plus
+`[:2000]` on Notion rich-text and title fields, which is a Notion API limit, not
+a budget. `test_a_huge_manual_does_not_get_its_tail_dropped`
+(`tests/test_implement_sections.py:342`) drives a 60,000-character section
+through the real path and asserts it arrives whole — that test is the proof the
+40k cap is gone, and it passes at HEAD.
 
-- [x] The `Remind` `Help` entry: usage lines gain `Remind [Name] td [HH]` and
-      `Remind [Name] tr [HH]` in place of `Remind [Name] t [HH]`; the notes say
-      `td` is today, `tr` is tomorrow, that the words work too, and that a past
-      time today is refused rather than booked.
-- [x] Help is generated from `COMMANDS`, so this is the only place the advertised
-      forms live — and `test_the_help_advertises_only_date_forms_the_parser_accepts`
-      runs them through the real pattern and parser.
+**Adding those two caps back would be a regression, not a safeguard.** Existing
+content is sent whole or not at all (Hard Rule 3), and the merge returns the FULL
+merged content for each section, which *replaces* what is on the page. So a
+section clipped on the way in comes back short on the way out, and the tail is
+deleted from Notion — strictly worse than the source-side bug this milestone
+fixes, because the source-side one only degrades a summary while this one
+destroys the record. If a defensive ceiling is wanted there it has to refuse the
+run, not clip the input, and that is its own decision. Left open below.
 
-## Milestone 4: Tests — `tests/test_reminder_dates.py`
+**1c. A truncation logs at WARNING with the pre-truncation length.** `run_learn`
+logs its cut at INFO; INFO is the wrong level for "this answer was built from
+part of the input", and the length before the cut is the only number that says
+how much was lost. Both cut sites log
+`WARNING … source is N chars, cut to M` and both say it in the reply as well —
+the log is for afterwards, the reply is for now.
 
-**Retargeted (existing coverage, `t` → `tr`)** — these are not new guarantees,
-they are the same ones under the new token, so they move rather than multiply:
+**2. One cut per run, at the top, before anything reads the text.**
+`run_implement` (`services/implement.py:844`) and `run_implement_diet`
+(`services/implement_diet.py:627`) each call `blocks_to_text` once. Cut there —
+and specifically **before `is_unverified_source`**, so the predicate sees exactly
+the string the model will see. The three prompt builders must then NOT re-slice,
+for the reason `config.py` already gives for extractors: if both the caller and
+the callee cap, a source of exactly the budget and one cut down to it are the
+same string, and the warning becomes unreliable at its own boundary.
 
-- [x] The eleven tests naming `t`: the bare-hour form, the accepted-forms table,
-      the multi-word name, the space requirement, the run-together time, the
-      no-time case, the out-of-range hour, both DST cases, the never-in-the-past
-      case, and both confirmation tests.
-- [x] `test_today_does_not_silently_become_tomorrow` is **rewritten, not deleted**.
-      Its subject — "today" must never resolve to tomorrow — is now enforced by
-      the alternation rather than by the accident it documented, and that is worth
-      more coverage, not less. It becomes an assertion that `today` and `td`
-      resolve to TODAY.
-- [x] `test_the_help_advertises_only_date_forms_the_parser_accepts` freezes at
-      06:00 rather than 10:00. With `td [HH]` advertised and `[HH]` filled as
-      `10`, a 10:00 clock makes the example land exactly on `now` — it would pass,
-      on the boundary, for a reason unrelated to what the test is for.
+**3. The cut and its wording live in ONE function, used by both paths.**
+`fit_to_budget(text, cap, *, label) -> (text, warning | None)` — synchronous and
+pure, so it is directly testable, with the caller doing the `await notify(...)`
+and the function doing the WARNING log. Defined in
+`services/implement.py` and imported by `services/implement_diet.py` (safe: the
+dependency already runs the other way and lazily, `implement.py:813`). Two copies
+of a warning string is how one of them gets reworded and the other does not.
 
-**New coverage:**
+Explicitly NOT in scope: unifying it with `run_learn`'s copy of the same shape.
+That is a third budget for a different consumer, and folding it in means editing
+the one path this milestone exists to leave alone.
 
-- [x] `td` / `today` book today at the hour given.
-- [x] `tr` / `tomorrow` book tomorrow — one parametrized test over all four live
-      tokens asserting the day each names. ~~This is the alternation-order
-      guard.~~ It is not; see `## Changelog`. It stays as the guard on the
-      OUTCOME, which is the property that has to survive a rearrangement.
-- [x] `td` with a time already past is refused: nothing is booked, the message
-      names the current time and offers `tr`.
-- [x] `td` for a time still ahead today is accepted.
-- [x] `dt == now` is not refused (the boundary, mirroring the `PAST_GRACE` one).
-- [x] A bare `t` is refused by name, and the message names BOTH `td` and `tr` —
-      a message naming only one would be a nudge toward a specific day.
-- [x] A bare `t` never reaches `create_event`, driven end-to-end through
-      `handle_remind`.
-- [x] `td4` / `tr4` inside a name do not become the date (the lookahead, under
-      the new tokens).
-- [x] `td` is DST-checked, and the DST refusal wins over the past refusal when
-      both apply — the ordering is a decision, so it is asserted.
-- [x] A `td` refusal names the resolved date, not the raw token.
-- [x] The confirmation spells out today's weekday and date for `td`.
-- [x] Two not in the original plan, both from writing the revert script: `t` is
-      refused before the clock is parsed (an ordering decision that needed
-      pinning), and a past `td` does not roll to next year (`PAST_GRACE` must not
-      reach this path — rolling it would be the original bug with a new token).
-- [x] **Guard-revert pass**: 12 guards reverted one at a time, each run against
-      the test named for it. 11 went red. The 2 that did not are in
-      `## Changelog` — one was a weak assertion and is fixed, one was never a
-      guard and is now labelled as such in the pattern's comment.
+**4. The marker survives the cut — confirm, then assert.**
+`config.UNVERIFIED_MARKER` is written as the FIRST block of a Learn page
+(`services/learn.py:502`, above the TL;DR), so a head-slice always keeps it and
+`is_unverified_source` still fires. Confirmed by reading; a test pins it, because
+if it were ever moved to the bottom, truncation would silently disarm the
+additions-only rule on exactly the long recollections that most need it.
 
-## Milestone 5: The other test files
+## Milestone 1: the constants
 
-- [x] `tests/test_router.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`
-      all drive `Remind` with the long `12.06 - 14.30` form, so they should need
-      no change. Confirmed by reading, then by running them — no edits needed.
-- [x] `tests/test_learn_idempotency.py:230` refers to "`Remind`'s `t` lookahead"
-      in a comment about a different guard. Update the reference so it points at
-      something that still exists.
-- [x] `tests/test_reminder_dates.py`'s module docstring gains the third subject it
-      now covers — which DAY a shorthand names.
+- [x] `config.py`: add `MANUAL_SOURCE_CHARS` and `DIET_SUMMARY_CHARS` beside
+      `SUMMARY_INPUT_CHARS`, with a comment saying why they are separate budgets
+      (these prompts carry section contents as well as the source), why each is
+      named for the input it bounds, and that this is the only place either
+      number lives.
 
-## Milestone 6: Docs
+## Milestone 2: the Manual path — `services/implement.py`
 
-- [x] `CLAUDE.md` — the date table under "**`Remind` never guesses which moment
-      you meant**" gains `td`/`today` and `tr`/`tomorrow` rows; the refusals list
-      grows from four to six (the retired `t`, and a past time today), and the
-      existing `t`-running-into-the-next-token bullet is retargeted. Plus a
-      paragraph on why the shorthands are a two-letter PAIR, and one recording
-      that the alternation order is not a guard.
-- [x] `CLAUDE.md` module map, `reminder.py` row: "`t` becoming a date is the
-      client's job" → the new tokens.
-- [x] `README.md` command table row for `Remind`.
-- [x] This file: steps ticked as they land, not batched at the end.
+- [x] `fit_to_budget(text, cap, *, label)` → `(text, warning | None)`, next to
+      the other module helpers. Logs at WARNING with the pre-truncation length
+      when it cuts — and the percentage that survived, which is the number that
+      makes the length mean something at a glance.
+- [x] `run_implement`: cut immediately after `blocks_to_text`, before
+      `is_unverified_source`, and `await notify(warning)` when there is one.
+      Plain `notify`, not `notify_md` — the string is David's own and
+      interpolates only integers, so there is nothing to escape and no reason to
+      risk a parse_mode rejection on the message that exists to warn you.
+- [x] Delete `[:60000]` from `route_sections`, `merge_sections` and
+      `build_manual`; one-line comment at each saying the caller owns the cap.
+      The merge builders' comments also say the SECTION texts are deliberately
+      uncapped, which is the mistake the next reader is likeliest to make.
 
-## Milestone 7: Ship
+## Milestone 3: the Diet path — `services/implement_diet.py`
 
-- [x] `ruff check .` clean, full suite green: **900 passed**, up from 873.
-- [ ] Commit on `remind-td-tr`, push, open a PR, let CI go green before merging.
-      Never straight to `main` — Railway keeps the old version on a failed deploy,
-      so a broken one is silent.
+- [x] Import `fit_to_budget` from `services.implement`.
+- [x] `run_implement_diet`: cut immediately after `blocks_to_text`
+      (`:627`), before the lock is taken and before `is_unverified_source` is
+      evaluated at `:714`.
+- [x] Delete `[:50000]` from both prompt builders, same comment.
+
+## Milestone 4: tests
+
+`tests/test_implement_sections.py` stubs `route_sections` / `merge_sections` at
+module level, so what reached each call is readable off the fixture;
+`tests/test_diet_routing.py` stubs `complete_json` instead, so the REAL prompt
+builders run and the prompt text itself is what gets asserted. Both are needed:
+the first proves the cut happened once, the second proves the builder did not cut
+again.
+
+- [x] A source longer than the budget reaches `route_sections` and
+      `merge_sections` already at exactly the cap.
+- [x] The real `route_sections` / `merge_sections` / `build_manual` pass their
+      argument through WHOLE — drive them with a stubbed `complete_json` and an
+      over-budget string, assert the prompt carries all of it. This is the
+      assertion that the second cap is gone rather than merely lowered, and it
+      turned out to be the ONLY one that can be — see `## Changelog`.
+- [x] The reply says the source was truncated, and says it **only** when it was.
+- [x] A source of exactly `MANUAL_SOURCE_CHARS` is not reported as truncated —
+      the boundary. ~~and the assertion that proves the two-cap bug is gone~~ —
+      it is not that, and its docstring now says so.
+- [x] The cut logs at WARNING and the log line carries the pre-truncation length
+      (`caplog`), because the reply is gone as soon as you scroll past it.
+- [x] The unverified marker survives truncation of a long recollection page:
+      `_hold_back_rewrites` still engages and the merge still gets
+      `unverified=True`.
+- [x] The same five for the Diet path in `tests/test_diet_routing.py`, minus
+      `_hold_back_rewrites` (the Diet path has no additions-only rule; assert the
+      plan message still names the source as unverified).
+- [x] **Guard-revert pass**: five guards reverted one at a time — the `[:60000]`
+      in `merge_sections`, the `[:50000]` in the Diet merge, the cut in
+      `run_implement`, the cut in `run_implement_diet`, and the WARNING log
+      demoted to INFO. Four turned a named test red. The fifth turned nothing
+      red; what it found is in `## Changelog`.
+- [x] Full suite green: **913 passed**, up from 900. `ruff check .` clean.
+
+## Milestone 5: docs
+
+- [x] `CLAUDE.md` — the budget paragraph names only the Learn path. Add the
+      Implement paths and the two constants; keep the existing text about
+      `run_learn` intact rather than rewriting it.
+- [x] `ROADMAP.md` — tick M1's to-do and test boxes as they land, in the same
+      commit as the work, per its own "How to work from this file". Its changelog
+      records the two findings, since the next milestone is read from that file
+      and not from this one.
+
+## Milestone 6: ship
+
+- [ ] Commit on `implement-one-budget`, push, open a PR, let CI go green before
+      merging. Never straight to `main` — Railway keeps the old version running on
+      a failed deploy, so a broken one is silent.
 
 ## Changelog
 
-- **The alternation order was written as a guard and is not one.** `REMIND_PATTERN`
-  lists the tokens longest-first, which reads like the thing stopping `t` from
-  claiming the head of `today`. Reversing it to `t|td|tr|today|tomorrow` left
-  `test_every_date_token_resolves_to_the_day_it_names` green: the `(?![\w.])`
-  lookahead fails `t` on the `o` and the engine backtracks to the branch that
-  fits, so every order works. The order is kept for legibility and both the
-  pattern comment and the test docstring now say plainly that it is not
-  protection. This is the same class as the note already in the test it replaced —
-  a line that reads like a guard and is not is worse than no line.
-- **A refusal that names the same date twice needs an assertion that says which
-  one.** `test_the_past_today_refusal_says_what_time_it_is` asserted
-  `"06.08.2026" in err`. The message contains that date in two places: the clause
-  saying what is past, and the `spell the date out` escape at the end. Rewording
-  the first to "09.00 today is already past" — deleting exactly the thing the test
-  claims to guard — left it green, satisfied by the escape. Now asserted as
-  `"09.00 on 06.08.2026"`, and the sibling test asserts the escape in its
-  backticked form for the same reason.
-- **Two guards were found by writing the revert script, not by planning.**
-  Refusing `t` before `_parse_clock` runs, and `PAST_GRACE` not reaching the `td`
-  path. Both are ordering decisions that read as arbitrary until something asserts
-  them; both now have a named test.
+- **The four-constant scheme was cut to two, because two of the four sites do not
+  exist.** `MANUAL_EXISTING_CHARS` / `DIET_TREE_CHARS` were to name the caps on
+  the accumulating inputs — the right thing to look for, since those are the ones
+  that grow without bound. Both were removed by the sectioning work and survive
+  only as prose about deleted code (`services/implement.py:12`,
+  `services/implement_diet.py:296`, plus two test docstrings);
+  `test_a_huge_manual_does_not_get_its_tail_dropped` puts 60,000 characters
+  through the real path and asserts they arrive whole. Adding those caps back
+  would delete content from Notion rather than protect it, for the reason in
+  Decision 1b. Recorded in `ROADMAP.md`'s changelog too, where the next
+  milestone will be read from.
+- **A guard-revert pass found a missing test rather than confirming a guard.**
+  Putting `[:50000]` back into the Diet merge builder left every Diet test green.
+  The reason generalises and is now written into `CLAUDE.md`: once the caller
+  cuts to N, a builder cutting to N is a **no-op no end-to-end test can see** —
+  including the boundary tests, which is why their docstrings now say what they
+  do not prove. `test_the_prompt_builders_do_not_cut_again` drives the builders
+  directly with text the caller never cut. Written with the slice still in place,
+  watched go red, then the slice removed.
+- **Two test-fixture measurements had to be probed rather than assumed.**
+  `blocks_to_text` decorates each block (`- ` / `• `) and SKIPS an empty one, so
+  a helper building "a source of exactly N characters" reads the decoration as
+  zero if it measures against `""`. Both helpers probe with real text. Without
+  it the boundary tests were off by two characters — passing or failing for a
+  reason unrelated to what they exist for.
 
 ## Open questions
 
-- **Nothing migrates old reminders.** Events already on the calendar are
-  unaffected; this changes only what David accepts when creating one. No action
-  needed, recorded so it is not mistaken for an oversight.
-- **`td` is the only token that can now be refused for being past.** If that
-  turns out to be annoying in practice — booking a just-finished meeting as a
-  record — the escape is already there (spell out the date with its year), and the
-  refusal says so. Loosening it would mean confirming "Reminder set!" for
-  something that cannot remind.
+- **The accumulating half of each prompt is still unbounded, and capping it by
+  clipping is not available.** Routed section contents (Manual) and routed leaf
+  contents (Diet) are sent whole, per Hard Rule 3, and the merge's reply replaces
+  what is on the page — so clipping the input deletes the tail from Notion rather
+  than merely degrading an answer. A ceiling there would have to REFUSE the run
+  and name the section, in the family of `title_property`'s refusal. Whether that
+  is worth building is a decision this milestone does not take. What bounds it
+  today: only routed sections are ever sent, so the size scales with the update
+  rather than with the knowledge base.
+- **`fit_to_budget` is the third copy of this shape**, after `run_learn`'s and —
+  once this lands — nothing else. Folding `run_learn` into it is a one-function
+  change and was left out deliberately: this milestone must not edit the one path
+  that already obeys the rule.
+- **The cap almost never fires in practice.** An Implement source is a Learn
+  *summary*, typically a few thousand characters, not the original source. That
+  is an argument for the cut being cheap, not for leaving five anonymous
+  literals: the one time it fires is the time you cannot detect afterwards.

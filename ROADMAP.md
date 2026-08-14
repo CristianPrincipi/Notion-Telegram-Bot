@@ -33,7 +33,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 
 | Order | Milestone | Why here |
 | --- | --- | --- |
-| 1 | **M1** — One truncation budget per Claude call | Smallest, self-contained, no new surface. Fixes a documented doctrine violation. |
+| ~~1~~ ✅ | ~~**M1** — One truncation budget per Claude call~~ | Done. Smallest, self-contained, no new surface. Fixed a documented doctrine violation. |
 | 2 | **M2** — `compute_budget()` returns `(value, error)` | Contained blast radius; two tests already assert the wrong behaviour on purpose and are waiting to be flipped. |
 | 3 | **M3** — The Learn-nudge job | Highest product value. Independent of everything else. |
 | 4 | **M4** — Takeaway of the week | Same shape as M3 — do it while the proactive-builder pattern is fresh. |
@@ -45,7 +45,10 @@ depends on M5** (at least on the `reminder.py` half of it).
 
 ---
 
-# M1 — One truncation budget per Claude call
+# M1 — One truncation budget per Claude call ✅ done
+
+_Landed on `implement-one-budget`. `PLAN.md` holds the decisions and the
+guard-revert record._
 
 ## Why
 
@@ -93,43 +96,55 @@ like a full merge. You find out from a thin Manual entry months later.
 
 ## To-do
 
-- [ ] Add `MANUAL_INPUT_CHARS` to `config.py`, beside `SUMMARY_INPUT_CHARS`,
-      with a comment saying why it is a separate budget (the prompt carries
-      section contents as well as the source) and that this is the only place
-      the number lives.
-- [ ] Add `DIET_INPUT_CHARS` the same way, and say in its comment why it is
-      lower than the Manual one (or unify them if the reason turns out to be
-      nothing more than that they were written on different days).
-- [ ] Cut once in `run_implement`, immediately after `blocks_to_text`, before
+- [x] Add ~~`MANUAL_INPUT_CHARS`~~ **`MANUAL_SOURCE_CHARS`** to `config.py`,
+      beside `SUMMARY_INPUT_CHARS`, with a comment saying why it is a separate
+      budget (the prompt carries section contents as well as the source) and
+      that this is the only place the number lives. Named for the INPUT it
+      bounds rather than for the path, so a second budget on the same path can
+      be added beside it instead of overloading one number.
+- [x] Add ~~`DIET_INPUT_CHARS`~~ **`DIET_SUMMARY_CHARS`** the same way. Kept
+      separate from the Manual one, at its existing 50k; the comment does not
+      claim a reason for the difference, because there isn't one beyond history.
+- [x] Cut once in `run_implement`, immediately after `blocks_to_text`, before
       `is_unverified_source` is evaluated.
-- [ ] Cut once in the Diet entry point (`services/implement_diet.py`), the same
-      way.
-- [ ] Delete `[:60000]` from `route_sections`, `merge_sections` and
+- [x] Cut once in the Diet entry point (`services/implement_diet.py`), the same
+      way — through the same `fit_to_budget`, imported rather than copied, so
+      there is one wording of the warning.
+- [x] Delete `[:60000]` from `route_sections`, `merge_sections` and
       `build_manual`; add a one-line comment at each saying the caller owns the
-      cap.
-- [ ] Delete `[:50000]` from both Diet prompt builders, same comment.
-- [ ] Report the truncation in the reply, matching `run_learn`'s wording — a
+      cap. The merge builders also say the SECTION texts are deliberately
+      uncapped and why clipping them would be worse than the bug being fixed.
+- [x] Delete `[:50000]` from both Diet prompt builders, same comment.
+- [x] Report the truncation in the reply, matching `run_learn`'s wording — a
       partial merge you are told about is a different object from one you find
-      months later.
-- [ ] Update `CLAUDE.md`: the budget paragraph currently names only the
+      months later. Also logged at WARNING with the pre-truncation length: the
+      reply scrolls away, the log is what is left afterwards.
+- [x] Update `CLAUDE.md`: the budget paragraph currently names only the
       Learn path. Add the Implement paths.
 
 ## Tests
 
-- [ ] A source longer than the budget is cut **exactly once** — assert the text
+- [x] A source longer than the budget is cut **exactly once** — assert the text
       handed to `route_sections` and `merge_sections` is already at the cap and
-      that neither slices again.
-- [ ] The reply says the source was truncated, and says it only when it was.
-- [ ] A source of exactly `MANUAL_INPUT_CHARS` is **not** reported as truncated
-      (the boundary — this is the assertion that proves the two-cap bug is gone).
-- [ ] The unverified marker survives truncation of a long recollection page, and
+      that neither slices again. The two halves needed two different tests: the
+      "already at the cap" half reads what the stubbed builders were given, the
+      "neither slices again" half drives the REAL builders with text the caller
+      never cut, which is the only way a second cap is visible at all.
+- [x] The reply says the source was truncated, and says it only when it was.
+- [x] A source of exactly `MANUAL_SOURCE_CHARS` is **not** reported as truncated
+      ~~(the boundary — this is the assertion that proves the two-cap bug is
+      gone)~~ — the boundary, but NOT the proof: see the changelog, it stays
+      green with the second cap in place. Its docstring now says so.
+- [x] The unverified marker survives truncation of a long recollection page, and
       `_hold_back_rewrites` still engages.
-- [ ] Same four for the Diet path, in `tests/test_diet_routing.py` /
-      `tests/test_diet_tree.py`.
-- [ ] **Guard-revert pass:** put `[:60000]` back into `merge_sections` alone and
-      confirm a *named* test goes red. A guard that cannot go red reads like
-      protection and is not.
-- [ ] Full suite green, `ruff check .` clean.
+- [x] Same for the Diet path, in `tests/test_diet_routing.py` (nothing was needed
+      in `tests/test_diet_tree.py` — it covers the write path, which this does
+      not touch), minus `_hold_back_rewrites`, which the Diet path does not have:
+      asserted there as the plan message still naming the source unverified.
+- [x] **Guard-revert pass:** five guards reverted one at a time. Four turned a
+      named test red; the fifth turned nothing red and **found a missing test** —
+      see the changelog.
+- [x] Full suite green (**913 passed**, up from 900), `ruff check .` clean.
 
 ---
 
@@ -581,6 +596,25 @@ Recorded so they are not re-proposed.
 
 # Changelog
 
+- **2026-08-14** — **M1 landed.** Two things worth carrying forward:
+  - **The accumulating inputs were checked and there is nothing there.** The
+    obvious worry — that a Manual outgrowing `manual_text[:40000]`, or a Diet
+    tree outgrowing `[:30000]`, is being silently clipped — is out of date by one
+    milestone: both caps were removed by the sectioning work and survive only as
+    prose describing the code that was deleted (`services/implement.py:12`,
+    `services/implement_diet.py:296`, and two test docstrings).
+    `test_a_huge_manual_does_not_get_its_tail_dropped` drives a 60,000-character
+    section through the real path and asserts it arrives whole. Restoring a cap
+    there would be a regression, not a safeguard: a section is sent whole or not
+    at all and the merge's reply *replaces* it, so clipping the input deletes the
+    tail from Notion. A ceiling on that half has to REFUSE the run.
+  - **A guard-revert pass found a missing test, which is what it is for.**
+    Putting `[:50000]` back into the Diet merge builder left the entire file
+    green — because a builder capping at the number the caller already cut to is
+    a no-op that no end-to-end test can observe. The boundary tests cannot see it
+    either. `test_the_prompt_builders_do_not_cut_again` (both test files) drives
+    the builders directly with text the caller never cut, and is the only thing
+    standing between the code and a quiet return of the second cap.
 - **2026-08-13** — File created from the repo survey at `7e01e0b`. Four ideas
   from that survey are deliberately **not** here: the model upgrade off
   `claude-sonnet-4-5`, receipt-photo expenses, Anthropic spend in the heartbeat,
