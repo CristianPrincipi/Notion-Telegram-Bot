@@ -140,6 +140,39 @@ place text is cut — **for every content type**, since a 3-hour transcript and 
   same cap as a backstop, and that copy is deliberately NOT the primary: if it
   ever fires, it fires silently.
 
+**Implement had the same bug, five times over, and it is fixed the same way.**
+`route_sections`, `merge_sections` and `build_manual` each sliced
+`source_text[:60000]`, and the two Diet builders sliced `summary_text[:50000]` —
+five anonymous literals, three numbers, no relation to any constant and nothing
+in the reply. So a long Learn page merged into a Manual from its first 60k
+characters and the run reported a clean success.
+
+`config.MANUAL_SOURCE_CHARS` and `config.DIET_SUMMARY_CHARS` are now the only
+numbers, `services.implement.fit_to_budget` is the only implementation of the cut
+(the Diet path imports it rather than copying it, so there is one wording of the
+warning), and `run_implement` / `run_implement_diet` are the only places it is
+applied. Three things to keep:
+
+- **The prompt builders must not re-slice.** Same reason extractors must not, and
+  with a nastier consequence: a builder capping at the number the caller already
+  cut to is a **no-op that no end-to-end test can see**. That was verified by
+  putting `[:50000]` back into the Diet merge, watching the entire file stay
+  green, and writing the test that catches it —
+  `test_the_prompt_builders_do_not_cut_again`, in both test files, which drives
+  the builders with text the caller never cut. It is the only test that can see a
+  second cap; the boundary tests cannot, and their docstrings say so.
+- **The SECTION half of those prompts is deliberately uncapped**, and clipping it
+  would be worse than the bug this fixed. Hard Rule 3 sends a section whole or
+  not at all, and the merge's reply *replaces* the section — so a section clipped
+  on the way in comes back short on the way out, and the tail is deleted from
+  Notion. A ceiling there would have to refuse the run, not clip the input.
+- **The cut runs before `is_unverified_source`**, so the predicate reads exactly
+  the string the model gets. That is safe in one direction only: the marker is
+  the FIRST block Learn writes, so a head-slice always keeps it. Asserted in both
+  test files, because it is a property of two modules agreeing — were the marker
+  ever moved down the page, truncation would silently disarm the additions-only
+  rule on precisely the long recollections that need it.
+
 **A partial write is a third outcome, not a failure.** Notion caps an append at
 100 blocks and has no transaction across the batches, so batch 3 of 5 failing
 leaves batches 1 and 2 on the page — permanently, since deleting them would be a

@@ -3,9 +3,14 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from clients.anthropic_client import complete_json
-from config import ANTHROPIC_TIMEOUT, is_unverified_source
+from config import ANTHROPIC_TIMEOUT, DIET_SUMMARY_CHARS, is_unverified_source
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
+# One implementation of the cut and one wording of its warning, shared with the
+# flat-Manual path rather than copied. Safe in this direction: implement.py
+# reaches this module through a lazy import inside run_implement, never at
+# module scope.
+from services.implement import fit_to_budget
 from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text,
     append_children, delete_block, create_page, extract_rich_text, rich,
@@ -360,11 +365,14 @@ def route_sections(paths: list, summary_text: str, summary_title: str):
 
     Deliberately cheap: section PATHS only, never their content. That is what
     keeps the untouched majority of the page out of the model entirely.
+
+    `summary_text` arrives already within DIET_SUMMARY_CHARS — run_implement_diet
+    owns the cap and is the only place it is applied. Do not re-slice here.
     """
     listing = "\n".join(f"- {p}" for p in paths)
     user_msg = (
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
-        f"=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
+        f"=== SUMMARY: {summary_title} ===\n{summary_text}"
     )
     return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=2048)
 
@@ -421,6 +429,10 @@ def merge_sections(contents: dict, summary_text: str, summary_title: str):
     `contents` is {path: current text} for the routed sections ONLY. Everything
     else on the page is absent from this prompt, which is the only guarantee that
     it comes back unchanged — because it never went.
+
+    `summary_text` arrives already within DIET_SUMMARY_CHARS — run_implement_diet
+    owns the cap. The section texts in `contents` are NOT capped and must not be:
+    a section is sent whole or not at all, because what comes back replaces it.
     """
     parts = []
     for path, text in contents.items():
@@ -429,7 +441,7 @@ def merge_sections(contents: dict, summary_text: str, summary_title: str):
 
     user_msg = (
         "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
-        f"\n\n=== SUMMARY: {summary_title} ===\n{summary_text[:50000]}"
+        f"\n\n=== SUMMARY: {summary_title} ===\n{summary_text}"
     )
     return complete_json(_MERGE_SYSTEM, user_msg, _MERGE_SCHEMA)
 
@@ -628,6 +640,17 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
     if not summary_text.strip():
         await notify("❌ The summary page appears to be empty.")
         return
+
+    # ── Fit the merge's budget, out loud, ONCE ─────────────────────────────────
+    # Here rather than in the two prompt builders, and ahead of the
+    # is_unverified_source call further down, so the predicate reads exactly the
+    # string the model will be given. The marker is the FIRST block Learn writes,
+    # so a head-slice always keeps it.
+    summary_text, over_budget = fit_to_budget(
+        summary_text, DIET_SUMMARY_CHARS, label="run_implement_diet")
+    if over_budget:
+        # Plain notify: David's own string, integers only, nothing to escape.
+        await notify(over_budget)
 
     # ── Steps B–E run under a lock on the Diet DATABASE ────────────────────────
     # Keyed on DIET_ID, not on the Diet page's own id, and taken BEFORE the

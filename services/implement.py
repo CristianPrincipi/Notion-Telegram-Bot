@@ -39,12 +39,13 @@ error with nothing deleted, and only then drop the snapshot.
 """
 
 import asyncio
+import logging
 import os
 import re
 
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
-from config import ANTHROPIC_TIMEOUT, is_unverified_source
+from config import ANTHROPIC_TIMEOUT, MANUAL_SOURCE_CHARS, is_unverified_source
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -70,6 +71,43 @@ STEPS_SECTION = "Step-by-Step Breakdown"
 # listed, and no sectioned run has ever appended to it — so until now a Manual
 # recorded nothing at all about what went into it after day one.
 SOURCES_SECTION = "Sources"
+
+logger = logging.getLogger(__name__)
+
+
+# ─── 0. THE INPUT BUDGET ───────────────────────────────────────────────────────
+
+def fit_to_budget(text: str, cap: int, *, label: str) -> tuple[str, str | None]:
+    """Cut `text` to `cap`. Returns (text, warning) — the warning is None if it fit.
+
+    THE ONLY PLACE EITHER IMPLEMENT PATH CUTS ITS SOURCE, and it is shared with
+    services/implement_diet.py rather than copied into it. Both halves of that
+    matter:
+
+      • ONE PLACE. It was five inline slices with three different numbers, so a
+        long Learn page merged into a Manual from its first 60k characters —
+        indistinguishable, in the reply and on the page, from a full merge. The
+        prompt builders below no longer slice at all: with a cap at both ends, a
+        source of exactly the budget and one cut down to it are the same string,
+        and the warning stops being reliable at exactly its own boundary.
+      • ONE WORDING. Two copies of the warning is how one of them gets reworded
+        and the other silently does not.
+
+    It returns the warning rather than sending it because this function is
+    synchronous and knows nothing about Telegram — the caller awaits `notify`.
+
+    The log is at WARNING and carries the length BEFORE the cut, which is the
+    only number that says how much was lost. The reply is for now, and it scrolls
+    away; the log is what is left afterwards.
+    """
+    if len(text) <= cap:
+        return text, None
+    logger.warning("%s: source is %d chars, cut to %d — the merge sees %.0f%% of it",
+                   label, len(text), cap, 100 * cap / len(text))
+    return text[:cap], (
+        f"⚠️ Source is {len(text):,} characters; merging from the first "
+        f"{cap:,}. Anything after that was not read."
+    )
 
 
 # ─── 1. AREA ROUTING ───────────────────────────────────────────────────────────
@@ -324,11 +362,14 @@ def route_sections(section_paths: list, source_text: str, source_title: str):
 
     Deliberately cheap: section NAMES only, never their content. This is what
     keeps the untouched majority of the Manual out of the model entirely.
+
+    `source_text` arrives already within MANUAL_SOURCE_CHARS — run_implement owns
+    the cap and is the only place it is applied. Do not re-slice here.
     """
     listing = "\n".join(f"- {p}" for p in section_paths)
     user_msg = (
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
-        f"=== SOURCE: {source_title} ===\n{source_text[:60000]}"
+        f"=== SOURCE: {source_title} ===\n{source_text}"
     )
     return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=2048)
 
@@ -393,6 +434,10 @@ def merge_sections(targets: list, source_text: str, source_title: str,
 
     `targets` is a list of {"path", "style", "text"} — only the sections routing
     selected. Everything else in the Manual is absent from this prompt.
+
+    `source_text` arrives already within MANUAL_SOURCE_CHARS — run_implement owns
+    the cap. The section texts in `targets` are NOT capped and must not be: a
+    section is sent whole or not at all, because what comes back replaces it.
     """
     parts = []
     for target in targets:
@@ -401,7 +446,7 @@ def merge_sections(targets: list, source_text: str, source_title: str,
 
     user_msg = (
         "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
-        f"\n\n=== SOURCE: {source_title} ===\n{source_text[:60000]}"
+        f"\n\n=== SOURCE: {source_title} ===\n{source_text}"
         + (_UNVERIFIED_MERGE_RULE if unverified else "")
     )
     return complete_json(_MERGE_SYSTEM, user_msg, _MERGE_SCHEMA)
@@ -635,10 +680,14 @@ _BUILD_SCHEMA = {
 
 
 def build_manual(source_text: str, topic: str, source_title: str = ""):
-    """Build a whole Manual from one source. Returns (manual, error)."""
+    """Build a whole Manual from one source. Returns (manual, error).
+
+    `source_text` arrives already within MANUAL_SOURCE_CHARS — run_implement owns
+    the cap. Do not re-slice here.
+    """
     user_msg = (
         f"Topic: {topic}\n\n"
-        f"=== SOURCE ===\nTitle: {source_title}\n\n{source_text[:60000]}"
+        f"=== SOURCE ===\nTitle: {source_title}\n\n{source_text}"
     )
     return complete_json(_BUILD_SYSTEM, user_msg, _BUILD_SCHEMA)
 
@@ -845,6 +894,21 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
     if not source_text.strip():
         await notify("❌ Source page appears to be empty.")
         return
+
+    # ── Fit the merge's budget, out loud, ONCE ─────────────────────────────────
+    # Ahead of is_unverified_source below, so the predicate reads exactly the
+    # string the model will be given. That ordering is safe in one direction
+    # only: the marker is the FIRST block Learn writes (services/learn.py, above
+    # the TL;DR), so a head-slice always keeps it. Were it ever moved to the
+    # bottom of the page, truncating here would silently disarm the
+    # additions-only rule on precisely the long recollections that need it most.
+    source_text, over_budget = fit_to_budget(
+        source_text, MANUAL_SOURCE_CHARS, label="run_implement")
+    if over_budget:
+        # Plain notify: David's own string, interpolating only integers, so there
+        # is nothing to escape and no reason to risk a parse_mode rejection on
+        # the one message that exists to warn you.
+        await notify(over_budget)
 
     # Is this source Claude's recollection rather than something that was read?
     # The marker is a sentence Learn writes into the page body, so it is already
