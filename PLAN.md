@@ -79,15 +79,15 @@ module: a shorthand resolved in the regex is a date rule nothing can unit-test.
 
 ## Milestone 2: `pkm.py`
 
-- [ ] `bot/long_messages.py` — `send_long(send, text)`, the one splitter.
-- [ ] `services/pkm.py` — `run_get(user_text, *, notify, notify_md=None)`;
+- [x] `bot/long_messages.py` — `send_long(send, text)`, the one splitter.
+- [x] `services/pkm.py` — `run_get(user_text, *, notify, notify_md=None)`;
       `_send_long` deleted from it.
-- [ ] `bot/pkm.py` — `cmd_get` + `handle_get`, binding `notify` through
+- [x] `bot/pkm.py` — `cmd_get` + `handle_get`, binding `notify` through
       `partial(send_long, notify)`.
-- [ ] `david.py`, `tests/test_pkm.py`, `tests/test_async_io.py`,
+- [x] `david.py`, `tests/test_pkm.py`, `tests/test_async_io.py`,
       `tests/test_router.py` retargeted.
-- [ ] A test driving `run_get` with a list's `append` and no Update.
-- [ ] Suite green, `ruff check .` clean.
+- [x] A test driving `run_get` with a list's `append` and no Update.
+- [x] Suite green, `ruff check .` clean.
 
 ## Milestone 3: `notion_ids.py`
 

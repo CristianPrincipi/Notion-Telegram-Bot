@@ -33,7 +33,7 @@ import david
 from services import implement, implement_diet, learn
 import month
 import page_lock
-import pkm
+from services import pkm
 import proactive.scheduler as scheduler
 from services import reminder
 import bot.commands
@@ -362,7 +362,7 @@ def test_get_walks_the_manual_off_the_loop(offloaded, monkeypatch):
     })
     update = FakeUpdate(text="Get Perfect Process - Brain")
 
-    run(pkm.handle_get(update, update.message.text))
+    run(pkm.run_get(update.message.text, **with_update(update)))
 
     assert offloaded == expect(stubs, "search_page_in_db", "build_index", "_render")
     assert update.message.replied_with("rendered body")

@@ -20,6 +20,13 @@ subtree. Works for both manual layouts:
         section content = the toggle's own non-heading children.
 
 No Claude / Anthropic API call is ever made here.
+
+THE ANSWER GOES OUT ON THE PLAIN CHANNEL. A rendered section is arbitrary Notion
+content — someone else's asterisks and underscores — so it cannot be trusted to
+survive Markdown, and escaping it would put backslashes into the notes you are
+reading back. David's own framing (the usage message, the area names) uses
+notify_md; the section body does not. Splitting a long one to fit Telegram is the
+adapter's job: see bot/long_messages.py.
 """
 
 import asyncio
@@ -28,7 +35,7 @@ from difflib import SequenceMatcher
 
 from clients.notion_client import get_children, search_page_in_db, extract_rich_text
 from services.implement import get_area_db_id
-from telegram_text import escape_md, reply
+from telegram_text import escape_md
 
 
 # ─── COMMAND PARSING ───────────────────────────────────────────────────────────
@@ -100,7 +107,7 @@ def _clean_title(title: str) -> str:
 #
 # BLOCKING, and not by a little: Notion has no recursive block read, so a toggle
 # manual costs one request per heading that has children — the Diet page is ~67.
-# handle_get runs it via asyncio.to_thread. Like read_diet_structure it takes no outer
+# run_get runs it via asyncio.to_thread. Like read_diet_structure it takes no outer
 # wait_for: every individual request is already bounded by notion_request's
 # timeout and its bounded retries.
 
@@ -186,7 +193,7 @@ def _render(blocks: list, indent: int = 0, depth: int = 0) -> str:
                 emoji = (data.get("icon") or {}).get("emoji", "💡")
                 lines.append(f"{pad}{emoji} {text}")
             elif t == "quote":
-                lines.append(f"{pad}\u201c{text}\u201d")
+                lines.append(f"{pad}“{text}”")
             elif text:
                 lines.append(f"{pad}{text}")
             else:
@@ -216,32 +223,15 @@ def _build_topic_tree(index: list, area: str) -> str:
     return "\n".join(lines)
 
 
-# ─── TELEGRAM SEND HELPERS ─────────────────────────────────────────────────────
+# ─── THE COMMAND ───────────────────────────────────────────────────────────────
 
-async def _send_long(update, text: str):
-    """Send plain text, split on line boundaries to respect Telegram's 4096 limit."""
-    LIMIT = 3800
-    if len(text) <= LIMIT:
-        await update.message.reply_text(text)
-        return
-    buf = ""
-    for line in text.split("\n"):
-        if len(buf) + len(line) + 1 > LIMIT and buf:
-            await update.message.reply_text(buf.rstrip())
-            buf = ""
-        buf += line + "\n"
-    if buf.strip():
-        await update.message.reply_text(buf.rstrip())
+async def run_get(user_text: str, *, notify, notify_md=None) -> None:
+    """`Get [Argument] - [Area]` — resolve a heading and read its content back."""
+    notify_md = notify_md or notify
 
-
-# ─── MAIN HANDLER ──────────────────────────────────────────────────────────────
-
-async def handle_get(update, user_text: str):
-    """Entry point from david.py for:  Get [Argument] - [Area]"""
     m = re.match(GET_PATTERN, user_text.strip())
     if not m:
-        await reply(
-            update,
+        await notify_md(
             "🔎 *Get usage:*\n"
             "`Get [Topic] - [Area]`\n\n"
             "Examples:\n"
@@ -258,8 +248,7 @@ async def handle_get(update, user_text: str):
     db_id = get_area_db_id(area)
     if not db_id:
         env_key = f"{area.upper().replace(' ', '_')}_ID"
-        await reply(
-            update,
+        await notify_md(
             f"❌ Area *{escape_md(area)}* isn't configured.\n"
             f"Set `{env_key}` on Railway to that area's Notion database ID.",
         )
@@ -271,30 +260,29 @@ async def handle_get(update, user_text: str):
     page_title = _manual_title_for(area)
     page, perr = await asyncio.to_thread(search_page_in_db, db_id, page_title, True)
     if not page:
-        await reply(
-            update,
+        await notify_md(
             f"❌ No *{escape_md(page_title)}* page found in the *{escape_md(area)}* database.",
         )
         # The Notion detail goes out as a SEPARATE plain message: it used to sit in
         # a `code span`, where Markdown v1 ignores backslash escapes, so escaping
         # cannot make it safe — only sending it unformatted can.
         if perr and "No page found" not in perr:
-            await update.message.reply_text(perr)
+            await notify(perr)
         return
 
-    await reply(update, f"🔎 Searching the *{escape_md(area)}* manual…")
+    await notify_md(f"🔎 Searching the *{escape_md(area)}* manual…")
 
     index, err = await asyncio.to_thread(build_index, page["id"])
     if err:
-        await update.message.reply_text(f"❌ Could not read the manual: {err}")
+        await notify(f"❌ Could not read the manual: {err}")
         return
     if not index:
-        await reply(update, f"ℹ️ The *{escape_md(area)}* manual has no sections yet.")
+        await notify_md(f"ℹ️ The *{escape_md(area)}* manual has no sections yet.")
         return
 
     # Discovery mode
     if argument.lower() in _DISCOVERY_WORDS:
-        await _send_long(update, _build_topic_tree(index, area))
+        await notify(_build_topic_tree(index, area))
         return
 
     # Resolve the argument against the index
@@ -308,7 +296,7 @@ async def handle_get(update, user_text: str):
 
     # Exactly one confident hit → return it
     if len(strong) == 1:
-        await _deliver(update, strong[0], index, area)
+        await _deliver(strong[0], index, area, notify=notify)
         return
 
     # Multiple confident hits, or several moderate → disambiguation list
@@ -320,20 +308,20 @@ async def handle_get(update, user_text: str):
             lines.append(f"• {escape_md(_clean_title(e['title']))}  ({kind})")
         lines += ["", "Repeat with the exact name, e.g.:",
                   f"`Get {_clean_title(candidates[0]['title'])} - {area}`"]
-        await reply(update, "\n".join(lines))
+        await notify_md("\n".join(lines))
         return
 
     # A single moderate match → return it
     if len(moderate) == 1:
-        await _deliver(update, moderate[0], index, area)
+        await _deliver(moderate[0], index, area, notify=notify)
         return
 
     # Nothing close → not found + the full topic tree to help
-    await reply(update, f"❌ No topic matching *{escape_md(argument)}* in the *{escape_md(area)}* manual.")
-    await _send_long(update, _build_topic_tree(index, area))
+    await notify_md(f"❌ No topic matching *{escape_md(argument)}* in the *{escape_md(area)}* manual.")
+    await notify(_build_topic_tree(index, area))
 
 
-async def _deliver(update, entry: dict, index: list, area: str):
+async def _deliver(entry: dict, index: list, area: str, *, notify):
     """Render and send a resolved section, or suggest subsections if it has no own content."""
     pos = next((i for i, e in enumerate(index)
                 if e["title"] == entry["title"] and e["level"] == entry["level"]), None)
@@ -342,10 +330,10 @@ async def _deliver(update, entry: dict, index: list, area: str):
     body = await asyncio.to_thread(_render, entry["content"])
 
     kind = "Section" if entry["level"] <= 2 else "Subsection"
-    header = f"📖 {_clean_title(entry['title'])}  —  {area} ({kind})\n" + "\u2500" * 24
+    header = f"📖 {_clean_title(entry['title'])}  —  {area} ({kind})\n" + "─" * 24
 
     if body.strip():
-        await _send_long(update, f"{header}\n{body}")
+        await notify(f"{header}\n{body}")
         return
 
     subs = _subheadings(index, pos) if pos is not None else []
@@ -353,6 +341,6 @@ async def _deliver(update, entry: dict, index: list, area: str):
         lines = [header, "", "This section has no direct text. It contains:", ""]
         lines += [f"   → {_clean_title(s)}" for s in subs]
         lines += ["", f"Open one with:  Get [name] - {area}"]
-        await _send_long(update, "\n".join(lines))
+        await notify("\n".join(lines))
     else:
-        await update.message.reply_text(f"{header}\n(empty)")
+        await notify(f"{header}\n(empty)")

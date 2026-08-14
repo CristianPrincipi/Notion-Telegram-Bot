@@ -21,8 +21,8 @@ A section returns its OWN content, never its whole subtree — asking for
 
 import pytest
 
-import pkm
-from conftest import FakeUpdate, run
+from conftest import FakeUpdate, run, with_update
+from services import pkm
 
 BRAIN_DB = "test-brain-id"      # BRAIN_ID in the fake environment
 DIET_DB  = "test-diet-id"
@@ -97,7 +97,7 @@ def manual(monkeypatch):
 
 def ask(text):
     update = FakeUpdate(text=text)
-    run(pkm.handle_get(update, text))
+    run(pkm.run_get(text, **with_update(update)))
     return update
 
 
@@ -300,3 +300,45 @@ def test_retrieval_never_calls_claude():
     assert "ANTHROPIC_API_KEY" not in source
     assert not hasattr(pkm, "requests"), (
         "pkm imported requests — retrieval is meant to be a Notion-only path")
+
+
+# ─── THE SPLIT ─────────────────────────────────────────────────────────────────
+# pkm.py used to take `update` and reply through telegram_text itself. The tests
+# above still pass an Update, because they assert on what the USER is told and
+# with_update() binds the real bot-layer channels. This one asserts the property
+# that made the split worth doing.
+
+def test_the_service_runs_with_no_update_at_all(manual):
+    """THE PROOF THE SPLIT WORKED.
+
+    A list's `append` is a complete implementation of the notify interface —
+    `notify_md` defaults to `notify`, so one function is the whole contract. A
+    scheduled job wanting to push a section on a timer needs no more than this.
+    """
+    said = []
+
+    async def collect(text):
+        said.append(text)
+
+    run(pkm.run_get("Get Perfect Process - Brain", notify=collect))
+
+    assert any("Prime the material" in message for message in said)
+
+
+def test_the_service_never_splits_its_own_replies(manual):
+    """Splitting for Telegram's 4096 limit is bot/long_messages.py's job.
+
+    The service calls its channel ONCE per message it means to send. A service
+    that chunked would be encoding a transport limit into the work — and the
+    caller binding a list's append, or a logger, would get one answer arriving
+    in pieces for no reason.
+    """
+    said = []
+
+    async def collect(text):
+        said.append(text)
+
+    run(pkm.run_get("Get ? - Brain", notify=collect))
+
+    trees = [m for m in said if "manual — topics" in m]
+    assert len(trees) == 1, f"the topic tree went out in {len(trees)} pieces"

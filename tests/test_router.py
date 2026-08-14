@@ -40,6 +40,7 @@ import pytest
 import bot.commands
 import bot.implement
 import bot.learn
+import bot.pkm
 import bot.reminder
 import david
 from services import books, expenses, learn
@@ -111,7 +112,7 @@ SPY_HOMES = {
     "handle_dbs":           bot.commands,
     "handle_month":         bot.commands,
     "handle_find":          bot.commands,
-    "handle_get":           bot.commands,
+    "handle_get":           bot.pkm,
     "handle_remind":        bot.reminder,
     "handle_learn":         bot.learn,
     "handle_implement":     bot.implement,

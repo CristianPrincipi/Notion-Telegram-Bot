@@ -12,7 +12,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 import config
 import expense_safety
 from bot.books import cmd_add_book, cmd_add_quote
-from bot.commands import cmd_budget, cmd_dbs, cmd_diag, cmd_find, cmd_get, cmd_month
+from bot.commands import cmd_budget, cmd_dbs, cmd_diag, cmd_find, cmd_month
 from bot.documents import handle_document
 from bot.expenses import (
     AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_undo, cmd_update_expense,
@@ -20,6 +20,7 @@ from bot.expenses import (
 )
 from bot.implement import cmd_implement
 from bot.learn import cmd_learn
+from bot.pkm import cmd_get
 from bot.reminder import cmd_remind
 from budget import budget
 from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
@@ -478,10 +479,10 @@ COMMANDS = [
     ),
     Command(
         name="Get",
-        # The separator is a SPACE-hyphen-SPACE, matching pkm.GET_PATTERN, so a
-        # topic containing a hyphen ("Step-by-Step Breakdown") is not split at
-        # it. Without the " - [Area]" it is not a command, exactly like
-        # `Implement`.
+        # The separator is a SPACE-hyphen-SPACE, matching services.pkm's
+        # GET_PATTERN, so a topic containing a hyphen ("Step-by-Step Breakdown")
+        # is not split at it. Without the " - [Area]" it is not a command,
+        # exactly like `Implement`.
         #
         # Runs INLINE, not detached: it is read-only, so it cannot reorder
         # against a write the way a detached command could. The slow case is a
