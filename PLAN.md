@@ -134,7 +134,9 @@ module: a shorthand resolved in the regex is a date rule nothing can unit-test.
 
 ## Milestone 7: ship
 
-- [ ] Commit per module, push, PR, CI green, merge.
+- [x] One commit per module on `split-update-modules`, each green on its own.
+- [ ] Push, PR, CI green, merge. Not done yet — waiting on the go-ahead, since
+      nothing else in this milestone leaves the machine.
 
 ## Found while moving
 
