@@ -13,6 +13,12 @@ morning briefing returns both, because a calendar outage still leaves the budget
 half worth sending. The scheduler reports the error and sends whatever text came
 back with it.
 
+The morning briefing has two sources and treats them identically: either can fail
+without costing the other, a half that failed says so in the message instead of
+vanishing, and both errors are reported. That symmetry arrived late —
+compute_budget used to return a bare None for both "Notion failed" and "nothing
+to report", so the budget half degraded silently while the calendar half did not.
+
 This is the fix for the worst silent failure David had. Before it:
 
   - the evening briefing collapsed the two cases into one — `if err or not
@@ -47,7 +53,13 @@ def _format_events_inline(events: list) -> str:
 
 
 def _budget_line(b: dict | None) -> str | None:
-    """'💰 €182/300 (on pace)' — or None if the budget query failed."""
+    """'💰 €182/300 (on pace)' — or None if there is no budget to render.
+
+    A pure formatter: it is given the dict compute_budget returned and knows
+    nothing about why it might be missing. The caller holds the error and decides
+    what to say about it, which is the split that stops "no line" from meaning
+    two different things again.
+    """
     if not b:
         return None
     pace = "on pace" if b["on_pace"] else "over pace"
@@ -70,39 +82,55 @@ def _events_for(day) -> tuple:
         return [], f"{type(e).__name__}: {e}"
 
 
+def _join(*errors) -> str | None:
+    """The one error the scheduler takes, from the two sources this briefing has.
+
+    Unlabelled on purpose: with a single failure the client's own string is
+    passed through VERBATIM, which is what the tests assert and what makes a
+    report worth reading. `_report_error` already prefixes the job name, and a
+    Notion 401 does not look like a Google 403, so a double outage joined with a
+    separator is still legible — and reporting both beats picking one.
+    """
+    return " · ".join(e for e in errors if e) or None
+
+
 def build_morning_briefing() -> tuple:
     """Compose the Morning Briefing (today's events + budget pace).
 
     Returns (message, error).
 
-    On a calendar error it still sends — the budget half is independently useful,
-    and morning silence is easy to miss — but it says the calendar is unreachable
-    instead of claiming the day is clear. The error is returned alongside so the
-    scheduler reports it too: the message tells you today is unknown, the error
-    report tells you why and that it needs fixing.
+    BOTH HALVES DEGRADE THE SAME WAY, and that symmetry is the point. Either
+    source can fail without costing the other, and a half that could not be read
+    SAYS SO in the message rather than quietly disappearing — a vanished budget
+    line is indistinguishable from a month with nothing in it, which is the exact
+    bug this milestone came from. The error is returned alongside so the
+    scheduler reports it too: the message tells you a half is unknown, the report
+    tells you why and that it needs fixing.
 
-    (None, None) only when the calendar is genuinely empty AND the budget query
-    returned nothing — there is then nothing to say and nothing wrong.
+    It no longer returns (None, None). That branch was reachable only when the
+    calendar was empty AND compute_budget returned a bare None, i.e. only through
+    the collapsed error that has now been removed. A total outage used to be
+    silence plus one error; it is now a message saying both halves are unknown,
+    plus both errors.
     """
-    events, err = _events_for(now_local())
-    budget_line = _budget_line(compute_budget())
+    events, cal_err = _events_for(now_local())
+    b, budget_err   = compute_budget()
+    budget_line     = _budget_line(b)
 
-    if err:
+    parts = ["☀️ Good morning."]
+    if cal_err:
         # NEVER fall through to _format_events_inline here. `events` is [] on
         # error, and [] renders as "nothing scheduled".
-        parts = ["☀️ Good morning.",
-                 "⚠️ I could not read your calendar, so I don't know what's on today."]
-        if budget_line:
-            parts.append(budget_line)
-        return " ".join(parts), err
+        parts.append("⚠️ I could not read your calendar, so I don't know what's on today.")
+    else:
+        parts.append(f"Today: {_format_events_inline(events)}.")
 
-    if not events and budget_line is None:
-        return None, None
-
-    parts = ["☀️ Good morning.", f"Today: {_format_events_inline(events)}."]
     if budget_line:
         parts.append(budget_line)
-    return " ".join(parts), None
+    elif budget_err:
+        parts.append("⚠️ I could not read your budget.")
+
+    return " ".join(parts), _join(cal_err, budget_err)
 
 
 def build_evening_briefing() -> tuple:

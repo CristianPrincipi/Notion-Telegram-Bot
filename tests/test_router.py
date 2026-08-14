@@ -49,6 +49,10 @@ from conftest import FakeContext, FakeUpdate, run, written_ok
 NO_HANDLER   = "(no handler)"      # command answered with a reply only
 BOOK_PAGE_ID = "book-page-id"      # what the stubbed find_Book_Page returns
 BUDGET_TEXT  = "MOCK BUDGET RECAP"
+# budget() returns (recap, error), so the spy must too — a double returning a
+# bare string would keep the `B` rows green against a shape the command no
+# longer receives, and cmd_budget unpacks it.
+BUDGET_RESULT = (BUDGET_TEXT, None)
 
 # What the stubbed find_expense_matches returns: EXACTLY ONE match, so the
 # destructive commands run straight through to their write. Ambiguity is a
@@ -80,7 +84,7 @@ UNINTERESTING_ARGS = {"_update", "page_id"}
 # anything absent from it is still reached through david.
 
 SPY_TARGETS = [
-    ("budget",           (),                                        BUDGET_TEXT,          False),
+    ("budget",           (),                                        BUDGET_RESULT,        False),
     ("handle_diag",      ("_update",),                              None,                 True),
     ("handle_dbs",       ("_update",),                              None,                 True),
     ("handle_month",     ("_update",),                              None,                 True),
@@ -754,12 +758,15 @@ def test_delete_expense_distinguishes_the_three_lookup_outcomes(router, monkeypa
 
 
 def test_budget_reports_a_notion_failure(router, monkeypatch):
-    monkeypatch.setattr(bot.commands, "budget", lambda: None)
+    monkeypatch.setattr(bot.commands, "budget",
+                        lambda: (None, "Notion 401: API token is invalid"))
     update = FakeUpdate(text="B")
 
     run(david.handle_message(update, FakeContext()))
 
     assert update.message.replied_with("Could not calculate budget")
+    assert update.message.replied_with("401"), (
+        "the reply named no cause — every failure used to read the same")
 
 
 def test_budget_reply_is_the_budget_text(router):

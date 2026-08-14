@@ -47,10 +47,19 @@ def calendar(monkeypatch):
 
 @pytest.fixture
 def notion(monkeypatch):
-    """Control what compute_budget returns, for both modules that call it."""
-    state = {"budget": budget()}
-    monkeypatch.setattr(briefing, "compute_budget", lambda: state["budget"])
-    monkeypatch.setattr(budget_watch, "compute_budget", lambda: state["budget"])
+    """Control what compute_budget returns, for both modules that call it.
+
+    Returns the (budget, error) PAIR production returns — a double handing back a
+    bare dict would let these tests pass against a shape nothing produces, which
+    is the failure mode `conftest.written_ok` exists to prevent one layer over.
+    The two keys are separate so a test that only cares about the numbers sets
+    `notion["budget"]` and reads unchanged, while a failure test sets
+    `notion["err"]`. Setting neither is the healthy month.
+    """
+    state = {"budget": budget(), "err": None}
+    pair = lambda: (state["budget"], state["err"])       # noqa: E731
+    monkeypatch.setattr(briefing, "compute_budget", pair)
+    monkeypatch.setattr(budget_watch, "compute_budget", pair)
     return state
 
 
@@ -146,29 +155,59 @@ def test_morning_still_sends_the_budget_when_the_calendar_is_down(calendar, noti
 
 
 def test_morning_still_sends_events_when_notion_is_down(calendar, notion):
+    """THE HALF THAT USED TO DEGRADE SILENTLY.
+
+    This test asserted `err is None` on a Notion failure — correct against the
+    code at the time, because compute_budget returned a bare None for both
+    "Notion failed" and "nothing to report", so the pace line just vanished. A
+    missing line is indistinguishable from a month with nothing in it. The
+    calendar half of this same function had already been fixed; this is the
+    budget half catching up.
+    """
     calendar["events"] = [event("Dentist", 14, 30)]
-    notion["budget"] = None
+    notion["budget"], notion["err"] = None, "Notion 503"
 
     text, err = briefing.build_morning_briefing()
 
-    assert "Dentist 14:30" in text
-    assert "💰" not in text
-    assert err is None
+    assert "Dentist 14:30" in text, "a budget failure must not cost the calendar half"
+    assert "💰" not in text, "there is no pace to report"
+    assert "could not read your budget" in text.lower(), (
+        "the missing half must say it is missing, not just disappear")
+    assert err == "Notion 503"
 
 
 def test_morning_reports_rather_than_hides_a_total_outage(calendar, notion):
     """Both sources down. The old code returned None here — total silence.
 
-    Now the calendar failure is still reported, because "I could not check" and
-    "there was nothing to say" are different facts.
+    Now BOTH failures are reported and the message says both halves are unknown.
+    It used to report only the calendar, because the budget error did not exist
+    as a value: "I could not check" and "there was nothing to say" were the same
+    thing on that side.
     """
     calendar["err"] = "down"
-    notion["budget"] = None
+    notion["budget"], notion["err"] = None, "Notion 401"
 
     text, err = briefing.build_morning_briefing()
 
-    assert err == "down"
+    assert "down" in err and "Notion 401" in err, (
+        f"a double outage must report both, not pick one: {err!r}")
     assert "nothing scheduled" not in (text or "")
+    assert "could not read your calendar" in text.lower()
+    assert "could not read your budget" in text.lower()
+
+
+def test_a_single_failure_is_reported_verbatim(calendar, notion):
+    """The joiner must not decorate a lone error.
+
+    The scheduler interpolates this into a report you read at 07:31 to work out
+    what broke; a prefix David invented is one more thing to see through, and the
+    client's own string is the one that names the status code.
+    """
+    calendar["err"] = "Could not fetch events: <HttpError 401 invalid_grant>"
+
+    _, err = briefing.build_morning_briefing()
+
+    assert err == "Could not fetch events: <HttpError 401 invalid_grant>"
 
 
 # ─── EVENING BRIEFING ──────────────────────────────────────────────────────────
@@ -271,14 +310,28 @@ def test_pacing_fires_at_the_threshold(notion):
     assert text is not None
 
 
-def test_pacing_is_silent_when_notion_is_down(notion):
-    """KNOWN GAP, asserted so it is visible rather than forgotten.
+def test_pacing_reports_when_notion_is_down(notion):
+    """THE KNOWN GAP, CLOSED.
 
-    compute_budget() returns None for both "Notion failed" and "nothing to
-    report", so this builder cannot tell them apart and reports no error. It is
-    the same collapse the briefings just had, one layer down — see CLAUDE.md.
+    This test used to assert the opposite — `== (None, None)` — with a docstring
+    saying so, because compute_budget returned None for both "Notion failed" and
+    "nothing to report" and this builder could not tell them apart. Silence was
+    then indistinguishable from good news, for as long as the outage lasted, on
+    the one job whose whole purpose is to interrupt you.
     """
-    notion["budget"] = None
+    notion["budget"], notion["err"] = None, "Notion 503 Service Unavailable"
+
+    text, err = budget_watch.build_pacing_warning()
+
+    assert text is None, "there is nothing trustworthy to say about the pace"
+    assert err == "Notion 503 Service Unavailable", "but the failure must be reported"
+
+
+def test_pacing_stays_silent_on_a_month_that_is_simply_fine(notion):
+    """THE MIRROR, and the assertion that stops the fix from turning every quiet
+    day into an alert. The query succeeded and there is nothing to warn about —
+    (None, None) is exactly right, and must not become (None, error)."""
+    notion["budget"] = budget(total=50.0, day=20, projected_over=0.0)
 
     assert budget_watch.build_pacing_warning() == (None, None)
 

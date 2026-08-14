@@ -114,11 +114,14 @@ async def on_error(update, context):
 # --- SCHEDULED JOB: SEND BUDGET RECAP --- #
 async def send_budget_recap(context: ContextTypes.DEFAULT_TYPE):
     try:
-        result_text = await asyncio.to_thread(budget)
+        result_text, err = await asyncio.to_thread(budget)
         if result_text:
             await send(context.bot, CHAT_ID, result_text)
         else:
-            await context.bot.send_message(chat_id=CHAT_ID, text="❌ Could not fetch budget from Notion.")
+            # Plain, and it stays plain: `err` is Notion's own string. This is
+            # one of the three reporters CLAUDE.md exempts from telegram_text.
+            await context.bot.send_message(
+                chat_id=CHAT_ID, text=f"❌ Could not fetch budget from Notion: {err}")
     except Exception as e:
         await notify_error(context, "send_budget_recap", e)
 
