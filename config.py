@@ -307,6 +307,36 @@ HEARTBEAT_DAY    = SUNDAY
 HEARTBEAT_HOUR   = 20
 HEARTBEAT_MINUTE = 30
 
+# Learn Nudge — the Learn pages you saved and never merged into a Manual.
+#
+# Weekly, and Saturday 10:00 specifically. Daily would be noise: the list barely
+# changes between one day and the next, and a message you learn to swipe away is
+# worse than none. Saturday morning is when acting on it is realistic, which is
+# the only test a nudge has to pass.
+#
+# SATURDAY is the named constant, never a bare 6 — a run_daily call site with a
+# hand-written weekday number is how the budget recap fired on the wrong days for
+# months (see the weekday block above).
+#
+# The slot is also clear of all six existing jobs; test_no_two_jobs_share_a_slot
+# asserts that no two ever collide.
+LEARN_NUDGE_DAY    = SATURDAY
+LEARN_NUDGE_HOUR   = 10
+LEARN_NUDGE_MINUTE = 0
+
+# How old an unimplemented page must be before it is named. Nudging about
+# something you saved an hour ago trains you to ignore the nudge; a week is long
+# enough that not having merged it was a decision rather than a delay.
+#
+# The comparison runs in NOTION, as `created_time before (now - this)`, and
+# `before` is strict — so a page created exactly this many days ago is not yet
+# named and becomes eligible a moment later.
+LEARN_NUDGE_STALE_DAYS = 7
+
+# How many get named. A list of forty is the same as no list: it is a backlog,
+# not a task. The rest are counted, so the size of the debt is still visible.
+LEARN_NUDGE_MAX_ITEMS = 5
+
 
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────
 # Every environment variable David reads, in one place. The descriptions are the

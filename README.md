@@ -120,6 +120,7 @@ All times Europe/Rome, configured in `config.py` and attached by
 | 20:00 daily | `evening_briefing` | Tomorrow's events. Silent when tomorrow is empty |
 | 20:30 Sunday | `heartbeat` | Calendar/Notion/month probes + activity counts. **Always sends** |
 | 09:30 Sunday | `budget_recap` | Full per-category budget recap |
+| 10:00 Saturday | `learn_nudge` | Learn pages saved over a week ago and never merged into a Manual. Silent when there are none |
 
 The two briefings replaced the old `send_daily_reminders` job, which sent both
 today's and tomorrow's events at 07:30. Running both would have sent today's
