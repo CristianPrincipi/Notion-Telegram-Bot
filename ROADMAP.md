@@ -38,7 +38,7 @@ Rule 4 (a destructive command never guesses which row it meant), the
 | ~~3~~ ✅ | ~~**M3** — The Learn-nudge job~~ | Done. Highest product value. Independent of everything else. |
 | ~~4~~ ✅ | ~~**M4** — Takeaway of the week~~ | Done. Same shape as M3, and done while the proactive-builder pattern was fresh. |
 | ~~5~~ ✅ | ~~**M5** — Split the last four `update`-taking modules~~ | Done. Pure refactor. Unlocks M6. |
-| 6 | **M6** — On-demand calendar: `Agenda`, and cancelling a reminder | Wants `reminder.py` split first (M5). |
+| ~~6~~ ✅ | ~~**M6** — On-demand calendar: `Agenda`, and cancelling a reminder~~ | Done. Wanted `reminder.py` split first (M5). |
 
 M1–M4 are independent of each other and of M5/M6 — reorder them freely. **M6
 depends on M5** (at least on the `reminder.py` half of it).
@@ -496,9 +496,10 @@ Three concrete gains:
 
 ---
 
-# M6 — On-demand calendar: `Agenda`, and cancelling a reminder
+# M6 — On-demand calendar: `Agenda`, and cancelling a reminder ✅ done
 
-_Depends on M5 (`reminder.py` split)._
+_Landed on `claude/milestone-5-review-6-start-e1iq5r`. `PLAN.md` holds the
+decisions and the guard-revert record._
 
 ## Why
 
@@ -523,16 +524,28 @@ nothing anywhere to delete them.
     than widen** if it cannot be resolved.
   - **More than one match writes nothing** — list them and wait for a number,
     reusing `expense_safety`'s pending-choice state machine and its 2-minute
-    expiry. Note that machine currently lives in `expense_safety.py` and is
-    named for expenses; decide whether to generalise it or add a sibling, and
-    record the decision.
+    expiry. ~~decide whether to generalise it or add a sibling, and record the
+    decision.~~ **DECIDED: generalised, into `pending_choice.py`, with ONE slot
+    rather than one per feature.** A sibling module would be two live lists at
+    once, and `remember_pending`'s own docstring already rules that out within
+    expenses — "David prints one list at a time, so the only list a number can
+    sensibly refer to is the last one printed". That argument does not stop at
+    the feature boundary. The undo record got the same treatment for the same
+    reason, so `undo` reverses the last destructive thing David did rather than
+    the last destructive *expense*.
   - Take `page_lock(CALENDAR_ID)` across **lookup and delete**, not just the
     delete — splitting find-from-mutate is what let two queries resolve to the
     same row in the expense path.
-- **Undo.** Every destructive write in David records its own reversal. A deleted
-  calendar event can be re-created from the body you already hold — snapshot it
-  from the object the *lookup* returned, never from a re-read. If you decide not
-  to build undo, say so here explicitly rather than leaving it unmentioned.
+- **Undo.** ~~If you decide not to build undo, say so here explicitly.~~ **BUILT.**
+  It re-creates rather than un-deletes, because Google has no reversible archive
+  — which makes "snapshot from the object the lookup returned" not merely the
+  right order but the only possible one: after `events.delete` there is nothing
+  left to read. Two consequences kept in the code and the docs: the insert body
+  is a WHITELIST (`RESTORABLE_FIELDS`), since Google rejects a body carrying
+  `id`/`etag`/`created`/`organizer` and storing the raw item would make undo a
+  400 exactly when you needed it; and the confirmation says "re-created", not
+  "restored", because the event comes back with a new ID and guest replies on
+  the original do not come back with it.
 - **Registry placement.** Adding a command means adding a `Command`, a
   `SPY_TARGETS` entry and router rows. Every pattern must be anchored on a
   distinct literal prefix — `test_no_input_can_be_claimed_by_two_commands`
@@ -542,69 +555,69 @@ nothing anywhere to delete them.
 
 ### Prerequisite — the client
 
-- [ ] `_list_events_between` returns `"id"` on each item.
-- [ ] New `delete_event(event_id) -> (ok, error)` in
+- [x] `_list_events_between` returns `"id"` on each item.
+- [x] New `delete_event(event_id) -> (ok, error)` in
       `clients/calendar_client.py`, with the same retry/error shape as
       `create_event`.
 
 ### `Agenda` (read-only)
 
-- [ ] Service function returning `(text, error)`, reusing `get_events_for_day`
+- [x] Service function returning `(text, error)`, reusing `get_events_for_day`
       and the day tokens `Remind` already defines (`td` / `tr` / spelled out).
-- [ ] Reuse `proactive/briefing._format_events_inline` rather than writing a
+- [x] Reuse `proactive/briefing._format_events_inline` rather than writing a
       second formatter — one renderer, or the two drift.
-- [ ] A calendar read failure **says so**; an empty day says "nothing
+- [x] A calendar read failure **says so**; an empty day says "nothing
       scheduled". These must not be the same message. This is the same rule the
       briefings were fixed for.
-- [ ] `Command` entry + `Help` entry in `david.COMMANDS`. Runs **inline**, not
+- [x] `Command` entry + `Help` entry in `david.COMMANDS`. Runs **inline**, not
       detached: it is read-only.
 
 ### Cancelling
 
-- [ ] Service function: find matches by name inside the bounded window.
-- [ ] Zero matches → say so. One → confirm and delete. Several → list with times
+- [x] Service function: find matches by name inside the bounded window.
+- [x] Zero matches → say so. One → confirm and delete. Several → list with times
       and wait for a number.
-- [ ] Lock across lookup **and** delete on `CALENDAR_ID`.
-- [ ] Record the reversal before reporting success, if undo is in scope.
-- [ ] `Command` entry with `destructive=True` — the flag drives the shared
+- [x] Lock across lookup **and** delete on `CALENDAR_ID`.
+- [x] Record the reversal before reporting success, if undo is in scope.
+- [x] `Command` entry with `destructive=True` — the flag drives the shared
       warning in the generated help, and `tests/test_router.py` asserts the flag
       and the guarded path agree.
 
 ### Docs
 
-- [ ] `README.md` command table, and a subsection for cancellation mirroring
+- [x] `README.md` command table, and a subsection for cancellation mirroring
       "Deleting and updating an expense".
-- [ ] `CLAUDE.md` — module map, the write-locks table (a second `CALENDAR_ID`
+- [x] `CLAUDE.md` — module map, the write-locks table (a second `CALENDAR_ID`
       cycle), and the `Remind` section.
 
 ## Tests
 
-- [ ] `tests/test_router.py` — rows for every new form, a `SPY_TARGETS` entry
+- [x] `tests/test_router.py` — rows for every new form, a `SPY_TARGETS` entry
       per new handler, and confirmation that no input matches two commands.
       **The registry tests fail until the table covers the new commands** — that
       is by design, not a problem to work around.
-- [ ] `Agenda`: a populated day, an empty day, and a **failed read** produce
+- [x] `Agenda`: a populated day, an empty day, and a **failed read** produce
       three distinguishable messages. The third is the one that matters.
-- [ ] `Agenda tr` reads tomorrow, not today.
-- [ ] Cancel: two events with the same name write **nothing** and produce a
+- [x] `Agenda tr` reads tomorrow, not today.
+- [x] Cancel: two events with the same name write **nothing** and produce a
       numbered list.
-- [ ] Cancel: answering with a number deletes the event that was offered at that
+- [x] Cancel: answering with a number deletes the event that was offered at that
       index — assert the ID, not the name.
-- [ ] Cancel: the pending list expires after 2 minutes and a later number is an
+- [x] Cancel: the pending list expires after 2 minutes and a later number is an
       unrecognised message again.
-- [ ] Cancel: an out-of-range number leaves the list answerable.
-- [ ] `tests/test_concurrency.py` — the new cycle is locked on a *database-level*
+- [x] Cancel: an out-of-range number leaves the list answerable.
+- [x] `tests/test_concurrency.py` — the new cycle is locked on a *database-level*
       id (`CALENDAR_ID`), never an event id. The lock-key scan reads the source
       and fails on anything else.
-- [ ] A test driving two cancels concurrently through the real handlers, in the
+- [x] A test driving two cancels concurrently through the real handlers, in the
       style of
       `test_no_two_expense_cycles_are_ever_in_flight_together`.
-- [ ] `tests/test_async_io.py` — `Agenda` runs inline and does not block the
+- [x] `tests/test_async_io.py` — `Agenda` runs inline and does not block the
       loop (it is a network read; it must go through `asyncio.to_thread`).
-- [ ] **Guard-revert pass** on the three Rule-4 guards: remove the multi-match
+- [x] **Guard-revert pass** on the three Rule-4 guards: remove the multi-match
       refusal, remove the lock's coverage of the lookup, and widen the window —
       each must turn a named test red.
-- [ ] Full suite green, `ruff check .` clean.
+- [x] Full suite green, `ruff check .` clean.
 
 ---
 
@@ -661,6 +674,34 @@ Recorded so they are not re-proposed.
   place a model is named) for a feature the text commands already cover.
 
 # Changelog
+
+- **2026-08-15** — **M6 landed.** Three things worth carrying forward:
+  - **A guard written for one feature is only a guard until the second feature
+    arrives.** `test_destructive_is_exactly_what_goes_through_the_expense_guard`
+    asserted `"find_expense_matches" in chain == command.destructive`, which was
+    correct for exactly as long as every destructive command was an expense
+    command. `Cancel` turned it red on its first run — which is the test
+    working, not failing: a second destructive path had to be DECLARED
+    (`SCOPED_FINDERS`) rather than inherited by accident. Expect the same shape
+    from any registry test that names one implementation.
+  - **The pending-choice slot was the real design decision, and the answer was
+    already written down.** The choice looked like "generalise or add a
+    sibling", and a sibling is the smaller diff. It is also wrong, and
+    `expense_safety.remember_pending`'s docstring said why before `Cancel`
+    existed: one list at a time, because a bare number can only answer the last
+    one printed. Two feature-local slots would have reintroduced exactly that
+    ambiguity one level up, where no single feature's tests could see it.
+    `test_an_ambiguous_cancel_replaces_a_live_expense_list` is the assertion
+    that would have caught it.
+  - **The same date token had to mean two different things, and that is a second
+    entry point rather than a flag.** `parse_date_time` refuses a past `td` and
+    rolls a past `DD.MM` forward, both because a reminder in the past never
+    pings. Neither rule survives the trip to a READ — "what did I have on
+    12.06?" is an ordinary question. `parse_day` takes a bare date at face
+    value, and the ONLY thing making that safe is the reply naming the resolved
+    day in full. The permissiveness and the naming are one decision; asserting
+    them in separate tests without saying so would let a later change delete the
+    cheap half.
 
 - **2026-08-14** — **M5 landed.** Three things worth carrying forward:
   - **A `SPY_HOMES` entry cannot be verified by reading it.** A spy only works

@@ -34,9 +34,12 @@ Fixing the bug makes that row fail; update the row in the same commit as the fix
 import pathlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pytest
+import pytz
 
+import bot.agenda
 import bot.budget
 import bot.implement
 import bot.learn
@@ -45,7 +48,7 @@ import bot.notion_ids
 import bot.pkm
 import bot.reminder
 import david
-from services import books, expenses, learn
+from services import books, cancel, expenses, learn
 from conftest import FakeContext, FakeUpdate, run, written_ok
 
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
@@ -71,10 +74,28 @@ ONE_MATCH = [{
     },
 }]
 
+# The same idea for `Cancel`: EXACTLY ONE event, so the command runs straight
+# through to its delete. `start_dt` is a real aware datetime because the reply
+# formats it, and `raw` is what the undo snapshot is built from — a double
+# without it would make the delete look fine while recording a reversal that
+# restores nothing.
+ONE_EVENT = [{
+    "id": "event-id-1",
+    "summary": "Dentist",
+    "start_dt": pytz.timezone("Europe/Rome").localize(datetime(2026, 8, 20, 14, 30)),
+    "end_dt":   pytz.timezone("Europe/Rome").localize(datetime(2026, 8, 20, 15, 30)),
+    "all_day": False,
+    "raw": {"summary": "Dentist",
+            "start": {"dateTime": "2026-08-20T14:30:00+02:00"},
+            "end":   {"dateTime": "2026-08-20T15:30:00+02:00"}},
+}]
+
 # Plumbing values that are not parsed out of the user's text, so they are not
 # part of what a route test is asserting. `page_id` is one: the destructive
 # commands are routed by NAME and the ID is whatever the lookup resolved it to.
-UNINTERESTING_ARGS = {"_update", "page_id"}
+# `page_id` and `event_id` are both this: the destructive commands are routed by
+# NAME and the id is whatever the lookup resolved it to.
+UNINTERESTING_ARGS = {"_update", "page_id", "event_id"}
 
 
 # ─── SPY LAYER ─────────────────────────────────────────────────────────────────
@@ -97,6 +118,7 @@ SPY_TARGETS = [
     ("handle_learn",     ("_update", "user_text", "file_bytes"),    None,                 True),
     ("handle_implement", ("_update", "user_text"),                  None,                 True),
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
+    ("handle_agenda",    ("_update", "day"),                        None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
     ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
@@ -106,6 +128,12 @@ SPY_TARGETS = [
     ("find_expense_matches", ("name",),                             (ONE_MATCH, None),    False),
     ("update_Expense",   ("page_id", "amount", "category"),         (True, None),         False),
     ("delete_Expense",   ("page_id",),                              (True, None),         False),
+    # `Cancel` is find-then-write like the destructive expense pair, and is
+    # spied at the SERVICE level for the same reason: the registry test below
+    # asserts that a destructive command routes through a scoped finder, and a
+    # spy on the bot adapter would hide the half that matters.
+    ("find_event_matches", ("name",),                               (ONE_EVENT, None),    False),
+    ("delete_event",     ("event_id",),                             (True, None),         False),
 ]
 
 SPY_HOMES = {
@@ -115,7 +143,10 @@ SPY_HOMES = {
     "handle_month":         bot.month,
     "handle_find":          bot.notion_ids,
     "handle_get":           bot.pkm,
+    "handle_agenda":        bot.agenda,
     "handle_remind":        bot.reminder,
+    "find_event_matches":   cancel,
+    "delete_event":         cancel,
     "handle_learn":         bot.learn,
     "handle_implement":     bot.implement,
     "add_New_Book":         books,
@@ -242,6 +273,37 @@ ROUTES = [
     # usage message) rather than falling through to the generic "didn't get that".
     Route("Remind Dentist", "handle_remind", {"user_text": "Remind Dentist"},
           "malformed reminder still routes to the reminder handler"),
+
+    # ── AGENDA ─────────────────────────────────────────────────────────────────
+    # The day token is optional; None means today, and the service turns it into
+    # a date. Which day a token NAMES is calendar_client's decision and is driven
+    # in test_agenda.py — these rows only prove the token arrives intact.
+    Route("Agenda", "handle_agenda", {"day": None}, "agenda, today by default"),
+    Route("agenda", "handle_agenda", {"day": None}, "agenda, lowercase"),
+    Route("Agenda td", "handle_agenda", {"day": "td"}, "agenda for today"),
+    Route("Agenda tr", "handle_agenda", {"day": "tr"}, "agenda for tomorrow"),
+    Route("Agenda 12.06", "handle_agenda", {"day": "12.06"}, "agenda for a date"),
+    Route("Agenda 12.06.2027", "handle_agenda", {"day": "12.06.2027"},
+          "agenda for a date with the year"),
+    # An unrecognised token still routes, so parse_day can explain it. Falling
+    # through to "I didn't get that" would say nothing about which forms work.
+    Route("Agenda someday", "handle_agenda", {"day": "someday"},
+          "an unknown day token still reaches the handler"),
+
+    # ── CANCEL ─────────────────────────────────────────────────────────────────
+    # find-then-delete, the calendar's version of the destructive expense pair.
+    # These rows resolve to one match; ambiguity is driven in test_cancel.py.
+    Route("Cancel Dentist", "find_event_matches → delete_event",
+          {"name": "Dentist"}, "cancel an event"),
+    Route("cancel Dentist", "find_event_matches → delete_event",
+          {"name": "Dentist"}, "cancel, lowercase"),
+    # `Cancel (.+)` is greedy and unvalidated, exactly like `D e` — whatever
+    # follows is the name, and a name matching nothing is reported as such.
+    Route("Cancel Dentist appointment", "find_event_matches → delete_event",
+          {"name": "Dentist appointment"},
+          "a multi-word event name is not split"),
+    Route("Cancel", NO_HANDLER, reply("I didn't get that"),
+          "Cancel with no name is not a command"),
 
     # ── ADD BOOK ───────────────────────────────────────────────────────────────
     Route("Add b Dune - Herbert - s", "add_New_Book",
@@ -515,28 +577,42 @@ def test_no_input_can_be_claimed_by_two_commands():
     assert collisions == {}, f"these inputs match more than one pattern: {collisions}"
 
 
+# The scoped, ordered lookups Hard Rule 4 is built on — one per destructive
+# feature. A destructive command resolves its target through one of these and
+# only then writes; nothing else may reach one.
+#
+# THIS USED TO BE THE BARE STRING "find_expense_matches", which was right for
+# exactly as long as every destructive command was an expense command. `Cancel`
+# turned it red on its first run, which is the test working: a second
+# destructive path had to be declared here deliberately rather than inherited.
+SCOPED_FINDERS = {"find_expense_matches", "find_event_matches"}
+
+
 @pytest.mark.parametrize("command", david.COMMANDS, ids=lambda c: c.name)
-def test_destructive_is_exactly_what_goes_through_the_expense_guard(command, router):
+def test_destructive_is_exactly_what_goes_through_a_scoped_lookup(command, router):
     """`destructive=True` is a claim about the code path, not a label.
 
-    A destructive command finds its target through `find_expense_matches` — the
-    month-scoped, CREATED_DESC-sorted lookup that Hard Rule 4 is built on — and
-    only then writes. If one ever wrote without it, or a harmless command started
-    reaching it, the flag and the behaviour would disagree here.
+    A destructive command finds its target through a lookup that is SCOPED (this
+    month for expenses, the next CANCEL_SEARCH_DAYS for events) and ORDERED
+    (`CREATED_DESC` for Notion, `orderBy="startTime"` for Google), and only then
+    writes. If one ever wrote without it, or a harmless command started reaching
+    one, the flag and the behaviour would disagree here.
     """
     route = _example_row(command)
 
     run(david.handle_message(FakeUpdate(text=route.text), FakeContext()))
 
-    assert ("find_expense_matches" in router.chain) == command.destructive, (
+    reached = SCOPED_FINDERS & set(router.chain.split(" → "))
+
+    assert bool(reached) == command.destructive, (
         f"{command.name!r} declares destructive={command.destructive} but routed "
         f"to {router.chain}"
     )
 
 
-def test_the_destructive_commands_are_the_two_expected_ones():
+def test_the_destructive_commands_are_the_three_expected_ones():
     """A new destructive command must be a deliberate act, not a diff nobody read."""
-    assert {c.name for c in david.COMMANDS if c.destructive} == {"U e", "D e"}
+    assert {c.name for c in david.COMMANDS if c.destructive} == {"U e", "D e", "Cancel"}
 
 
 # ─── THE GENERATED HELP ────────────────────────────────────────────────────────

@@ -126,6 +126,25 @@ UNVERIFIED_NOTE = (
 TAKEAWAYS_HEADING = "✅ Key Takeaways"
 
 
+# ─── CANCELLING A CALENDAR EVENT ───────────────────────────────────────────────
+# How far ahead `Cancel [Name]` looks, in days, starting from midnight today.
+#
+# THE BOUND IS A HARD RULE 4 REQUIREMENT, not a performance knob: a destructive
+# command has to have a defined scope, and this is the calendar's equivalent of
+# the expense lookup's month filter. Unbounded, `Cancel Gym` would reach a
+# recurring Gym eighteen months out and offer to delete an instance of it you
+# have no memory of booking.
+#
+# Thirty days is the horizon over which you actually remember what is on the
+# calendar and would recognise a match in a numbered list. It also keeps the
+# lookup to one Google page in normal use. Beyond it, cancelling is a job for
+# Google Calendar itself, where you can see what you are removing.
+#
+# Widening this on a failed read is what services/cancel.py refuses to do, and
+# that refusal is the part worth keeping if this number ever changes.
+CANCEL_SEARCH_DAYS = 30
+
+
 def is_unverified_source(text: str) -> bool:
     """True if this page text carries the unverified-source marker.
 

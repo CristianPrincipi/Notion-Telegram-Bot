@@ -67,10 +67,12 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Add e [Name] [Amount] [Category]` | Add an expense. Categories: `s` `f` `g` `o` (default `f`) |
 | `U e [Name] [Amount] [Category]` | Update an expense. **This month only**; several matches → numbered list, reply with a number |
 | `D e [Name]` | Delete (archive) an expense. Same disambiguation as `U e` |
-| `undo` | Reverse the last delete or update |
+| `undo` | Reverse the last delete, update or cancelled reminder |
 | `B` | Monthly budget recap |
 | `Month` | Force the monthly page rollover now and report the page ID |
 | `Remind [Name] [DD.MM] - [HH.MM]` | Create a Google Calendar event. In place of the date, `td` means today and `tr` means tomorrow (the words work too), and a bare hour means o'clock — so `Remind Dentist tr 10` books tomorrow at 10:00. `td` refuses a time that has already passed, because a reminder in the past never pings. Add the year (`12.06.2027`) to pick one; without it, a date more than a day past rolls to next year and one inside that window is queried rather than guessed. A bare `t` used to mean tomorrow and is now refused by name |
+| `Agenda [day]` | What is on the calendar. Today by default; `td` is today, `tr` is tomorrow, or give a date (`Agenda 12.06`). A read failure, an empty day and a full one are three different replies |
+| `Cancel [Name]` | Delete a calendar event in the next 30 days. Several matches → numbered list with their times, reply with a number. `undo` re-creates it |
 | `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into the Learn database. A URL already saved is reported instead of summarised again; add ` !` on the end to re-summarise anyway |
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
@@ -106,6 +108,39 @@ If David cannot work out which month page to search, the lookup is **refused**
 rather than widened. Falling back to an unscoped search would restore the exact
 reach the month filter exists to remove, at the moment David is least sure of
 its own state.
+
+### Cancelling a reminder
+
+`Cancel [Name]` is the same shape of command as `D e`, on the calendar, and it
+carries the same three guards:
+
+| | |
+| --- | --- |
+| Ordering | Google is queried with `orderBy="startTime"`, so "the first match" means the earliest one, the same way on every call |
+| Scope | The search covers **the next 30 days** from midnight today (`CANCEL_SEARCH_DAYS`). A failed read is **refused**, never widened to an unbounded one |
+| Disambiguation | More than one match deletes **nothing**. David lists the matches with their weekday, date and time, and waits for you to reply with a number |
+
+Matching is a case-insensitive substring of the event **title only**. The
+Calendar API's own search covers descriptions, locations and attendees too, so
+`Cancel Gym` would have matched an unrelated event that merely mentions the gym —
+a destructive command that matches on prose is one that surprises you.
+
+**`undo` re-creates the event; it does not un-delete it.** Google has no
+reversible archive, so the reversal is an insert built from a snapshot taken from
+the event as the lookup found it — which is the only order that could work, since
+after the delete there is nothing left to read. Be clear about the difference:
+
+- **Comes back:** the title, day and time, all-day-ness, description, location,
+  recurrence, and the event's own alerts. Everything `Remind` writes.
+- **Does not:** the event's ID, and anything Google keys to it — guest replies
+  above all. The confirmation says "re-created" rather than "restored" for
+  exactly this reason.
+
+There is **one pending list and one undo record across every destructive
+command**, not one per feature. David prints one list at a time, so a bare number
+can only sensibly answer the last one printed — two independent lists would make
+`2` mean whichever prompt you had scrolled to. `undo` likewise reverses the last
+destructive thing David did, whatever it was.
 
 ## Scheduled messages
 
@@ -329,6 +364,7 @@ serialised with `page_lock.py`:
 | Implement → Diet page | `DIET_ID` | refused |
 | `U e` / `D e` | `EXPENSES_ID` | queues (writes take ~1s) |
 | `Remind` | `CALENDAR_ID` | queues |
+| `Cancel` (lookup **and** delete) | `CALENDAR_ID` | queues |
 
 **Keys are always database ids, never page ids.** A page id is not known until
 the lookup the lock has to cover, so keying on it forces the find-or-create
@@ -371,7 +407,7 @@ david.py     entry point: the command registry, its dispatch loop, the generated
              help, job + handler registration, the global error handler
 bot/         Telegram adapters — parse the update, call a service, send the reply
 services/    the work itself: expenses, books, learn, implement, implement_diet,
-             reminder, pkm, notion_ids, month
+             reminder, agenda, cancel, pkm, notion_ids, month
 clients/     the wire: Notion, Google Calendar, Anthropic, Telegram file download
 config.py    constants, schedules, timeouts and the environment contract
 ```

@@ -95,9 +95,10 @@ async def cmd_delete_expense(update, context, args):
         notify=notify, notify_md=notify_md)
 
 
-async def cmd_undo(update, context, args):
-    notify, notify_md = for_update(update)
-    await expenses.run_undo(context.user_data, notify=notify, notify_md=notify_md)
+# cmd_undo used to live here. It moved to bot/undo.py when `Cancel` became the
+# second destructive command: `undo` is one word over two services now, so the
+# handler routes by which one recorded the reversal instead of always calling
+# this module's.
 
 
 async def handle_selection(update, context, selection: int):

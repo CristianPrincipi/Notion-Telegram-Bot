@@ -29,7 +29,7 @@ This is the fix for the worst silent failure David had. Before it:
     said the day was clear. That is not a missing message, it is an affirmative
     false statement, and it is the kind you act on by not showing up.
 
-A calendar error must therefore never reach _format_events_inline. The two states
+A calendar error must therefore never reach format_events_inline. The two states
 are kept apart all the way to the text.
 """
 
@@ -37,19 +37,13 @@ from datetime import timedelta
 
 from clients.calendar_client import get_events_for_day, now_local
 from budget import compute_budget
+from services.agenda import format_events_inline
 
-
-def _format_events_inline(events: list) -> str:
-    """Compact, comma-separated: 'Dentist 14:30, Gym 19:00'."""
-    if not events:
-        return "nothing scheduled"
-    parts = []
-    for e in events:
-        if e.get("all_day"):
-            parts.append(f"{e['summary']} (all day)")
-        else:
-            parts.append(f"{e['summary']} {e['start_dt'].strftime('%H:%M')}")
-    return ", ".join(parts)
+# IMPORTED, NOT DEFINED. This renderer used to be `_format_events_inline` here,
+# private to the briefings. The `Agenda` command has to produce the same line, so
+# leaving it here meant either a second copy or `services/` importing `proactive/`
+# — sideways and upward, which the layering rule does not allow. It moved down to
+# services/agenda.py and both callers read the one implementation.
 
 
 def _budget_line(b: dict | None) -> str | None:
@@ -119,11 +113,11 @@ def build_morning_briefing() -> tuple:
 
     parts = ["☀️ Good morning."]
     if cal_err:
-        # NEVER fall through to _format_events_inline here. `events` is [] on
+        # NEVER fall through to format_events_inline here. `events` is [] on
         # error, and [] renders as "nothing scheduled".
         parts.append("⚠️ I could not read your calendar, so I don't know what's on today.")
     else:
-        parts.append(f"Today: {_format_events_inline(events)}.")
+        parts.append(f"Today: {format_events_inline(events)}.")
 
     if budget_line:
         parts.append(budget_line)
@@ -148,4 +142,4 @@ def build_evening_briefing() -> tuple:
         return None, err
     if not events:
         return None, None
-    return f"🌙 Tomorrow: {_format_events_inline(events)}.", None
+    return f"🌙 Tomorrow: {format_events_inline(events)}.", None

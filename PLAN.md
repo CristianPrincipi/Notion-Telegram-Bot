@@ -1,192 +1,210 @@
-# Plan: M5 — split the last four `update`-taking modules
+# Plan: M6 — On-demand calendar: `Agenda`, and cancelling a reminder
 
-_Last updated: 2026-08-14_
+_Last updated: 2026-08-15_
 
-Branch: `split-update-modules`, off `main` at the M4 merge (`f0209cc`).
-Baseline before any change: **962 passed**, `ruff check .` clean.
+Branch: `claude/milestone-5-review-6-start-e1iq5r`, off `main` at the M5 merge
+(`41281af`). Baseline before any change: **979 passed**, `ruff check .` clean.
 
-`reminder.py`, `pkm.py`, `notion_ids.py` and `month.py` are still at the repo
-root and still take `update`, replying through `telegram_text` themselves.
-`CLAUDE.md` names them as deliberate follow-ups from the layering split, and
-`bot/commands.py` exists only to hold their one-line adapters until this
-happens. Splitting them makes them callable from a job, drivable from a test
-with no fake `Update`, and — the part that lasts — puts them under
-`tests/test_layering.py`, which today cannot see them at all.
+`clients/calendar_client.py` already has `get_events_for_day` and
+`_list_events_between`, and the only callers are the 07:30 and 20:00 jobs — **no
+command in the registry reads the calendar.** And `Remind` creates events with
+nothing anywhere to delete them.
 
-**This is a pure refactor. Move code only.** Every defect noticed on the way is
-recorded under `## Found while moving` and fixed in a later PR, because a fix
-hidden inside a move is a fix nobody reviewed.
+This milestone adds the two commands that close that: `Agenda` (read-only) and
+`Cancel [Name]` (destructive, so Hard Rule 4 applies in full).
 
 ## Decisions taken before writing code
 
-**1. One COMMIT per module, one PR for the milestone.** The roadmap asks for one
-PR per module; `ROADMAP.md`'s own workflow section asks for one PR per
-milestone. The two split the difference badly, so: one branch, four commits,
-each of which leaves `ruff check .` clean and the full suite green on its own.
-A reviewer reads them one at a time; CI gates them once.
+**1. The pending-choice machine is GENERALISED, not forked, and there is ONE
+pending slot.** `ROADMAP.md` asks for this decision explicitly. `expense_safety`
+carries the machine today and is named for expenses; `Cancel` needs the same
+"more than one match writes nothing" behaviour with different fields and
+different wording.
 
-**2. The seam is the existing `handle_*` adapter, and it keeps its name and its
-signature.** `handle_remind(update, user_text)` moves from `reminder.py` to
-`bot/reminder.py` and becomes two lines: bind `for_update(update)`, call
-`services.reminder.run_remind(user_text, notify=…, notify_md=…)`. That is what
-`bot/learn.py` already does, and it means `tests/test_router.py` needs only a
-`SPY_HOMES` change — the spy names and their recorded argument names do not
-move, so the router table keeps asserting the same thing about the same call.
+A sibling module with its own `PENDING_KEY` would be two independent live lists,
+and then a bare `2` means whichever one you had scrolled to — the exact ambiguity
+`remember_pending`'s docstring already argues against *within* expenses ("David
+prints one list at a time, so the only list a number can sensibly refer to is the
+last one printed"). That argument does not stop at the feature boundary.
 
-**3. One `bot/` module per feature, and `bot/commands.py` goes away.** Its
-docstring is entirely about a state of affairs this milestone ends. Its four
-delegators become `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py` and
-`bot/month.py`, matching `bot/books.py` / `bot/expenses.py` / `bot/learn.py`;
-`cmd_budget` — the one handler in there that already reads right, because
-`budget.py` is telegram-free — becomes `bot/budget.py`.
+So the generic half moves to a new root module `pending_choice.py` — the TTL, the
+strict-digits `parse_selection`, expiry, the range check, and **one** slot tagged
+with the KIND that owns it. `expense_safety.py` keeps its whole public surface
+and its expense-shaped `Choice` / `Pending` / `Undo`, built on top; a new
+`calendar_safety.py` is its mirror for events. The dispatch loop in `david.py`
+asks `pending_choice` whether a list is live and routes the number by kind.
 
-**4. `_send_long` becomes one implementation, and it is bound where `notify`
-is.** `pkm.py:221` splits plain text; `notion_ids.py:271` splits Markdown. Same
-splitter, two senders. It cannot move into `services/` (it is a Telegram limit)
-and the service cannot import `bot/`, so the adapter wraps the channel that
-needs it:
+The **undo record is the same shape of decision and gets the same treatment**:
+one slot, tagged by kind, so `undo` reverses the last destructive thing David did
+rather than the last destructive *expense*.
 
-    notify, notify_md = for_update(update)
-    await run_get(text, notify=partial(send_long, notify), notify_md=notify_md)
+**2. `Cancel` records a reversal, and it re-creates rather than un-deletes.**
+Google's `events.delete` has no archive an integration can flip back the way
+Notion's does. The reversal is therefore an insert built from a snapshot taken
+from the object the LOOKUP returned — the same ordering rule `expense_safety`
+already states, for the same reason.
 
-The service just calls `notify(long_text)`. Which channel splits stays exactly
-where it is today — plain for `Get`, Markdown for the diagnostics — so no
-message changes shape, and there is one splitter instead of two.
+Be precise about what that buys, here and in the docs:
 
-**5. `services/month.py` keeps its `threading.RLock` verbatim.** It is reached
-from worker threads, and an `asyncio.Lock` between two threads acquires without
-ever blocking. The comment saying so moves with it, unedited.
+- **Restored:** summary, start, end, all-day-ness, description, location,
+  recurrence and the event's own reminder overrides — a whitelist of the fields
+  Google accepts on insert, copied verbatim off the snapshot.
+- **Not restored:** the event ID (it comes back as a new event), and anything
+  attached to that ID — attendee responses, the original creator, per-guest
+  state. `Remind` creates none of those, which is why this is worth having at
+  all, and the reply says so rather than claiming a clean undo.
 
-**6. `REMIND_PATTERN` stays with the service; what a token MEANS stays in
-`clients/calendar_client.py`.** Not collapsing that split is the point of the
-module: a shorthand resolved in the regex is a date rule nothing can unit-test.
+**3. A day token means one thing in `Remind` and a slightly different thing in
+`Agenda`, and the difference is stated, not hidden.** `parse_date_time` refuses a
+`td` whose time has already passed and rolls a comfortably-past bare `DD.MM` to
+next year. Both rules exist because *a reminder in the past never pings*. Neither
+transfers to a read: "what did I have on Tuesday?" is a legitimate question.
 
-## Milestone 1: `reminder.py`
+So `clients/calendar_client.parse_day` is a second entry point beside
+`parse_date_time`, and it takes a bare `DD.MM` **at face value in the current
+year, past or not** — no rollover, no refusal. That is safe to do without
+guessing because the reply NAMES the resolved date in full (weekday, day, month,
+year), which is the same backstop `Remind`'s confirmation uses. The split
+`CLAUDE.md` insists on is kept: the service's pattern decides which tokens are
+LEGAL, the client decides what they MEAN.
 
-- [x] `services/reminder.py` — `run_remind(user_text, *, notify, notify_md=None)`,
-      carrying `REMIND_PATTERN`, `_format_conflict_warning` and the
-      `page_lock(CALENDAR_ID)` acquisition unchanged.
-- [x] `bot/reminder.py` — `cmd_remind` + `handle_remind(update, user_text)`.
-- [x] `david.py` imports `cmd_remind` from `bot.reminder`.
-- [x] Delete `reminder.py`.
-- [x] `tests/test_reminder_dates.py`, `tests/test_async_io.py`,
-      `tests/test_concurrency.py` — retarget imports; no assertion changes.
-- [x] `tests/test_concurrency.py` `LOCKING_MODULES` — `services/reminder.py`.
-      `test_every_locking_module_is_actually_checked` fails until it is updated.
-- [x] `tests/test_router.py` `SPY_HOMES["handle_remind"] = bot.reminder`.
-- [x] A test driving `run_remind` with a list's `append` and no Update at all.
-- [x] Suite green, `ruff check .` clean.
+**4. One event renderer, and it moves down a layer.**
+`proactive/briefing._format_events_inline` is the renderer `Agenda` must reuse or
+the two drift. `services/` cannot import `proactive/` upward-and-sideways and
+`proactive/` importing a private from a sibling is worse, so it becomes
+`services/agenda.format_events_inline` and `proactive/briefing.py` imports it.
+`proactive/` already imports `budget` and `clients/`, so the direction is the one
+that already exists.
 
-## Milestone 2: `pkm.py`
+**5. Two service modules, not one.** `services/agenda.py` is a read; `services/cancel.py`
+is a find-then-mutate under a lock with an undo. Sharing a file would put the one
+command that cannot write next to the one that Hard Rule 4 governs.
 
-- [x] `bot/long_messages.py` — `send_long(send, text)`, the one splitter.
-- [x] `services/pkm.py` — `run_get(user_text, *, notify, notify_md=None)`;
-      `_send_long` deleted from it.
-- [x] `bot/pkm.py` — `cmd_get` + `handle_get`, binding `notify` through
-      `partial(send_long, notify)`.
-- [x] `david.py`, `tests/test_pkm.py`, `tests/test_async_io.py`,
-      `tests/test_router.py` retargeted.
-- [x] A test driving `run_get` with a list's `append` and no Update.
-- [x] Suite green, `ruff check .` clean.
+**6. `Agenda` runs INLINE.** It is read-only, so it cannot reorder against a
+write the way a detached command could — the same reasoning `Get` already
+carries. `Cancel` runs inline too: it is a short write, like `D e`.
 
-## Milestone 3: `notion_ids.py`
+**7. The `destructive` flag now covers three commands, and the router test that
+asserts it has to be generalised in the same commit.**
+`test_destructive_is_exactly_what_goes_through_the_expense_guard` hard-codes
+`find_expense_matches`. `Cancel` goes through a *different* scoped finder, so the
+test becomes a check that a destructive command routes through **one of the
+declared scoped finders** — and `test_the_destructive_commands_are_the_two_expected_ones`
+becomes three.
 
-- [x] `services/notion_ids.py` — `run_diag`, `run_find(query)`, `run_dbs`, plus
-      the already-pure `search_all` / `list_db_pages` / `build_diagnostic_report`
-      and the `__main__` block.
-- [x] `bot/notion_ids.py` — the three adapters, binding `notify_md` through
-      `send_long` (the Markdown channel is the one that splits here).
-- [x] `ruff.toml` per-file-ignore repointed to `services/notion_ids.py`.
-- [x] `david.py`, `tests/test_router.py` retargeted.
-- [x] A test driving `run_dbs` / `run_find` with a list's `append` and no Update.
-- [x] Suite green, `ruff check .` clean.
+## Milestone 1: the client prerequisite
 
-## Milestone 4: `month.py`
+- [x] `_list_events_between` returns `"id"` on every item, and carries the raw
+      Google item so a snapshot can be taken without a second read.
+- [x] `delete_event(event_id) -> (ok, error)`, same retry/error shape as
+      `create_event`.
+- [x] `restore_event(body) -> (link, error)` + `restorable_body(raw)` — the
+      whitelist of fields an insert can carry back.
+- [x] `parse_day(token) -> (date, error)` — `td`/`today`, `tr`/`tomorrow`,
+      `DD.MM`, `DD.MM.YYYY`, and `t` refused by name exactly as `parse_date_time`
+      refuses it.
+- [x] A comment at the `orderBy="startTime"` call site saying it is what makes
+      "the first match" DEFINED, the way `CREATED_DESC` does for Notion.
 
-- [x] `services/month.py` — everything, `run_month(*, notify, notify_md=None)`
-      replacing `handle_month`. `threading.RLock` and its comment move unchanged.
-- [x] `bot/month.py` — `cmd_month` + `handle_month`.
-- [x] Importers updated: `budget.py`, `services/expenses.py`,
-      `proactive/heartbeat.py`, `proactive/month_rollover.py`,
-      `services/notion_ids.py`.
-- [x] `bot/budget.py` created, `bot/commands.py` deleted, `david.py` retargeted.
-- [x] `tests/test_month.py`, `tests/test_async_io.py`, `tests/test_concurrency.py`,
-      `tests/test_router.py`, `tests/test_config_validate.py` retargeted.
-- [x] A test driving `run_month` with a list's `append` and no Update.
-- [x] Suite green, `ruff check .` clean.
+## Milestone 2: the shared pending-choice + undo slot
 
-## Milestone 5: the guards
+- [x] New `pending_choice.py`: `PENDING_KEY`, `UNDO_KEY`, `PENDING_TTL_SECONDS`,
+      `parse_selection`, `remember`, `has_pending`, `kind_of`, `take`, `clear`,
+      `remember_undo`, `undo_kind`, `take_undo`.
+- [x] `expense_safety.py` rebuilt on it with its public surface unchanged.
+- [x] `david.handle_message` asks `pending_choice` and routes by kind.
+- [x] `bot/undo.py` — `cmd_undo` peeks the kind and calls the owning service,
+      which consumes the record itself.
 
-- [x] `tests/test_layering.py` now covers four more modules — run it after each
-      one, not once at the end.
-- [x] **Spy-retarget verification:** break each moved function deliberately and
-      watch its router row go red. A stub left on the old module keeps the test
-      green against nothing, which is the failure mode `SPY_HOMES` exists for.
-- [x] `tests/test_concurrency.py`'s lock-key scan still finds the `CALENDAR_ID`
-      lock after the move.
+## Milestone 3: `Agenda`
 
-## Milestone 6: docs
+- [x] `services/agenda.py` — `format_events_inline` (moved) + `run_agenda`.
+- [x] `proactive/briefing.py` imports the renderer instead of defining it.
+- [x] A read failure, an empty day and a populated day are three distinguishable
+      messages.
+- [x] `bot/agenda.py`, `Command` + `Help` entry, inline.
 
-- [x] `CLAUDE.md` — module map rows, the layer paragraph, and strike the "five
-      modules never got the treatment" entry.
-- [x] `README.md` — the Layout section.
-- [x] `ROADMAP.md` — tick M5.
+## Milestone 4: `Cancel`
+
+- [x] `services/cancel.py` — window-scoped `find_event_matches`, `run_cancel`,
+      `run_cancel_selection`, `run_undo`.
+- [x] `config.CANCEL_SEARCH_DAYS`; the window is refused, never widened.
+- [x] `page_lock(CALENDAR_ID)` across lookup **and** delete; the ambiguous path
+      releases it while it waits for a number.
+- [x] `calendar_safety.py` — the choices, the messages, the undo record.
+- [x] `bot/cancel.py`, `Command(destructive=True)` + `Help`.
+
+## Milestone 5: docs
+
+- [x] `README.md` — command table, "Cancelling a reminder", the write-locks
+      table, the scheduled-messages note left alone.
+- [x] `CLAUDE.md` — module map, write-locks table, the `Remind` section.
+- [x] `ROADMAP.md` — tick M6.
+
+## Milestone 6: tests
+
+- [x] `tests/test_router.py` — rows, `SPY_TARGETS`, the two generalised registry
+      tests.
+- [x] `tests/test_agenda.py`, `tests/test_cancel.py`.
+- [x] `tests/test_concurrency.py` — the new lock, the concurrent-cancel drive,
+      `LOCKING_MODULES`.
+- [x] `tests/test_async_io.py` — both commands offload.
+- [x] **Guard-revert pass** on the Rule-4 guards.
+- [x] Full suite green, `ruff check .` clean.
 
 ## Milestone 7: ship
 
-- [x] One commit per module on `split-update-modules`, each green on its own.
-- [ ] Push, PR, CI green, merge. Not done yet — waiting on the go-ahead, since
-      nothing else in this milestone leaves the machine.
+- [x] Commit on `claude/milestone-5-review-6-start-e1iq5r`.
+- [x] Pushed to `claude/milestone-5-review-6-start-e1iq5r`.
+- [ ] PR, CI green, merge. Not opened yet — waiting on the go-ahead.
 
-## Found while moving
+## Found while building
 
-Recorded rather than fixed — see decision 0 above. Add to `ROADMAP.md`'s backlog
-when this lands.
+- **`get_events_for_day` localises midnight with a plain `localize()`**, not the
+  `is_dst=None` of `_localize`. Correct as it stands (midnight is never the
+  Europe/Rome transition hour, and this is a read path over data Google owns),
+  but it is the same call shape the DST work refused elsewhere, so it is worth
+  knowing it was looked at rather than missed.
+- **`services/reminder.py` still discards the `find_conflicts` error into `_`.**
+  Named in `CLAUDE.md`'s open questions and unchanged here — it is not this
+  milestone's, and a fix hidden inside a feature is a fix nobody reviewed.
 
-- **`services/reminder.py` discards the `find_conflicts` error into `_`**, so a
-  calendar read failure is indistinguishable from "the slot is clear". Already
-  named in `CLAUDE.md`'s open questions; the move does not change it, and the
-  entry's file path needs updating there.
-- **`bot/long_messages.py`'s splitter can cut between a `*` and its closing
-  one**, leaving an unbalanced entity in each half. `notion_ids.py` carried that
-  as a KNOWN LIMITATION comment; it moves with the code, unfixed.
-- **`services/notion_ids.py` reads `NOTION_KEY` from the environment itself**
-  even though `clients/notion_client.py` owns the header. It is used only as a
-  "is anything configured at all" probe in the diagnostic. Left as found.
+## Guard-revert record
 
-## Open questions
+Seven guards, reverted one at a time, each watched turn a NAMED test red. A
+guard that cannot go red reads like protection and is not.
 
-- **`_send_long`'s two copies differed by one character** — pkm's `.rstrip()`
-  against notion_ids' `.rstrip("\n")`. The merged one keeps `.rstrip("\n")`, so
-  a chunk ending in trailing spaces keeps them. Nothing asserts either, and
-  Telegram renders both identically; recorded so the choice is visible rather
-  than silent.
+| Guard reverted to | Turned red |
+| --- | --- |
+| `len(matches) >= 1` — act on the first match instead of refusing an ambiguous one | 6 tests, including `test_two_matching_events_delete_nothing_and_ask` |
+| lock the DELETE only, leaving both lookups free to overlap | `test_two_overlapping_cancels_do_not_both_delete_the_same_event` |
+| retry the failed window read at 365 days | `test_a_failed_lookup_is_refused_and_never_widened` |
+| `events = []` on a failed calendar read, falling through to the renderer | `test_the_three_outcomes_are_three_different_messages` |
+| `parse_day` rolls a past `DD.MM` to next year, as `parse_date_time` does | `test_a_bare_date_is_read_in_the_current_year_and_not_rolled_forward`, `test_the_reply_names_the_full_date_including_the_year` |
+| record the reversal before checking the delete succeeded | `test_a_failed_delete_records_no_undo` |
+| store the raw Google item instead of `restorable_body`'s whitelist | `test_the_undo_body_carries_no_read_only_fields` |
+
+Every guard was restored and the full suite re-run afterwards: **1048 passed**,
+`ruff check .` clean.
 
 ## Changelog
 
-- **The four spy retargets were verified, not assumed, and it was worth doing.**
-  Bypassing each `handle_*` inside its `cmd_*` turned 4 router rows red for
-  `Remind` and 12 for `Get`/`Diag`/`DBs`/`Find`/`Month` together. Nothing in a
-  `SPY_HOMES` entry tells you whether it is correct — a wrong module reads
-  exactly like a right one, and the test goes green against nothing.
-- **`notion_ids.py` had no test file at all, and the split is what fixed that.**
-  Not an oversight: asserting anything about a diagnostic cost you a fake
-  Update, which is more effort than the assertion was worth. Five tests now,
-  including the one that matters — a 401 from Notion is reported as a 401 rather
-  than as "your integration can't see any databases", which sends you to the
-  wrong menu.
-- **The two `_send_long` copies were never covered either, for the same
-  reason.** The merge could have stopped splitting entirely with the whole suite
-  green. `tests/test_long_messages.py` drives a 200-bullet section and a
-  200-database listing through the real adapters; removing either `partial`
-  turns it red, which was checked.
-- **`bot/commands.py` went away rather than shrinking to one handler.** Decision
-  3 called it, and the file bore it out: after four splits its docstring was
-  entirely about a state of affairs that no longer existed. `cmd_budget` is
-  `bot/budget.py`, and the module docstring now says why that one never needed a
-  service — `budget.py` has been telegram-free since it was written.
-- **Ten stale `month.py` / `notion_ids.py` pointers in comments were repointed.**
-  Not cosmetic: `CLAUDE.md` already records what a stale pointer in a document
-  nobody recompiles is worth (`reminder.py:93`, by then at line 132). Comments
-  describing HISTORY were left alone — "used to live privately in notion_ids.py"
-  is still true.
+- **The `destructive` router test could not survive a second destructive
+  command, and that was the point of it.** It asserted `find_expense_matches in
+  chain == command.destructive`, so `Cancel` — which is destructive and never
+  touches an expense — turned it red on the first run. Generalised to a declared
+  set of scoped finders, which is the property that actually matters: a
+  destructive command resolves its target through a scoped, ordered lookup
+  before it writes.
+- **`find_event_matches` is the offloaded unit, not the client call it wraps.**
+  The first version of `test_cancel_runs_its_lookup_and_its_delete_off_the_loop`
+  stubbed `get_events_in_window` and failed, correctly: `run_cancel` hands
+  `find_event_matches` to `to_thread`, because the Google round trip and the
+  title filter are one piece of blocking work. Mirrors how the destructive
+  expense pair is stubbed at `find_expense_matches` rather than at
+  `query_database`.
+- **One pending slot rather than two was decided on the strength of an argument
+  already written down.** `remember_pending`'s docstring says a second ambiguous
+  command REPLACES the first because David prints one list at a time. Two
+  feature-local slots would have quietly broken that: a live expense list and a
+  live event list at once, with `2` meaning either.

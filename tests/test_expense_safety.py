@@ -282,8 +282,11 @@ def test_the_pending_list_expires(monkeypatch):
     send("D e Coffee", context)
 
     # Age the pending record past its TTL rather than sleeping two minutes.
-    pending, pages = context.user_data[expense_safety.PENDING_KEY]
+    # The slot holds (kind, pending, items) — the kind arrived when `Cancel`
+    # started sharing it, and it is what routes the number to the right handler.
+    kind, pending, pages = context.user_data[expense_safety.PENDING_KEY]
     context.user_data[expense_safety.PENDING_KEY] = (
+        kind,
         pending._replace(expires_at=pending.expires_at - expense_safety.PENDING_TTL_SECONDS - 1),
         pages,
     )

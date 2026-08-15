@@ -9,13 +9,17 @@ from datetime import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
+import calendar_safety
 import config
 import expense_safety
+import pending_choice
+from bot.agenda import cmd_agenda
 from bot.books import cmd_add_book, cmd_add_quote
 from bot.budget import cmd_budget
+from bot.cancel import cmd_cancel, handle_event_selection
 from bot.documents import handle_document
 from bot.expenses import (
-    AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_undo, cmd_update_expense,
+    AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_update_expense,
     handle_selection,
 )
 from bot.implement import cmd_implement
@@ -24,6 +28,7 @@ from bot.month import cmd_month
 from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
 from bot.reminder import cmd_remind
+from bot.undo import cmd_undo
 from budget import budget
 from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
 from observability import record_command, record_error, set_correlation_id, setup_logging
@@ -394,6 +399,37 @@ COMMANDS = [
                          "one inside that window is queried rather than guessed")),
     ),
     Command(
+        name="Agenda",
+        # The day token is OPTIONAL and is captured whole; what it MEANS is
+        # calendar_client.parse_day's decision, so an unrecognised one reaches
+        # the service and is explained rather than falling through to "I didn't
+        # get that". Same split `Remind` makes, for the same reason.
+        pattern=re.compile(r"agenda(?:\s+(?P<day>.+?))?\s*", re.I),
+        handler=cmd_agenda,
+        help=Help("📆 *AGENDA*",
+                  usage=("Agenda", "Agenda tr", "Agenda [DD.MM]"),
+                  notes=("Today by default; `td` is today and `tr` is tomorrow",
+                         "A date is read as the current year, past or not — the "
+                         "reply names the day in full so you can see which one "
+                         "it took")),
+    ),
+    Command(
+        name="Cancel",
+        # Greedy and unvalidated after the prefix, exactly like `D e`: whatever
+        # follows is the event name, and a name matching nothing is reported as
+        # matching nothing.
+        pattern=re.compile(r"cancel (?P<name>.+)", re.I),
+        handler=cmd_cancel,
+        help=Help("🚫 *CANCEL REMINDER*",
+                  usage=("Cancel [Name]",),
+                  notes=(f"Deletes a calendar event in the next "
+                         f"{config.CANCEL_SEARCH_DAYS} days. Several matches → I "
+                         f"list them with their times and wait for a number",
+                         "`undo` re-creates it — as a NEW event, so guest replies "
+                         "on the original do not come back")),
+        destructive=True,
+    ),
+    Command(
         name="Add e",
         pattern=re.compile(rf"add e (?P<name>.+?) {AMOUNT}(?:\s+(?P<category>\w+))?", re.I),
         handler=cmd_add_expense,
@@ -424,7 +460,7 @@ COMMANDS = [
         pattern=re.compile(r"undo", re.I),
         handler=cmd_undo,
         help=Help("↩️ *UNDO*", usage=("undo",), inline=True,
-                  notes=("Reverses the last delete or update",)),
+                  notes=("Reverses the last delete, update or cancelled reminder",)),
     ),
     Command(
         name="B",
@@ -563,6 +599,16 @@ def build_help() -> str:
     return "\n\n".join(rendered)
 
 
+# --- ANSWERING A PRINTED LIST OF MATCHES --- #
+# Which handler a bare number goes to, by the feature that printed the list. Not
+# part of COMMANDS because it is not matched on text at all — see the dispatch
+# loop below. A new destructive command adds a row here, next to its Command.
+SELECTION_HANDLERS = {
+    expense_safety.KIND:  handle_selection,
+    calendar_safety.KIND: handle_event_selection,
+}
+
+
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Tag every log line produced while handling this update — including from the
@@ -583,11 +629,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # rejects, so it would fall through to "I didn't get that" with the list left
     # unanswered. Guarded on there BEING a live list, so a stray "2" with nothing
     # pending stays an unrecognised message rather than a command with no visible
-    # effect. See expense_safety.py.
-    if expense_safety.has_pending(context.user_data):
-        selection = expense_safety.parse_selection(user_text)
+    # effect. See pending_choice.py.
+    #
+    # THERE IS ONE SLOT ACROSS EVERY DESTRUCTIVE COMMAND, and the number is
+    # routed by which one owns it. Two independent slots would let an expense
+    # list and an event list be live at the same instant, and then `2` means
+    # whichever prompt you had scrolled to — the exact ambiguity the numbered
+    # list exists to remove, one level up.
+    if pending_choice.has_pending(context.user_data):
+        selection = pending_choice.parse_selection(user_text)
         if selection is not None:
-            await handle_selection(update, context, selection)
+            answer = SELECTION_HANDLERS[pending_choice.kind_of(context.user_data)]
+            await answer(update, context, selection)
             return
 
     # fullmatch, never search: a partial match must fail loudly rather than
