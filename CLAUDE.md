@@ -51,14 +51,15 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
 | `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
-| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source` and `TAKEAWAYS_HEADING` (two layers need each, neither owns it), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
-| `bot/expenses.py` | `Add e` / `U e` / `D e` / `undo` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo |
+| `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
 | `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
-| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py` | The adapters for the four modules the layering split left behind: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
+| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
+| `bot/undo.py` | `undo` — which SERVICE reverses the kind of thing last destroyed (`REVERSERS`). Peeks the kind, never consumes the record | How to reverse anything; the take-and-put-back pair stays in the service that knows when a reversal did not happen |
 | `bot/budget.py` | `B`. The one handler that never needed a split: `budget.py` is telegram-free, so this does the offloading and picks the channel itself | Aggregation, recap wording |
 | `bot/long_messages.py` | `split_for_telegram` / `send_long` — the **one** splitter for a reply over Telegram's limit, and it is bound where `notify` is | Which channel splits — that is each adapter's decision |
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
@@ -73,11 +74,15 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
-| `expense_safety.py` | The guards on `U e` / `D e`: the pending-choice state machine in `user_data`, its 2-minute expiry, the undo record, and every message either prints | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts |
+| `pending_choice.py` | The ONE pending slot and the ONE undo slot, both tagged by the kind that owns them, plus the rules that must not differ between two destructive commands: the 2-minute expiry, the strict-digit selection, the range check | Which fields tell two matches apart, any message wording, the shape of a reversal — those are per-feature |
+| `expense_safety.py` | The expense half of the above: `Choice` / `Pending` / `Undo` shaped for a Notion row, and every message `U e` / `D e` print | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts. And the machine itself, which is `pending_choice.py` |
+| `calendar_safety.py` | The same, for `Cancel`: what tells two same-named events apart, and the re-create-from-snapshot undo record | Google calls, Telegram sends — `services/cancel.py` acts |
 | `services/month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `run_month` | Expense writes, budget maths |
 | `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget` — the two fallible ones return `(value, error)`) | Notion HTTP, Telegram |
 | `services/pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
 | `services/reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
+| `services/agenda.py` | `Agenda [day]` — read one day back out of the calendar, and `format_events_inline`, the ONE event renderer (`proactive/briefing.py` imports it) | What a day token means (`parse_day`, in the client); sending |
+| `services/cancel.py` | `Cancel [Name]` — the window-scoped `find_event_matches`, the `CALENDAR_ID` lock over lookup **and** delete, and the re-create undo | The window's SIZE (that is `config.CANCEL_SEARCH_DAYS`); the messages (that is `calendar_safety.py`) |
 | `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
@@ -409,6 +414,30 @@ date (`Friday 07 August 2026 at 10:00`), plus a line of its own when the year is
 not the current one. A terse shorthand is safe to type precisely because the reply
 is not terse.
 
+**`Agenda` takes the same tokens and reads two of them differently, on purpose.**
+`clients.calendar_client.parse_day` is a second entry point beside
+`parse_date_time`, not a flag on it, because two of the refusals above exist for
+a reason that does not survive the trip to a read:
+
+- **A bare `DD.MM` is taken at face value, in the current year, past or not.** No
+  rollover. `Remind` rolls a comfortably-past date to next year because a
+  reminder in the past never pings; "what did I have on 12.06?" is an ordinary
+  question, and answering it with next June's empty day is a wrong answer that
+  looks exactly like a right one.
+- **`td` naming a past time cannot arise**, because no time is named.
+
+What makes the permissive reading safe is the same thing that makes `Remind`'s
+shorthands safe: **the reply names the day in full** (`Friday 12 June 2026`), so
+a wrong reading is visible in the answer instead of discoverable later. Deleting
+that line is what would make `parse_day` a guess. `t` is still refused by name,
+in both parsers, and both refusals name BOTH replacements.
+
+And `Agenda`'s three outcomes are three messages — a failed read, an empty day
+and a full one. `[]` renders as "nothing scheduled", so a single fall-through on
+the error branch restores the affirmative false statement the briefings were
+rewritten to remove. That is asserted directly
+(`test_the_three_outcomes_are_three_different_messages`).
+
 ## Hard rules
 
 ### 1. Notion is the single source of truth
@@ -483,6 +512,36 @@ and `undo` applies it. The update snapshot must come from the page object the
 LOOKUP returned — re-reading after the PATCH records the new amount as the old one,
 producing an undo that changes nothing and says it worked.
 
+**`Cancel` is the third destructive command and carries the same four guards**,
+with the nouns changed: `orderBy="startTime"` for defined ordering, a window of
+`config.CANCEL_SEARCH_DAYS` for scope (**refused, never widened**, on a failed
+read), a numbered list on more than one match, and a reversal snapshotted from
+the event the lookup returned. Two things about it are genuinely different and
+both are in the code:
+
+- **The undo RE-CREATES rather than un-deletes**, because Google has no
+  reversible archive. So the snapshot-before-write rule is not merely correct
+  here, it is the only order that can exist — after `events.delete` there is
+  nothing left to read. The confirmation says "re-created" and says the event is
+  new, because the ID does not come back and neither does anything Google keys to
+  it (guest replies above all). Do not reword that into "restored".
+- **Matching is on the event TITLE only**, in Python, not through the Calendar
+  API's `q`. That parameter is a full-text search over description, location and
+  attendees, so `Cancel Gym` would have matched an unrelated event whose
+  description mentions the gym. A destructive command that matches on prose is a
+  destructive command that surprises you.
+
+**There is ONE pending slot and ONE undo slot across every destructive command,
+not one per feature** (`pending_choice.py`). `expense_safety.remember_pending`
+already argued the case *within* expenses: David prints one list at a time, so
+the only list a bare number can sensibly answer is the last one printed. That
+argument does not stop at the feature boundary — two slots would allow a live
+expense list and a live event list at the same instant, with `2` meaning
+whichever prompt you had scrolled to. `undo` likewise reverses the last
+destructive thing David did, not the last destructive *expense*; `bot/undo.py`
+holds the kind → service table and `david.SELECTION_HANDLERS` the kind → handler
+one.
+
 The lookup runs **inside** the expense lock, not just the write. Splitting
 find-from-mutate into two functions made it possible to lock only the second half,
 which reads as safe — no two writes overlap — while leaving both queries free to
@@ -510,10 +569,18 @@ until the lookup the lock has to cover:
 | `U e` / `D e` (lookup **and** write) | `EXPENSES_ID` | queues |
 | A number answering an ambiguous `U e` / `D e` | `EXPENSES_ID` | queues |
 | `Remind` | `CALENDAR_ID` | queues |
+| `Cancel` (lookup **and** delete) | `CALENDAR_ID` | queues |
+| A number answering an ambiguous `Cancel`, and its `undo` | `CALENDAR_ID` | queues |
 
 The ambiguous path releases the lock while it waits for your number — holding it
 across a reply would stall every expense write for as long as you took to answer,
-and the selection writes by page ID, so it has no lookup left to protect.
+and the selection writes by page ID, so it has no lookup left to protect. Same on
+the calendar side, for the same reason.
+
+`Cancel` and `Remind` share `CALENDAR_ID` deliberately rather than by accident:
+`Remind`'s conflict check running while an event is mid-delete would see an event
+that is about to stop existing. Serialising them costs nothing — both take about
+a second — and it is exactly what one key per DATABASE buys.
 
 `services/month.py` uses a `threading.RLock`, not `page_lock`: its cycle is reached from worker
 threads, and an `asyncio.Lock` between two threads acquires without ever blocking.

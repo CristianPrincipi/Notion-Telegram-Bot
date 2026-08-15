@@ -33,7 +33,9 @@ import bot.budget
 import bot.implement
 import bot.learn
 import david
+from services import agenda as agenda_service
 from services import books
+from services import cancel as cancel_service
 from services import expenses as expense_service
 import page_lock
 from services import reminder
@@ -307,6 +309,12 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(expense_service, "update_Expense", lambda *a: (True, None))
     monkeypatch.setattr(expense_service, "delete_Expense", lambda *a: (True, None))
     monkeypatch.setattr(books, "add_New_Book", lambda *a: "book-1")
+    monkeypatch.setattr(agenda_service, "get_events_for_day", lambda day: ([], None))
+    monkeypatch.setattr(cancel_service, "find_event_matches",
+                        lambda name: ([{"id": "evt-1", "summary": "Gym",
+                                        "start_dt": None, "end_dt": None,
+                                        "all_day": False, "raw": {}}], None))
+    monkeypatch.setattr(cancel_service, "delete_event", lambda event_id: (True, None))
 
 
 DETACHED = [
@@ -316,6 +324,12 @@ DETACHED = [
 
 NOT_DETACHED = [
     "B",
+    # Both calendar commands run inline. `Agenda` because it is read-only, so it
+    # cannot reorder against a write; `Cancel` because it is a short write, like
+    # `D e` — detaching it would let two overlap for no gain and leave the lock
+    # doing work sequential dispatch does for free.
+    "Agenda",
+    "Cancel Gym",
     "Add e Carrefour 2.20",
     "U e Carrefour 5",
     "D e Carrefour",
@@ -412,8 +426,9 @@ ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID"}
 
 # Repo-relative paths, not bare filenames: locking code lives in packages now,
 # and two files in different packages can share a name.
-LOCKING_MODULES = ["services/expenses.py", "services/implement.py",
-                   "services/implement_diet.py", "services/reminder.py"]
+LOCKING_MODULES = ["services/cancel.py", "services/expenses.py",
+                   "services/implement.py", "services/implement_diet.py",
+                   "services/reminder.py"]
 
 # Every directory David's own code lives in. The scan below used to be
 # REPO.glob("*.py"), which stopped at the repo root — so a module that moved

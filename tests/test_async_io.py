@@ -29,7 +29,9 @@ import time
 import pytest
 import responses
 
+import calendar_safety
 import david
+from services import agenda, cancel
 from services import implement, implement_diet, learn
 from services import month
 import page_lock
@@ -343,6 +345,56 @@ def test_remind_calls_google_calendar_off_the_loop(offloaded, monkeypatch):
     assert update.message.replied_with("Reminder set")
 
 
+def test_agenda_reads_the_calendar_off_the_loop(offloaded, monkeypatch):
+    """`Agenda` runs INLINE rather than detached, which makes this the only thing
+    standing between one slow Google read and every other command."""
+    stubs = stub_module(monkeypatch, agenda, {
+        "get_events_for_day": lambda day: ([], None),
+    })
+    update = FakeUpdate(text="Agenda")
+
+    run(agenda.run_agenda(None, **with_update(update)))
+
+    assert offloaded == expect(stubs, "get_events_for_day")
+    assert update.message.replied_with("Nothing scheduled")
+
+
+def test_cancel_runs_its_lookup_and_its_delete_off_the_loop(offloaded, monkeypatch):
+    """BOTH halves. The lookup is a Google round trip too, not a local decision,
+    and it is the slower of the two."""
+    stubs = stub_module(monkeypatch, cancel, {
+        # The finder, not the client call it wraps: find_event_matches is one
+        # unit of blocking work (a Google round trip plus the title filter), and
+        # it is what run_cancel hands to to_thread. Mirrors how the destructive
+        # expense pair is stubbed at find_expense_matches.
+        "find_event_matches": lambda name: ([{"id": "evt-1", "summary": "Gym",
+                                              "start_dt": None, "end_dt": None,
+                                              "all_day": False, "raw": {}}], None),
+        "delete_event":       lambda event_id: (True, None),
+    })
+    update = FakeUpdate(text="Cancel Gym")
+
+    run(cancel.run_cancel({}, "Gym", **with_update(update)))
+
+    assert offloaded == expect(stubs, "find_event_matches", "delete_event")
+    assert update.message.replied_with("Cancelled")
+
+
+def test_the_cancel_undo_restores_off_the_loop(offloaded, monkeypatch):
+    stubs = stub_module(monkeypatch, cancel, {
+        "restore_event": lambda body: ("https://cal/link", None),
+    })
+    update = FakeUpdate(text="undo")
+    user_data = {}
+    calendar_safety.remember_undo(
+        user_data, calendar_safety.Undo(summary="Gym", body={"summary": "Gym"}))
+
+    run(cancel.run_undo(user_data, **with_update(update)))
+
+    assert offloaded == expect(stubs, "restore_event")
+    assert update.message.replied_with("Re-created")
+
+
 # ─── 4c. PKM.PY ────────────────────────────────────────────────────────────────
 
 def test_get_walks_the_manual_off_the_loop(offloaded, monkeypatch):
@@ -568,6 +620,8 @@ OFFLOADED_FUNCTIONS = [
     implement_diet.read_section_contents, implement_diet.merge_sections,
     implement_diet.apply_updates, implement_diet.find_or_create_diet_page,
     reminder.find_conflicts, reminder.create_event,
+    agenda.get_events_for_day,
+    cancel.find_event_matches, cancel.delete_event, cancel.restore_event,
     scheduler.build_morning_briefing, scheduler.build_evening_briefing,
     scheduler.build_pacing_warning, scheduler.build_rollover_message,
     scheduler.build_heartbeat,

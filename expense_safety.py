@@ -25,23 +25,20 @@ Three separate things make that safe, and they are deliberately independent:
      BEFORE it is made, so the answer to "that took the wrong row" is one word
      rather than a trip to the Notion trash.
 
-WHERE THE STATE LIVES
----------------------
-`user_data` — the plain dict python-telegram-bot keeps per user in memory,
-handed in by the bot layer rather than reached through a `context`, so this
-module needs nothing from PTB and a test needs nothing but a dict. That is
-the right lifetime for both: a pending choice is meaningless after a restart
-(you would have to be re-shown the list anyway, since the rows may have moved),
-and an undo you can no longer perform is better absent than stale. Nothing here
-is written to disk, so Rule 1 — Notion is the single source of truth — is not
-touched.
+WHAT MOVED OUT, AND WHAT DID NOT
+--------------------------------
+The state machine itself — the two-minute expiry, what counts as a selection,
+what an out-of-range number does, and the single slot all of it lives in — is
+`pending_choice.py` now, shared with `calendar_safety.py`. It moved when `Cancel`
+needed the same behaviour over completely different fields, and it moved rather
+than being copied because the alternative is two live lists that one bare number
+cannot tell apart. See that module's docstring for the argument.
 
-THE EXPIRY IS THE POINT, NOT A DETAIL. A pending choice with no deadline turns a
-`2` typed an hour later — meant as an amount, a message to someone else, a
-mis-tap — into an archive of a row you have long forgotten was offered. Two
-minutes is long enough to read four lines and reply, and short enough that the
-prompt is still on screen when you do. After it lapses the number goes back to
-being an unrecognised message.
+What stayed here is everything expense-shaped: which fields tell two matching
+rows apart, how a Notion page reduces to one, what a reversal of an expense write
+looks like, and every message either prints. The public surface below is
+unchanged — `services/expenses.py` and the tests call exactly what they called
+before.
 
 NO ConversationHandler. It would mean registering a second handler group and
 teaching it the owner filter, for a single one-shot question whose whole state
@@ -53,25 +50,25 @@ formats. `services/expenses.py` owns the queries, the writes and the locking;
 `bot/` owns the routing and hands the dict down.
 """
 
-import time
 from typing import NamedTuple
 
+import pending_choice
 from clients.notion_client import get_page_title
+from pending_choice import PENDING_TTL_SECONDS, parse_selection  # noqa: F401 — re-exported
 from telegram_text import escape_md
 
-# How long a printed list of matches stays answerable. See the module docstring —
-# this is a safety bound, not a tuning knob.
-PENDING_TTL_SECONDS = 120
+# Which feature owns the shared pending/undo slot when it holds an expense.
+KIND = "expense"
 
 # The two destructive actions. `Add e` is not one: it creates a row and targets
 # nothing, so it can be neither ambiguous nor wrong about which row it hit.
 DELETE = "delete"
 UPDATE = "update"
 
-# Keys in user_data. Prefixed so they cannot collide with anything PTB
-# or a future feature keeps there.
-PENDING_KEY = "expense_pending_choice"
-UNDO_KEY    = "expense_last_destructive"
+# Re-exported so the tests and the router keep naming one place for the slot.
+# There is only one now, and it is not expense-specific — see pending_choice.
+PENDING_KEY = pending_choice.PENDING_KEY
+UNDO_KEY    = pending_choice.UNDO_KEY
 
 
 class Choice(NamedTuple):
@@ -105,7 +102,7 @@ class Pending(NamedTuple):
     expires_at: float
 
     def expired(self, now: float | None = None) -> bool:
-        return (time.monotonic() if now is None else now) >= self.expires_at
+        return pending_choice.is_expired(self.expires_at, now)
 
 
 class Undo(NamedTuple):
@@ -171,79 +168,40 @@ def remember_pending(user_data, action: str, query: str, pages: list,
     A second ambiguous command REPLACES the first rather than queueing behind
     it. David has one user and prints one list at a time, so the only list a
     number can sensibly refer to is the last one printed — keeping an older one
-    answerable would make `1` mean whichever prompt you had scrolled to.
+    answerable would make `1` mean whichever prompt you had scrolled to. That
+    argument is why the slot is shared with `Cancel` rather than duplicated:
+    two independent lists would put it back, across features.
     """
-    now = time.monotonic() if now is None else now
     pending = Pending(
         action=action,
         query=query,
         amount=amount,
         category=category,
         choices=tuple(choice_from_page(page) for page in pages),
-        expires_at=now + PENDING_TTL_SECONDS,
+        expires_at=pending_choice.deadline(now),
     )
-    user_data[PENDING_KEY] = (pending, pages)
+    pending_choice.remember(user_data, KIND, pending, pages)
     return pending
 
 
 def has_pending(user_data, now: float | None = None) -> bool:
-    """True when a live list of matches is waiting for a number.
+    """True when a live list of EXPENSE matches is waiting for a number.
 
-    Used by the router to decide whether a bare number is a selection or just an
-    unrecognised message. An EXPIRED pending answers False and is dropped here,
-    so a lapsed prompt cannot be answered by a later one being printed.
+    Narrower than `pending_choice.has_pending`, which answers for any feature.
+    The dispatch loop asks the general one and routes by kind; this one is for a
+    caller that specifically means expenses.
     """
-    entry = user_data.get(PENDING_KEY)
-    if entry is None:
-        return False
-    pending, _ = entry
-    if pending.expired(now):
-        user_data.pop(PENDING_KEY, None)
-        return False
-    return True
+    return (pending_choice.has_pending(user_data, now)
+            and pending_choice.kind_of(user_data) == KIND)
 
 
 def take_pending(user_data, selection: int, now: float | None = None):
-    """Resolve a reply to the printed list. Returns (pending, page, error).
-
-    Consumes the pending choice on every outcome except an out-of-range number:
-    a mistyped `5` against three options should let you type `2` next, not force
-    the whole command to be retyped.
-    """
-    entry = user_data.get(PENDING_KEY)
-    if entry is None:
-        return None, None, "There is nothing waiting to be chosen."
-
-    pending, pages = entry
-    if pending.expired(now):
-        user_data.pop(PENDING_KEY, None)
-        return None, None, (
-            f"That list expired after {PENDING_TTL_SECONDS // 60} minutes. "
-            "Send the command again if you still want it."
-        )
-
-    if not 1 <= selection <= len(pending.choices):
-        return None, None, (
-            f"Pick a number between 1 and {len(pending.choices)}."
-        )
-
-    user_data.pop(PENDING_KEY, None)
-    return pending, pages[selection - 1], None
+    """Resolve a reply to the printed list. Returns (pending, page, error)."""
+    return pending_choice.take(user_data, KIND, selection, now)
 
 
 def clear_pending(user_data) -> None:
-    user_data.pop(PENDING_KEY, None)
-
-
-def parse_selection(text: str):
-    """A bare number, or None if this message is not one.
-
-    Deliberately strict: only digits, nothing else on the line. `2` is a
-    selection, `2 please` and `€2` are not — a destructive write is the last
-    place to start guessing what a message meant.
-    """
-    stripped = (text or "").strip()
-    return int(stripped) if stripped.isdigit() else None
+    pending_choice.clear(user_data)
 
 
 # ─── THE UNDO RECORD ───────────────────────────────────────────────────────────
@@ -259,22 +217,20 @@ def remember_undo(user_data, action: str, page_id: str, name: str,
     reports success. `previous_properties` is built from the page object the
     lookup already returned, which is why that ordering is possible at all.
     """
-    user_data[UNDO_KEY] = Undo(action=action, page_id=page_id,
-                                       name=name, properties=properties)
+    pending_choice.remember_undo(
+        user_data, KIND,
+        Undo(action=action, page_id=page_id, name=name, properties=properties))
 
 
 def take_undo(user_data):
-    """The last reversible action, consumed. Returns (undo, error).
+    """The last reversible EXPENSE action, consumed. Returns (undo, error).
 
     Consumed rather than kept so `undo` twice cannot re-run the same reversal.
     Un-archiving an already-live page is harmless, but re-applying a snapshot
     after you have deliberately re-edited the row would quietly undo that edit
     too.
     """
-    undo = user_data.pop(UNDO_KEY, None)
-    if undo is None:
-        return None, "Nothing to undo — I have not deleted or updated an expense yet."
-    return undo, None
+    return pending_choice.take_undo(user_data, KIND)
 
 
 # ─── MESSAGES ──────────────────────────────────────────────────────────────────

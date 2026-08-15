@@ -190,6 +190,79 @@ def _parse_clock(time_str: str):
     return hour, minute, None
 
 
+def parse_day(date_str: str):
+    """Parse a date token with NO time into a Europe/Rome date. Returns (date, error).
+
+    The read-only sibling of parse_date_time, and the differences between the two
+    are the whole reason this is a separate function rather than a flag.
+
+    Accepted forms are the same: `td`/`today`, `tr`/`tomorrow`, DD.MM, DD.MM.YYYY,
+    and `t` refused by name. What is NOT the same:
+
+      - A BARE DD.MM IS TAKEN AT FACE VALUE, in the current year, past or not.
+        parse_date_time rolls a comfortably-past date to next year and refuses one
+        inside PAST_GRACE; both rules exist because a reminder in the past never
+        pings. Neither transfers to a read — "what did I have on 12.06?" is an
+        ordinary question, and rolling it silently eleven months forward would
+        answer a different one.
+
+      - `td` NAMING A PAST TIME CANNOT ARISE, because no time is named. The
+        refusal parse_date_time carries for it has nothing to refuse here.
+
+    What makes taking a past date at face value safe is that nothing is guessed:
+    the caller names the resolved date in full — weekday, day, month, year — the
+    same way `Remind`'s confirmation does, so a wrong reading is visible in the
+    answer rather than discoverable later.
+
+    No _localize call and no DST question: a date is not an instant. The caller
+    turns it into one through get_events_for_day, which localises midnight — an
+    hour Europe/Rome never skips or repeats.
+    """
+    token = date_str.strip().lower()
+
+    # Refused by name, exactly as parse_date_time refuses it and for the same
+    # reason: `t` used to mean tomorrow, sits one letter from both replacements,
+    # and any silent reading of it is a coin flip between two adjacent days. A
+    # read is a cheaper place to be wrong than a write, which is an argument for
+    # keeping the message identical in spirit, not for dropping it.
+    if token in RETIRED_TOKENS:
+        return None, (
+            f"`{date_str.strip()}` on its own is no longer a date — it used to "
+            f"mean tomorrow, and there are now two days to tell apart. Send "
+            f"`tr` for tomorrow or `td` for today."
+        )
+
+    today = datetime.now(TIMEZONE).date()
+
+    if token in TODAY_TOKENS:
+        return today, None
+    if token in TOMORROW_TOKENS:
+        return today + timedelta(days=1), None
+
+    parts = token.split(".")
+    try:
+        if len(parts) == 3:
+            day, month, year_given = (int(p) for p in parts)
+            if year_given < 100:                      # '27' -> 2027
+                year_given += 2000
+        elif len(parts) == 2:
+            day, month = (int(p) for p in parts)
+            year_given = None
+        else:
+            raise ValueError
+    except (ValueError, TypeError):
+        return None, (f"Invalid date format '{date_str}'. Use DD.MM (e.g. 12.06), "
+                      f"DD.MM.YYYY (e.g. 12.06.2027), `td` for today or `tr` "
+                      f"for tomorrow.")
+    if not (1 <= month <= 12) or not (1 <= day <= 31):
+        return None, f"Invalid date '{date_str}'. Day 1-31, month 1-12."
+
+    try:
+        return datetime(year_given or today.year, month, day).date(), None
+    except ValueError:
+        return None, f"'{date_str}' is not a real date."
+
+
 def parse_date_time(date_str: str, time_str: str):
     """Parse a date + time into an aware Europe/Rome datetime. Returns (dt, error).
 
@@ -359,6 +432,74 @@ def create_event(summary: str, start_dt: datetime, duration_minutes: int = DEFAU
         return None, f"Could not create event: {e}"
 
 
+# ─── EVENT DELETION, AND PUTTING ONE BACK ──────────────────────────────────────
+
+def delete_event(event_id: str):
+    """Delete one event by ID. Returns (ok, error).
+
+    BY ID, never by name — the lookup resolves the name and this removes exactly
+    what was resolved. That split is the same one `services/expenses.py` makes
+    between find_expense_matches and delete_Expense, and for the same reason:
+    with the find folded in there is no point at which the choice can be shown
+    to you or counted.
+
+    Google answers 410 Gone for an event already deleted. That is reported like
+    any other failure rather than swallowed as success: a `Cancel` that finds
+    nothing to delete has resolved to a stale ID, and telling you it worked is
+    the confident-wrong-answer failure this codebase keeps paying for.
+    """
+    service, err = _get_service()
+    if err:
+        return False, err
+
+    try:
+        service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        return True, None
+    except Exception as e:
+        return False, f"Could not delete event: {e}"
+
+
+# The fields an insert can carry back from a snapshot. A WHITELIST, not the whole
+# item: Google rejects a body containing read-only fields (id, etag, iCalUID,
+# created, updated, htmlLink, organizer, …), so handing back the raw event is a
+# 400, not a restore.
+#
+# WHAT IS NOT IN HERE IS THE POINT. The event's ID is absent because it cannot be
+# reused — a restore is a NEW event — and everything keyed to that ID goes with
+# it: attendee responses, the original creator, per-guest state. `Remind` creates
+# none of those, which is what makes this restore honest for the events David
+# made; for one you created in Google with three guests on it, the reply says so
+# rather than claiming a clean undo.
+RESTORABLE_FIELDS = ("summary", "description", "location", "start", "end",
+                     "recurrence", "reminders", "transparency", "visibility",
+                     "colorId")
+
+
+def restorable_body(raw_event: dict) -> dict:
+    """The insert body that re-creates `raw_event`, from the snapshot alone."""
+    return {field: raw_event[field] for field in RESTORABLE_FIELDS
+            if raw_event.get(field) is not None}
+
+
+def restore_event(body: dict):
+    """Re-create a deleted event from a snapshot body. Returns (event_link, error).
+
+    Deliberately NOT create_event: that one builds a body from a name and a start
+    time and attaches David's own popup reminders. This one inserts a body that
+    already exists, verbatim, so an event that had no alerts does not acquire two
+    on the way back.
+    """
+    service, err = _get_service()
+    if err:
+        return None, err
+
+    try:
+        event = service.events().insert(calendarId=CALENDAR_ID, body=body).execute()
+        return event.get("htmlLink", ""), None
+    except Exception as e:
+        return None, f"Could not restore event: {e}"
+
+
 # ─── EVENT QUERIES (for the daily reminder poll + conflict detection) ───────────
 
 def _to_local(iso_str: str) -> datetime:
@@ -383,8 +524,18 @@ def _list_events_between(start_dt: datetime, end_dt: datetime):
     its start time, so this returns every event overlapping the window (not just
     those that start inside it) — which is exactly what conflict detection needs.
 
-    Each returned item: {"summary", "start_dt" (tz-aware), "end_dt" (tz-aware or
-    None for all-day), "all_day" (bool)}.
+    Each returned item: {"id", "summary", "start_dt" (tz-aware), "end_dt"
+    (tz-aware or None for all-day), "all_day" (bool), "raw"}.
+
+    "id" IS WHAT MAKES A DESTRUCTIVE COMMAND POSSIBLE. Without it a caller can
+    only name an event, and naming is what Hard Rule 4 exists to stop a delete
+    doing — `Cancel` resolves to an ID here and deletes by ID, so the row it
+    removes is the row it showed you.
+
+    "raw" is the Google item verbatim, carried so a caller can SNAPSHOT an event
+    before deleting it without a second round trip. Same ordering rule as the
+    expense undo: the snapshot has to come from the object the LOOKUP returned,
+    because after the delete there is nothing left to read.
     """
     service, err = _get_service()
     if err:
@@ -396,6 +547,12 @@ def _list_events_between(start_dt: datetime, end_dt: datetime):
             timeMin=start_dt.isoformat(),
             timeMax=end_dt.isoformat(),
             singleEvents=True,
+            # ORDER IS DEFINED, and that is a Hard Rule 4 requirement rather than
+            # a nicety — the same job notion_client.CREATED_DESC does for every
+            # expense lookup. "The first match" has to mean the same event on two
+            # identical calls before a command is allowed to act on it. Google
+            # gives it here for free; Notion documents no ordering at all, which
+            # is why the equivalent over there had to be asked for explicitly.
             orderBy="startTime",
         ).execute()
     except Exception as e:
@@ -411,14 +568,16 @@ def _list_events_between(start_dt: datetime, end_dt: datetime):
             # Timed event
             start_local = _to_local(start["dateTime"])
             end_local = _to_local(end["dateTime"]) if end.get("dateTime") else None
-            out.append({"summary": summary, "start_dt": start_local,
-                        "end_dt": end_local, "all_day": False})
+            out.append({"id": ev.get("id"), "summary": summary,
+                        "start_dt": start_local, "end_dt": end_local,
+                        "all_day": False, "raw": ev})
         elif "date" in start:
             # All-day event
             d = datetime.fromisoformat(start["date"])
             start_local = TIMEZONE.localize(datetime(d.year, d.month, d.day, 0, 0))
-            out.append({"summary": summary, "start_dt": start_local,
-                        "end_dt": None, "all_day": True})
+            out.append({"id": ev.get("id"), "summary": summary,
+                        "start_dt": start_local, "end_dt": None,
+                        "all_day": True, "raw": ev})
 
     return out, None
 
@@ -439,10 +598,32 @@ def find_conflicts(start_dt: datetime, end_dt: datetime):
 
 
 def get_events_for_day(target_date: datetime):
-    """Return (events, error) for all events on the calendar date of target_date."""
+    """Return (events, error) for all events on the calendar date of target_date.
+
+    Plain localize() on midnight, not the is_dst=None of _localize. Europe/Rome
+    changes the clocks at 02:00-03:00, so midnight is neither skipped nor
+    repeated on any day of the year and there is nothing here to refuse. Noted
+    because the DST work refused exactly this call shape elsewhere, and the
+    difference is the hour, not the carelessness.
+    """
     day_start = TIMEZONE.localize(datetime(target_date.year, target_date.month, target_date.day, 0, 0))
     day_end = day_start + timedelta(days=1)
     return _list_events_between(day_start, day_end)
+
+
+def get_events_in_window(days: int):
+    """Return (events, error) from the start of today through `days` days ahead.
+
+    The bounded scope a destructive calendar command searches. It starts at
+    MIDNIGHT TODAY rather than at `now`, so an event earlier today is still
+    findable — you may well want to cancel something at 16:00 that you are
+    looking at during a 17:00 tidy-up — and it stops at a fixed horizon so
+    `Cancel Dentist` cannot reach a Dentist eight months out that you have
+    forgotten booking.
+    """
+    now = now_local()
+    window_start = TIMEZONE.localize(datetime(now.year, now.month, now.day, 0, 0))
+    return _list_events_between(window_start, window_start + timedelta(days=days))
 
 
 def now_local() -> datetime:
