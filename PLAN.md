@@ -155,7 +155,8 @@ becomes three.
 ## Milestone 7: ship
 
 - [x] Commit on `claude/milestone-5-review-6-start-e1iq5r`.
-- [ ] Push, PR, CI green, merge.
+- [x] Pushed to `claude/milestone-5-review-6-start-e1iq5r`.
+- [ ] PR, CI green, merge. Not opened yet — waiting on the go-ahead.
 
 ## Found while building
 
