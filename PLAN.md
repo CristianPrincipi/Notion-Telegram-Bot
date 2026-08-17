@@ -156,7 +156,17 @@ becomes three.
 
 - [x] Commit on `claude/milestone-5-review-6-start-e1iq5r`.
 - [x] Pushed to `claude/milestone-5-review-6-start-e1iq5r`.
-- [ ] PR, CI green, merge. Not opened yet — waiting on the go-ahead.
+- [x] PR, CI green, merge. PR #33, CI green, merged to `main` as `b09739d`.
+- [ ] **Deployed and reachable from Telegram.** Not done, and it is a separate
+      step from the merge for the reason this milestone exists to record:
+      `main` has carried both commands since `b09739d` while the running bot
+      answered "I didn't get that" to each of them, so `h` listed neither.
+      Nothing is wrong with the code — the full startup path was driven to the
+      line before `run_polling()` (validate, 8 jobs, 3 handlers, both commands
+      in the registry) and the suite is green — which leaves the Railway
+      deploy, where a failure is silent because the previous version keeps
+      serving. Merging is not shipping, and until this box is ticked from a
+      Telegram reply rather than from CI, M6 is not shipped.
 
 ## Found while building
 
