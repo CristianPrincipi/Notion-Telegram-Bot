@@ -1,210 +1,179 @@
-# Plan: M6 — On-demand calendar: `Agenda`, and cancelling a reminder
+# Plan: `v` — which build is actually running
 
-_Last updated: 2026-08-15_
+_Last updated: 2026-08-17_
 
-Branch: `claude/milestone-5-review-6-start-e1iq5r`, off `main` at the M5 merge
-(`41281af`). Baseline before any change: **979 passed**, `ruff check .` clean.
+Branch: `version-command`, off `main` at `b09739d`. Baseline: **1048 passed**,
+`ruff check .` clean.
 
-`clients/calendar_client.py` already has `get_events_for_day` and
-`_list_events_between`, and the only callers are the 07:30 and 20:00 jobs — **no
-command in the registry reads the calendar.** And `Remind` creates events with
-nothing anywhere to delete them.
+Supersedes the M6 plan, which is finished except for one step carried forward
+below: M6 merged as `b09739d` on 2026-08-15 and **has never been deployed**.
+Railway's last deploy is `f0209cc` (2026-08-14 10:55, PR #31); the merges of
+#32 and #33 produced no deployment record at all, so no build was attempted.
+That is what this command exists to make visible in one message.
 
-This milestone adds the two commands that close that: `Agenda` (read-only) and
-`Cancel [Name]` (destructive, so Hard Rule 4 applies in full).
+## The problem it solves
+
+`Agenda` and `Cancel` were on `main`, green in CI, and absent from the running
+bot for three days. Finding that out took: a full local verification, a startup
+smoke run, a `h` from the phone, and finally 30 GitHub deployment records read
+through the API. David could not answer "what are you running?" because nothing
+in the process knew.
 
 ## Decisions taken before writing code
 
-**1. The pending-choice machine is GENERALISED, not forked, and there is ONE
-pending slot.** `ROADMAP.md` asks for this decision explicitly. `expense_safety`
-carries the machine today and is named for expenses; `Cancel` needs the same
-"more than one match writes nothing" behaviour with different fields and
-different wording.
+**1. The version is read from the ENVIRONMENT, not from a file in the repo.**
+A committed `VERSION` file, or one written by a build step, records what the
+SOURCE says — which was never in doubt. What was in doubt is what the PROCESS
+is running, and those are exactly the two things that had drifted apart. Railway
+injects `RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_BRANCH`,
+`RAILWAY_GIT_COMMIT_MESSAGE` and `RAILWAY_DEPLOYMENT_ID` into the container it
+actually started, so reading them answers the right question. Two lesser
+reasons: the container has no `.git`, so shelling out to git is not available,
+and a generated file would be a second thing that can go stale silently.
 
-A sibling module with its own `PENDING_KEY` would be two independent live lists,
-and then a bare `2` means whichever one you had scrolled to — the exact ambiguity
-`remember_pending`'s docstring already argues against *within* expenses ("David
-prints one list at a time, so the only list a number can sensibly refer to is the
-last one printed"). That argument does not stop at the feature boundary.
+**2. Missing is reported as missing.** If the git variables are absent — a local
+run, or Railway changing their names — `v` names the variable it could not read.
+It must never print a plausible-looking placeholder, and must never fall back to
+anything derived from the source tree: that is the same class of bug as the
+briefing that announced a clear day during a calendar outage, in the one command
+whose entire purpose is to be trusted about what is deployed. An unknown build
+and a known one cannot render alike.
 
-So the generic half moves to a new root module `pending_choice.py` — the TTL, the
-strict-digits `parse_selection`, expiry, the range check, and **one** slot tagged
-with the KIND that owns it. `expense_safety.py` keeps its whole public surface
-and its expense-shaped `Choice` / `Pending` / `Undo`, built on top; a new
-`calendar_safety.py` is its mirror for events. The dispatch loop in `david.py`
-asks `pending_choice` whether a list is live and routes the number by kind.
+**3. The reply goes out PLAIN.** It interpolates a commit MESSAGE — arbitrary
+text, frequently containing `*` or backticks, and in this repo's case containing
+things like `` `Agenda` `` — and Markdown v1 ignores backslash escapes inside a
+code span, so escaping cannot save it. This puts `v` in the same family as
+`notify_error` / `on_error` / `_report_error`: a diagnostic that must survive the
+ugly input it exists to report. It uses `notify`, never `notify_md`, and carries
+a comment saying so, so it is not "fixed" into Markdown later.
 
-The **undo record is the same shape of decision and gets the same treatment**:
-one slot, tagged by kind, so `undo` reverses the last destructive thing David did
-rather than the last destructive *expense*.
+**4. The Railway variables do NOT join `REQUIRED_ENV`/`OPTIONAL_ENV`.** That
+contract is what the OWNER sets, and `config.validate()` warns about anything in
+it that is unset. Listing platform-injected variables would print "set
+`RAILWAY_GIT_COMMIT_SHA`" on every local run — advice that is wrong, about a
+variable you must not set by hand — and would break `test_config_validate`'s
+empty-warning assertion unless `conftest` faked them. They are documented in the
+README as platform-provided, in their own short section rather than in the env
+table.
 
-**2. `Cancel` records a reversal, and it re-creates rather than un-deletes.**
-Google's `events.delete` has no archive an integration can flip back the way
-Notion's does. The reversal is therefore an insert built from a snapshot taken
-from the object the LOOKUP returned — the same ordering rule `expense_safety`
-already states, for the same reason.
+**5. Uptime is included, and it comes from `now_local()`.** A SHA alone cannot
+tell a fresh deploy from a container restart of the same build, which is the
+distinction the deployment records could not settle either. Process start is
+stamped at import; the clock is `clients.calendar_client.now_local()`, never
+`datetime.now()`, per the project rule.
 
-Be precise about what that buys, here and in the docs:
+**6. `services/version.py` + `bot/version.py`, mirroring `month`.** The report
+builder is a pure function returning text, so it is testable with a list's
+`append` and no `Update` at all — which is the property the layering split
+exists to produce.
 
-- **Restored:** summary, start, end, all-day-ness, description, location,
-  recurrence and the event's own reminder overrides — a whitelist of the fields
-  Google accepts on insert, copied verbatim off the snapshot.
-- **Not restored:** the event ID (it comes back as a new event), and anything
-  attached to that ID — attendee responses, the original creator, per-guest
-  state. `Remind` creates none of those, which is why this is worth having at
-  all, and the reply says so rather than claiming a clean undo.
+## Milestone 1: the service
 
-**3. A day token means one thing in `Remind` and a slightly different thing in
-`Agenda`, and the difference is stated, not hidden.** `parse_date_time` refuses a
-`td` whose time has already passed and rolls a comfortably-past bare `DD.MM` to
-next year. Both rules exist because *a reminder in the past never pings*. Neither
-transfers to a read: "what did I have on Tuesday?" is a legitimate question.
+- [x] `services/version.py` — reads its own `os.environ` (per the config rule),
+      stamps `_STARTED_AT` at import from `now_local()`.
+- [x] `build_version_report() -> str` — pure, no I/O, returns the whole reply.
+      Takes `started_at` with a module-level default so a test can pin it
+      without reaching into module state.
+- [x] Fields: short SHA, branch, commit subject, deployment ID (in full,
+      because its job is to be matched against the Railway dashboard), and
+      "up since / for". One line each — see the Changelog on the full SHA.
+- [x] Each absent variable is named in the output; no placeholder that could be
+      mistaken for a real value. Empty counts as absent.
+- [x] `run_version(*, notify)` — the service, taking only the plain channel,
+      which is how the plain-only decision is enforced by the signature rather
+      than by remembering.
 
-So `clients/calendar_client.parse_day` is a second entry point beside
-`parse_date_time`, and it takes a bare `DD.MM` **at face value in the current
-year, past or not** — no rollover, no refusal. That is safe to do without
-guessing because the reply NAMES the resolved date in full (weekday, day, month,
-year), which is the same backstop `Remind`'s confirmation uses. The split
-`CLAUDE.md` insists on is kept: the service's pattern decides which tokens are
-LEGAL, the client decides what they MEAN.
+## Milestone 2: the adapter and the registry
 
-**4. One event renderer, and it moves down a layer.**
-`proactive/briefing._format_events_inline` is the renderer `Agenda` must reuse or
-the two drift. `services/` cannot import `proactive/` upward-and-sideways and
-`proactive/` importing a private from a sibling is worse, so it becomes
-`services/agenda.format_events_inline` and `proactive/briefing.py` imports it.
-`proactive/` already imports `budget` and `clients/`, so the direction is the one
-that already exists.
+- [x] `bot/version.py` — bind the pair, pass only `notify`, comment why.
+- [x] `david.py`: `Command(name="v", pattern=re.compile(r"v|version", re.I))`,
+      inline, positioned next to `h` as the other meta command.
+- [x] No collision: `test_no_input_can_be_claimed_by_two_commands` stays green,
+      and `v` is not shadowed — the three `v` rows route to `handle_version`.
 
-**5. Two service modules, not one.** `services/agenda.py` is a read; `services/cancel.py`
-is a find-then-mutate under a lock with an undo. Sharing a file would put the one
-command that cannot write next to the one that Hard Rule 4 governs.
+## Milestone 3: tests
 
-**6. `Agenda` runs INLINE.** It is read-only, so it cannot reorder against a
-write the way a detached command could — the same reasoning `Get` already
-carries. `Cancel` runs inline too: it is a short write, like `D e`.
+- [x] `tests/test_version.py`, 20 tests:
+      - full environment → every field appears, SHA shortened to seven;
+      - **git variables absent → says which, and the output cannot be mistaken
+        for a real build** (the guard from decision 2), plus the empty-string
+        case and the one-missing-of-four case;
+      - a commit message containing `` ` ``, `*` and `_` survives verbatim, with
+        no escaping and no `parse_mode` — the test that fails if someone sends
+        this reply as Markdown;
+      - `inspect.signature(run_version)` has no `notify_md` at all;
+      - uptime derives from `now_local()`, asserted by monkeypatching it, plus a
+        parametrised `format_uptime` table and the backwards-clock case;
+      - the service driven with one async collector — no bot, no `Update`.
+      - An **autouse fixture unsets the four variables**, for the reason the
+        title-property cache needed one: these are real variable names, and a
+        machine with one exported would satisfy the "not set" tests without them
+        being unset.
+- [x] `tests/test_router.py`: `import bot.version`, a `SPY_TARGETS` +
+      `SPY_HOMES` entry for `handle_version`, and rows for `v`, `version`, `V`,
+      plus negatives (`v please`, `versions`) that must fall through.
+- [x] Full suite green (**1074 passed**, up from 1048), `ruff check .` clean.
+- [x] **Guard-revert pass** — every guard reverted one at a time, table below.
 
-**7. The `destructive` flag now covers three commands, and the router test that
-asserts it has to be generalised in the same commit.**
-`test_destructive_is_exactly_what_goes_through_the_expense_guard` hard-codes
-`find_expense_matches`. `Cancel` goes through a *different* scoped finder, so the
-test becomes a check that a destructive command routes through **one of the
-declared scoped finders** — and `test_the_destructive_commands_are_the_two_expected_ones`
-becomes three.
+## Milestone 4: docs
 
-## Milestone 1: the client prerequisite
+- [x] `README.md` — command table row (`v` only; `version` is an alias and the
+      table's first column is asserted to hold command NAMES, which is how
+      `help`/`aiuto` already live in prose), and a "Which build is running"
+      section naming the four platform-provided variables and why they are not
+      in the env table.
+- [x] `CLAUDE.md` — module map rows for both new files; the Deployment section
+      gained "a merge is not a deploy, and `v` is how you tell", the `v`/`h`
+      split of duties, and the `gh api …/deployments` check that tells "no build
+      was attempted" from "the build failed".
 
-- [x] `_list_events_between` returns `"id"` on every item, and carries the raw
-      Google item so a snapshot can be taken without a second read.
-- [x] `delete_event(event_id) -> (ok, error)`, same retry/error shape as
-      `create_event`.
-- [x] `restore_event(body) -> (link, error)` + `restorable_body(raw)` — the
-      whitelist of fields an insert can carry back.
-- [x] `parse_day(token) -> (date, error)` — `td`/`today`, `tr`/`tomorrow`,
-      `DD.MM`, `DD.MM.YYYY`, and `t` refused by name exactly as `parse_date_time`
-      refuses it.
-- [x] A comment at the `orderBy="startTime"` call site saying it is what makes
-      "the first match" DEFINED, the way `CREATED_DESC` does for Notion.
+## Guard-revert pass
 
-## Milestone 2: the shared pending-choice + undo slot
-
-- [x] New `pending_choice.py`: `PENDING_KEY`, `UNDO_KEY`, `PENDING_TTL_SECONDS`,
-      `parse_selection`, `remember`, `has_pending`, `kind_of`, `take`, `clear`,
-      `remember_undo`, `undo_kind`, `take_undo`.
-- [x] `expense_safety.py` rebuilt on it with its public surface unchanged.
-- [x] `david.handle_message` asks `pending_choice` and routes by kind.
-- [x] `bot/undo.py` — `cmd_undo` peeks the kind and calls the owning service,
-      which consumes the record itself.
-
-## Milestone 3: `Agenda`
-
-- [x] `services/agenda.py` — `format_events_inline` (moved) + `run_agenda`.
-- [x] `proactive/briefing.py` imports the renderer instead of defining it.
-- [x] A read failure, an empty day and a populated day are three distinguishable
-      messages.
-- [x] `bot/agenda.py`, `Command` + `Help` entry, inline.
-
-## Milestone 4: `Cancel`
-
-- [x] `services/cancel.py` — window-scoped `find_event_matches`, `run_cancel`,
-      `run_cancel_selection`, `run_undo`.
-- [x] `config.CANCEL_SEARCH_DAYS`; the window is refused, never widened.
-- [x] `page_lock(CALENDAR_ID)` across lookup **and** delete; the ambiguous path
-      releases it while it waits for a number.
-- [x] `calendar_safety.py` — the choices, the messages, the undo record.
-- [x] `bot/cancel.py`, `Command(destructive=True)` + `Help`.
-
-## Milestone 5: docs
-
-- [x] `README.md` — command table, "Cancelling a reminder", the write-locks
-      table, the scheduled-messages note left alone.
-- [x] `CLAUDE.md` — module map, write-locks table, the `Remind` section.
-- [x] `ROADMAP.md` — tick M6.
-
-## Milestone 6: tests
-
-- [x] `tests/test_router.py` — rows, `SPY_TARGETS`, the two generalised registry
-      tests.
-- [x] `tests/test_agenda.py`, `tests/test_cancel.py`.
-- [x] `tests/test_concurrency.py` — the new lock, the concurrent-cancel drive,
-      `LOCKING_MODULES`.
-- [x] `tests/test_async_io.py` — both commands offload.
-- [x] **Guard-revert pass** on the Rule-4 guards.
-- [x] Full suite green, `ruff check .` clean.
-
-## Milestone 7: ship
-
-- [x] Commit on `claude/milestone-5-review-6-start-e1iq5r`.
-- [x] Pushed to `claude/milestone-5-review-6-start-e1iq5r`.
-- [ ] PR, CI green, merge. Not opened yet — waiting on the go-ahead.
-
-## Found while building
-
-- **`get_events_for_day` localises midnight with a plain `localize()`**, not the
-  `is_dst=None` of `_localize`. Correct as it stands (midnight is never the
-  Europe/Rome transition hour, and this is a read path over data Google owns),
-  but it is the same call shape the DST work refused elsewhere, so it is worth
-  knowing it was looked at rather than missed.
-- **`services/reminder.py` still discards the `find_conflicts` error into `_`.**
-  Named in `CLAUDE.md`'s open questions and unchanged here — it is not this
-  milestone's, and a fix hidden inside a feature is a fix nobody reviewed.
-
-## Guard-revert record
-
-Seven guards, reverted one at a time, each watched turn a NAMED test red. A
+Each guard was removed, a named test went red, and the guard was restored. A
 guard that cannot go red reads like protection and is not.
 
-| Guard reverted to | Turned red |
+| Reverted to | Test that went red |
 | --- | --- |
-| `len(matches) >= 1` — act on the first match instead of refusing an ambiguous one | 6 tests, including `test_two_matching_events_delete_nothing_and_ask` |
-| lock the DELETE only, leaving both lookups free to overlap | `test_two_overlapping_cancels_do_not_both_delete_the_same_event` |
-| retry the failed window read at 365 days | `test_a_failed_lookup_is_refused_and_never_widened` |
-| `events = []` on a failed calendar read, falling through to the renderer | `test_the_three_outcomes_are_three_different_messages` |
-| `parse_day` rolls a past `DD.MM` to next year, as `parse_date_time` does | `test_a_bare_date_is_read_in_the_current_year_and_not_rolled_forward`, `test_the_reply_names_the_full_date_including_the_year` |
-| record the reversal before checking the delete succeeded | `test_a_failed_delete_records_no_undo` |
-| store the raw Google item instead of `restorable_body`'s whitelist | `test_the_undo_body_carries_no_read_only_fields` |
+| `_unknown()` returns `"0000000"` — a placeholder that scans like a SHA | `test_an_absent_variable_is_named_rather_than_guessed`, `test_a_missing_build_cannot_be_mistaken_for_a_real_one`, `test_an_empty_variable_counts_as_absent`, `test_one_missing_variable_does_not_hide_the_others` (4) |
+| `run_version(*, notify, notify_md=None)` sending down `notify_md` | `test_the_service_cannot_send_markdown_at_all` — and NOT the hostile-message test, which passes only `notify`. That is why the signature is the guard. |
+| `datetime.now(tz)` in place of `now_local()` | `test_uptime_comes_from_now_local_and_not_the_system_clock`, `test_a_deployed_build_reports_its_commit_branch_and_deploy` |
+| `cmd_version` bypassing `handle_version` (the `SPY_HOMES` check) | all three router rows: `v`, `version`, `V` |
 
-Every guard was restored and the full suite re-run afterwards: **1048 passed**,
-`ruff check .` clean.
+## Milestone 5: ship
+
+- [ ] `ruff check .` + full suite.
+- [ ] Branch, commit, push, PR, CI green.
+- [ ] Merge — needs your click; the classifier blocked `gh pr merge` last time.
+- [ ] **Verified from Telegram**: `v` answers with a SHA. Not ticked from CI.
 
 ## Changelog
 
-- **The `destructive` router test could not survive a second destructive
-  command, and that was the point of it.** It asserted `find_expense_matches in
-  chain == command.destructive`, so `Cancel` — which is destructive and never
-  touches an expense — turned it red on the first run. Generalised to a declared
-  set of scoped finders, which is the property that actually matters: a
-  destructive command resolves its target through a scoped, ordered lookup
-  before it writes.
-- **`find_event_matches` is the offloaded unit, not the client call it wraps.**
-  The first version of `test_cancel_runs_its_lookup_and_its_delete_off_the_loop`
-  stubbed `get_events_in_window` and failed, correctly: `run_cancel` hands
-  `find_event_matches` to `to_thread`, because the Google round trip and the
-  title filter are one piece of blocking work. Mirrors how the destructive
-  expense pair is stubbed at `find_expense_matches` rather than at
-  `query_database`.
-- **One pending slot rather than two was decided on the strength of an argument
-  already written down.** `remember_pending`'s docstring says a second ambiguous
-  command REPLACES the first because David prints one list at a time. Two
-  feature-local slots would have quietly broken that: a live expense list and a
-  live event list at once, with `2` meaning either.
+- **The full 40-character SHA is not printed, only the 7-character short form.**
+  Milestone 1 originally said "short + full". Dropped while writing the report:
+  seven characters is what `git log --oneline` prints, what `git show` and a
+  GitHub URL both resolve, and the full forty wrap onto three lines on the phone
+  this reply is read on. There is no follow-up action the long form enables. The
+  deployment ID is still printed whole, because that one is copy-pasted into the
+  Railway dashboard rather than read.
+- **Fields are one per line rather than combined.** The mock in the plan message
+  had `commit b09739d (main)`. A combined line needs a rendering for each way its
+  parts can be missing and the readings multiply; one line each means one rule
+  each — a value, or `_unknown`. `test_one_missing_variable_does_not_hide_the_others`
+  is the test that would have caught the combined version being wrong.
+
+## Open questions
+
+- **`v` cannot prove anything until Railway deploys again, and shipping it does
+  not fix the deploy.** It will merge into a `main` that Railway is currently
+  ignoring, so its first useful output is the confirmation that the integration
+  has been repaired — the dashboard fix comes first, or this lands and stays
+  invisible exactly like M6 did. Worth being blunt about: this makes the next
+  deploy verifiable, it does not make it happen.
+- **PR #34 is still open and touches `PLAN.md`, which this plan has rewritten.**
+  Two open PRs editing the same file will conflict. Recommendation: close #34 as
+  superseded — its only content was the PLAN.md checkbox, and the deploy step it
+  added is carried forward at the top of this file.
+- Whether `v` should also print the command count or the registry names. Left
+  out: `h` already lists the commands, and that is the check that found this
+  bug. Adding a second, terser copy of the same information is a thing to keep
+  in sync for no new answer.

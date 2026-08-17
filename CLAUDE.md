@@ -84,6 +84,8 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `services/agenda.py` | `Agenda [day]` — read one day back out of the calendar, and `format_events_inline`, the ONE event renderer (`proactive/briefing.py` imports it) | What a day token means (`parse_day`, in the client); sending |
 | `services/cancel.py` | `Cancel [Name]` — the window-scoped `find_event_matches`, the `CALENDAR_ID` lock over lookup **and** delete, and the re-create undo | The window's SIZE (that is `config.CANCEL_SEARCH_DAYS`); the messages (that is `calendar_safety.py`) |
 | `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
+| `services/version.py` | `v` — which build is RUNNING: the four `RAILWAY_*` variables, the `unknown — X is not set` wording, `format_uptime`, and the process-start stamp | A Markdown channel (`run_version` has no `notify_md`, and that is the guard); the env contract — these variables are platform-injected and stay out of `config.py` |
+| `bot/version.py` | The `v` adapter. Binds the pair and forwards only `notify` | Forwarding `notify_md` — there is nothing to receive it |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
 | `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) and the `Implemented` property name | Sending; un-ticking the checkbox (nothing does) |
@@ -687,6 +689,32 @@ Pushing to `main` triggers a Railway deploy. **Railway keeps the previous versio
 when a deploy fails, so a broken deploy is silent** — you will not notice until a command
 misbehaves. CI on the PR (`ruff check .` + `pytest`) is the real gate. Work on a branch, open
 a PR, let CI go green, then merge. Never commit directly to `main`.
+
+**A merge is not a deploy, and `v` is how you tell.** That warning above was
+written and then paid for: `Agenda` and `Cancel` merged as `b09739d`, passed CI,
+and for three days the running bot answered "I didn't get that" to both. Railway's
+last deploy was the previous day's commit, and the two merges after it produced no
+GitHub deployment record at all — no build was ever attempted, which is a state
+indistinguishable from success from inside the repo. Every signal said shipped.
+
+So the deploy is verified from Telegram, not from a green check:
+
+- **`v`** reports the commit, branch, subject, deployment ID and uptime of the
+  process that answers it, read from the `RAILWAY_*` variables in its own
+  container (`services/version.py`). If the SHA is not the one you merged, nothing
+  else you observe about the bot is about your code.
+- **`h`** is the second opinion, and it is what found this: the help is GENERATED
+  from `COMMANDS`, so a help missing a command is a registry missing it.
+- Neither is a substitute for the other. `v` names the build; `h` proves what that
+  build can do.
+
+When `v` disagrees with `main`, the question is which of two states Railway is in,
+and GitHub can answer it without the dashboard: `gh api
+repos/<owner>/<repo>/deployments` lists what Railway actually started, newest
+first, with a `sha` each. **No record for your commit means no build was
+attempted** — the integration is not firing and re-pushing cannot help. A record
+with a failed status means the build ran and broke, and the Railway log is the
+next stop. Do not treat "I pushed again" as a fix until you know which one it is.
 
 ## Open questions
 

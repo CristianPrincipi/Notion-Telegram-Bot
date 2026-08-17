@@ -47,6 +47,7 @@ import bot.month
 import bot.notion_ids
 import bot.pkm
 import bot.reminder
+import bot.version
 import david
 from services import books, cancel, expenses, learn
 from conftest import FakeContext, FakeUpdate, run, written_ok
@@ -119,6 +120,7 @@ SPY_TARGETS = [
     ("handle_implement", ("_update", "user_text"),                  None,                 True),
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("handle_agenda",    ("_update", "day"),                        None,                 True),
+    ("handle_version",   ("_update",),                              None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
     ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
@@ -144,6 +146,7 @@ SPY_HOMES = {
     "handle_find":          bot.notion_ids,
     "handle_get":           bot.pkm,
     "handle_agenda":        bot.agenda,
+    "handle_version":       bot.version,
     "handle_remind":        bot.reminder,
     "find_event_matches":   cancel,
     "delete_event":         cancel,
@@ -244,6 +247,19 @@ ROUTES = [
     Route("help",  NO_HANDLER, reply("*ADD BOOK*"), "help"),
     Route("aiuto", NO_HANDLER, reply("*ADD BOOK*"), "help (italian)"),
     Route("HELP",  NO_HANDLER, reply("*ADD BOOK*"), "help is case-insensitive"),
+
+    # ── VERSION ────────────────────────────────────────────────────────────────
+    # `v` sits next to `h` in the registry and is the same shape of command: no
+    # arguments, so the only thing to route is the trigger itself.
+    Route("v",        "handle_version", {}, "which build is running"),
+    Route("version",  "handle_version", {}, "version, spelled out"),
+    Route("V",        "handle_version", {}, "version, uppercase"),
+    # Nothing follows the trigger, for the same reason `Month 8` is refused: a
+    # command that takes no argument must not silently ignore one.
+    Route("v please", NO_HANDLER, reply("I didn't get that"),
+          "v takes no argument"),
+    Route("versions", NO_HANDLER, reply("I didn't get that"),
+          "fullmatch, so a longer word is not the command"),
 
     # ── BUDGET ─────────────────────────────────────────────────────────────────
     Route("B", "budget", {}, "budget"),

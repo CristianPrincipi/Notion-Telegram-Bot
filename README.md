@@ -55,6 +55,29 @@ fine without them and loses the feature named below.
 from `{AREA}_ID` (see `get_area_db_id` in `services/implement.py`), so adding a new area
 means adding the matching environment variable.
 
+### Which build is running
+
+`v` answers with the commit, branch, commit subject, deployment ID and uptime of
+the process replying to you. It reads four variables **Railway injects itself**
+into the container it starts:
+
+`RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_BRANCH`, `RAILWAY_GIT_COMMIT_MESSAGE`,
+`RAILWAY_DEPLOYMENT_ID`.
+
+They are deliberately **not in the table above**, and must not be set by hand.
+That table is the contract for what *you* configure, and `config.validate()`
+warns about anything in it that is unset — listing these would advise you to set
+a variable the platform owns. Unset (a local run, or Railway renaming one), `v`
+names the variable it could not read rather than printing a placeholder: an
+unknown build and a known one must not look alike, which is the entire point of
+the command.
+
+Why it exists: `Agenda` and `Cancel` merged to `main`, passed CI, and were absent
+from the running bot for three days, because Railway's last deploy predated the
+merge and **a failed or skipped deploy is silent** — the previous version keeps
+serving. Establishing that took a local verification, a start-up smoke run, and
+thirty GitHub deployment records read through the API. It is now one message.
+
 ## Commands
 
 Send `h`, `help` or `aiuto` to the bot for the in-chat version.
@@ -77,6 +100,7 @@ Send `h`, `help` or `aiuto` to the bot for the in-chat version.
 | `Implement [Page] - [Area]` | Merge a Learn page into an Area manual |
 | `Get [Topic] - [Area]` | Read a section back out of that Area's manual. `Get ? - [Area]` lists every topic |
 | `Diag` / `Find [name]` / `DBs` | Notion ID diagnostics |
+| `v` | Which build is running: commit, branch, commit subject, deployment ID and uptime. `version` works too |
 
 ### Deleting and updating an expense
 

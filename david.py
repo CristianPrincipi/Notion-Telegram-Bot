@@ -29,6 +29,7 @@ from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
 from bot.reminder import cmd_remind
 from bot.undo import cmd_undo
+from bot.version import cmd_version
 from budget import budget
 from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
 from observability import record_command, record_error, set_correlation_id, setup_logging
@@ -531,6 +532,22 @@ COMMANDS = [
         help=Help("🔎 *GET*",
                   usage=("Get [Topic] - [Area]", "Get ? - [Area]"),
                   notes=("? in place of the topic lists every topic in that area",)),
+    ),
+    Command(
+        name="v",
+        # Next to `h` because they are the two meta commands: one says what David
+        # can do, the other which build is saying it. `h` is what found the bug
+        # that made `v` necessary — a help message missing two commands is a
+        # process whose registry is missing them, since the help is generated
+        # from this list.
+        pattern=re.compile(r"v|version", re.I),
+        handler=cmd_version,
+        help=Help("🩺 *VERSION*", usage=("v", "version"), inline=True,
+                  notes=("The commit, branch and deploy David is actually "
+                         "running, plus how long it has been up",
+                         "A merge is not a deploy: Railway keeps the previous "
+                         "version running when one fails, so this is how you "
+                         "check it landed")),
     ),
     Command(
         name="h",
