@@ -1,210 +1,94 @@
-# Plan: M6 — On-demand calendar: `Agenda`, and cancelling a reminder
+# Plan: the Learn output cap is an anonymous literal that shadows the constant
+_Last updated: 2026-08-19_
 
-_Last updated: 2026-08-15_
+Branch: to be cut off `main` at `b09739d`.
 
-Branch: `claude/milestone-5-review-6-start-e1iq5r`, off `main` at the M5 merge
-(`41281af`). Baseline before any change: **979 passed**, `ruff check .` clean.
+## The bug
 
-`clients/calendar_client.py` already has `get_events_for_day` and
-`_list_events_between`, and the only callers are the 07:30 and 20:00 jobs — **no
-command in the registry reads the calendar.** And `Remind` creates events with
-nothing anywhere to delete them.
+`Learn video https://youtu.be/A_kETOxjeWQ` failed with:
 
-This milestone adds the two commands that close that: `Agenda` (read-only) and
-`Cancel [Name]` (destructive, so Hard Rule 4 applies in full).
+> Claude hit the 4096-token output cap and the answer was cut off mid-object.
+> Nothing was saved. Try a shorter source, or raise ANTHROPIC_MAX_TOKENS.
 
-## Decisions taken before writing code
+`config.ANTHROPIC_MAX_TOKENS` is **8192**. `services/learn.py:470` passes
+`max_tokens=4096`, so the one call that can hit an output cap runs at half the
+configured budget — and the advice in the message is false twice over: raising
+the constant would not have changed this call, and the constant is not read from
+the environment, so "raise it" means a code change and a redeploy.
 
-**1. The pending-choice machine is GENERALISED, not forked, and there is ONE
-pending slot.** `ROADMAP.md` asks for this decision explicitly. `expense_safety`
-carries the machine today and is named for expenses; `Cancel` needs the same
-"more than one match writes nothing" behaviour with different fields and
-different wording.
+Same class as `SUMMARY_INPUT_CHARS` and `MANUAL_SOURCE_CHARS`: one budget, two
+numbers. Here the literal shadows the constant rather than drifting from it.
 
-A sibling module with its own `PENDING_KEY` would be two independent live lists,
-and then a bare `2` means whichever one you had scrolled to — the exact ambiguity
-`remember_pending`'s docstring already argues against *within* expenses ("David
-prints one list at a time, so the only list a number can sensibly refer to is the
-last one printed"). That argument does not stop at the feature boundary.
+## Milestone 1: one number per budget
 
-So the generic half moves to a new root module `pending_choice.py` — the TTL, the
-strict-digits `parse_selection`, expiry, the range check, and **one** slot tagged
-with the KIND that owns it. `expense_safety.py` keeps its whole public surface
-and its expense-shaped `Choice` / `Pending` / `Undo`, built on top; a new
-`calendar_safety.py` is its mirror for events. The dispatch loop in `david.py`
-asks `pending_choice` whether a list is live and routes the number by kind.
+- [x] Drop `max_tokens=4096` from `services.learn.summarize_with_claude` — it
+      inherits `ANTHROPIC_MAX_TOKENS` like the two merge calls already do.
+- [x] Name the routing budget: `config.ANTHROPIC_ROUTE_MAX_TOKENS = 2048`, read
+      by `services/implement.py:374` and `services/implement_diet.py:377`. These
+      are a genuinely different budget (a list of section names, not prose), but
+      they are the same anonymous literal in two files.
+- [x] Grep for any remaining bare `max_tokens=` outside `config.py`.
 
-The **undo record is the same shape of decision and gets the same treatment**:
-one slot, tagged by kind, so `undo` reverses the last destructive thing David did
-rather than the last destructive *expense*.
+## Milestone 2: make the message's advice true
 
-**2. `Cancel` records a reversal, and it re-creates rather than un-deletes.**
-Google's `events.delete` has no archive an integration can flip back the way
-Notion's does. The reversal is therefore an insert built from a snapshot taken
-from the object the LOOKUP returned — the same ordering rule `expense_safety`
-already states, for the same reason.
+- [x] `ANTHROPIC_MAX_TOKENS` reads `os.environ` with 8192 as the default, so the
+      lever the error names is one Railway variable away — a truncated summary
+      is exactly when you want to raise it without a deploy.
+- [x] Add it to `OPTIONAL_ENV` and the README env table.
+- [x] Correct the config comment: the SDK's ~16k non-streaming refusal never
+      fires here (`messages.create` only runs that check when the client timeout
+      is the SDK default, and `_client()` sets one). The real ceiling is
+      `ANTHROPIC_READ_TIMEOUT`; say that instead.
+- [x] Reword the truncation error so it names the effective cap and says where
+      to raise it, in the shape `_budget_error` already uses.
 
-Be precise about what that buys, here and in the docs:
+## Milestone 3: tests that go red without the fix
 
-- **Restored:** summary, start, end, all-day-ness, description, location,
-  recurrence and the event's own reminder overrides — a whitelist of the fields
-  Google accepts on insert, copied verbatim off the snapshot.
-- **Not restored:** the event ID (it comes back as a new event), and anything
-  attached to that ID — attendee responses, the original creator, per-guest
-  state. `Remind` creates none of those, which is why this is worth having at
-  all, and the reply says so rather than claiming a clean undo.
+- [x] `tests/test_output_cap.py` (new file, not `test_learn.py` — there is none):
+      the summarise call is made at `ANTHROPIC_MAX_TOKENS` —
+      asserted by driving the real `summarize_with_claude` with a spy on
+      `complete_json` and reading `max_tokens` off the call. Red at HEAD.
+- [x] `test_anthropic_client.py`: an env override changes the cap the API is
+      actually called with, not just the constant.
+- [x] `test_anthropic_client.py`: the truncation message names the cap that was
+      used. Red if a call site's literal ever shadows the constant again.
+- [x] Full suite + `ruff check .` clean.
 
-**3. A day token means one thing in `Remind` and a slightly different thing in
-`Agenda`, and the difference is stated, not hidden.** `parse_date_time` refuses a
-`td` whose time has already passed and rolls a comfortably-past bare `DD.MM` to
-next year. Both rules exist because *a reminder in the past never pings*. Neither
-transfers to a read: "what did I have on Tuesday?" is a legitimate question.
+## Milestone 4: ship
 
-So `clients/calendar_client.parse_day` is a second entry point beside
-`parse_date_time`, and it takes a bare `DD.MM` **at face value in the current
-year, past or not** — no rollover, no refusal. That is safe to do without
-guessing because the reply NAMES the resolved date in full (weekday, day, month,
-year), which is the same backstop `Remind`'s confirmation uses. The split
-`CLAUDE.md` insists on is kept: the service's pattern decides which tokens are
-LEGAL, the client decides what they MEAN.
+- [ ] Branch, commit, push, PR, CI green, merge. Never commit to `main`.
+- [ ] Re-run the failing command against the same URL and confirm it saves.
 
-**4. One event renderer, and it moves down a layer.**
-`proactive/briefing._format_events_inline` is the renderer `Agenda` must reuse or
-the two drift. `services/` cannot import `proactive/` upward-and-sideways and
-`proactive/` importing a private from a sibling is worse, so it becomes
-`services/agenda.format_events_inline` and `proactive/briefing.py` imports it.
-`proactive/` already imports `budget` and `clients/`, so the direction is the one
-that already exists.
+## Open questions
 
-**5. Two service modules, not one.** `services/agenda.py` is a read; `services/cancel.py`
-is a find-then-mutate under a lock with an undo. Sharing a file would put the one
-command that cannot write next to the one that Hard Rule 4 governs.
-
-**6. `Agenda` runs INLINE.** It is read-only, so it cannot reorder against a
-write the way a detached command could — the same reasoning `Get` already
-carries. `Cancel` runs inline too: it is a short write, like `D e`.
-
-**7. The `destructive` flag now covers three commands, and the router test that
-asserts it has to be generalised in the same commit.**
-`test_destructive_is_exactly_what_goes_through_the_expense_guard` hard-codes
-`find_expense_matches`. `Cancel` goes through a *different* scoped finder, so the
-test becomes a check that a destructive command routes through **one of the
-declared scoped finders** — and `test_the_destructive_commands_are_the_two_expected_ones`
-becomes three.
-
-## Milestone 1: the client prerequisite
-
-- [x] `_list_events_between` returns `"id"` on every item, and carries the raw
-      Google item so a snapshot can be taken without a second read.
-- [x] `delete_event(event_id) -> (ok, error)`, same retry/error shape as
-      `create_event`.
-- [x] `restore_event(body) -> (link, error)` + `restorable_body(raw)` — the
-      whitelist of fields an insert can carry back.
-- [x] `parse_day(token) -> (date, error)` — `td`/`today`, `tr`/`tomorrow`,
-      `DD.MM`, `DD.MM.YYYY`, and `t` refused by name exactly as `parse_date_time`
-      refuses it.
-- [x] A comment at the `orderBy="startTime"` call site saying it is what makes
-      "the first match" DEFINED, the way `CREATED_DESC` does for Notion.
-
-## Milestone 2: the shared pending-choice + undo slot
-
-- [x] New `pending_choice.py`: `PENDING_KEY`, `UNDO_KEY`, `PENDING_TTL_SECONDS`,
-      `parse_selection`, `remember`, `has_pending`, `kind_of`, `take`, `clear`,
-      `remember_undo`, `undo_kind`, `take_undo`.
-- [x] `expense_safety.py` rebuilt on it with its public surface unchanged.
-- [x] `david.handle_message` asks `pending_choice` and routes by kind.
-- [x] `bot/undo.py` — `cmd_undo` peeks the kind and calls the owning service,
-      which consumes the record itself.
-
-## Milestone 3: `Agenda`
-
-- [x] `services/agenda.py` — `format_events_inline` (moved) + `run_agenda`.
-- [x] `proactive/briefing.py` imports the renderer instead of defining it.
-- [x] A read failure, an empty day and a populated day are three distinguishable
-      messages.
-- [x] `bot/agenda.py`, `Command` + `Help` entry, inline.
-
-## Milestone 4: `Cancel`
-
-- [x] `services/cancel.py` — window-scoped `find_event_matches`, `run_cancel`,
-      `run_cancel_selection`, `run_undo`.
-- [x] `config.CANCEL_SEARCH_DAYS`; the window is refused, never widened.
-- [x] `page_lock(CALENDAR_ID)` across lookup **and** delete; the ambiguous path
-      releases it while it waits for a number.
-- [x] `calendar_safety.py` — the choices, the messages, the undo record.
-- [x] `bot/cancel.py`, `Command(destructive=True)` + `Help`.
-
-## Milestone 5: docs
-
-- [x] `README.md` — command table, "Cancelling a reminder", the write-locks
-      table, the scheduled-messages note left alone.
-- [x] `CLAUDE.md` — module map, write-locks table, the `Remind` section.
-- [x] `ROADMAP.md` — tick M6.
-
-## Milestone 6: tests
-
-- [x] `tests/test_router.py` — rows, `SPY_TARGETS`, the two generalised registry
-      tests.
-- [x] `tests/test_agenda.py`, `tests/test_cancel.py`.
-- [x] `tests/test_concurrency.py` — the new lock, the concurrent-cancel drive,
-      `LOCKING_MODULES`.
-- [x] `tests/test_async_io.py` — both commands offload.
-- [x] **Guard-revert pass** on the Rule-4 guards.
-- [x] Full suite green, `ruff check .` clean.
-
-## Milestone 7: ship
-
-- [x] Commit on `claude/milestone-5-review-6-start-e1iq5r`.
-- [x] Pushed to `claude/milestone-5-review-6-start-e1iq5r`.
-- [ ] PR, CI green, merge. Not opened yet — waiting on the go-ahead.
-
-## Found while building
-
-- **`get_events_for_day` localises midnight with a plain `localize()`**, not the
-  `is_dst=None` of `_localize`. Correct as it stands (midnight is never the
-  Europe/Rome transition hour, and this is a read path over data Google owns),
-  but it is the same call shape the DST work refused elsewhere, so it is worth
-  knowing it was looked at rather than missed.
-- **`services/reminder.py` still discards the `find_conflicts` error into `_`.**
-  Named in `CLAUDE.md`'s open questions and unchanged here — it is not this
-  milestone's, and a fix hidden inside a feature is a fix nobody reviewed.
-
-## Guard-revert record
-
-Seven guards, reverted one at a time, each watched turn a NAMED test red. A
-guard that cannot go red reads like protection and is not.
-
-| Guard reverted to | Turned red |
-| --- | --- |
-| `len(matches) >= 1` — act on the first match instead of refusing an ambiguous one | 6 tests, including `test_two_matching_events_delete_nothing_and_ask` |
-| lock the DELETE only, leaving both lookups free to overlap | `test_two_overlapping_cancels_do_not_both_delete_the_same_event` |
-| retry the failed window read at 365 days | `test_a_failed_lookup_is_refused_and_never_widened` |
-| `events = []` on a failed calendar read, falling through to the renderer | `test_the_three_outcomes_are_three_different_messages` |
-| `parse_day` rolls a past `DD.MM` to next year, as `parse_date_time` does | `test_a_bare_date_is_read_in_the_current_year_and_not_rolled_forward`, `test_the_reply_names_the_full_date_including_the_year` |
-| record the reversal before checking the delete succeeded | `test_a_failed_delete_records_no_undo` |
-| store the raw Google item instead of `restorable_body`'s whitelist | `test_the_undo_body_carries_no_read_only_fields` |
-
-Every guard was restored and the full suite re-run afterwards: **1048 passed**,
-`ruff check .` clean.
+- **Is 8192 enough for this video?** Unknown until re-run — a ~50-minute podcast
+  against a schema asking 5-7 sections of 2-4 paragraphs plus quotes and
+  takeaways. 8192 is double what failed. If it still truncates, the env override
+  from Milestone 2 is the answer rather than another literal, and the ceiling to
+  watch is `ANTHROPIC_READ_TIMEOUT` (300s), not the SDK.
+- **Not doing: an automatic retry at a higher cap.** It doubles the cost of the
+  worst case silently, and the whole point of this fix is that the cap is one
+  legible number.
 
 ## Changelog
 
-- **The `destructive` router test could not survive a second destructive
-  command, and that was the point of it.** It asserted `find_expense_matches in
-  chain == command.destructive`, so `Cancel` — which is destructive and never
-  touches an expense — turned it red on the first run. Generalised to a declared
-  set of scoped finders, which is the property that actually matters: a
-  destructive command resolves its target through a scoped, ordered lookup
-  before it writes.
-- **`find_event_matches` is the offloaded unit, not the client call it wraps.**
-  The first version of `test_cancel_runs_its_lookup_and_its_delete_off_the_loop`
-  stubbed `get_events_in_window` and failed, correctly: `run_cancel` hands
-  `find_event_matches` to `to_thread`, because the Google round trip and the
-  title filter are one piece of blocking work. Mirrors how the destructive
-  expense pair is stubbed at `find_expense_matches` rather than at
-  `query_database`.
-- **One pending slot rather than two was decided on the strength of an argument
-  already written down.** `remember_pending`'s docstring says a second ambiguous
-  command REPLACES the first because David prints one list at a time. Two
-  feature-local slots would have quietly broken that: a live expense list and a
-  live event list at once, with `2` meaning either.
+**2026-08-19** — the tests landed in `tests/test_output_cap.py`, a new file,
+rather than `test_learn.py`, which does not exist: Learn is covered across
+`test_article_extraction`, `test_learn_idempotency` and `test_unverified_sources`
+and none of them owns the cap. One file per budget matches `test_safe_writes.py`
+and `test_partial_writes.py`.
+
+Also added a SOURCE SCAN that was not in the plan. Driving the code cannot see
+this bug — a run capped at 4096 and one capped at 8192 both succeed, and differ
+only in how much of the podcast survived — so the behavioural test alone would
+guard the one call site I happened to fix. The scan refuses an anonymous
+`max_tokens=` literal anywhere under `bot/ clients/ services/ proactive/` and the
+repo root, in the family of `test_layering.py`.
+
+Every guard was verified by reverting the fix:
+- `max_tokens=4096` back in `services/learn.py` → `test_no_call_site_passes_an_anonymous_output_cap`
+  and `test_the_learn_summary_runs_at_the_configured_cap` both red.
+- `ANTHROPIC_MAX_TOKENS = 8192` back to a literal →
+  `test_the_environment_variable_the_error_names_reaches_the_api_call` red.
+
+Suite: **1058 passed**, `ruff check .` clean.

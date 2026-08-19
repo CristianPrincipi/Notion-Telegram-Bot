@@ -155,6 +155,53 @@ def test_hitting_max_tokens_is_an_actionable_error_not_a_parse_crash(anthropic_a
     assert "parse" not in err.lower(), "still reporting truncation as a parse failure"
 
 
+def _truncated():
+    """A response that stopped at the cap, holding half an object."""
+    return [(200, message(
+        content=[{"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
+                  "input": {"title": "Half a summ"}}],
+        stop_reason="max_tokens"))]
+
+
+def test_the_truncation_error_says_where_to_raise_the_cap(anthropic_api):
+    """The message is the whole interface to this failure — it arrives in Telegram
+    after a fetch and two minutes of generation, with nothing saved.
+
+    It used to advise raising ANTHROPIC_MAX_TOKENS in a sentence shaped exactly
+    like the daily-budget refusal, which names a Railway variable. This one was a
+    source literal, so following the advice meant a code change and a deploy. Now
+    it is a variable, and the message has to keep saying so.
+    """
+    anthropic_api["queue"] = _truncated()
+
+    _, err = complete_json("system", "user", SCHEMA)
+
+    assert "ANTHROPIC_MAX_TOKENS" in err
+    assert "Railway" in err, "names the lever without saying it is one you can pull"
+    assert str(anthropic_client.ANTHROPIC_MAX_TOKENS) in err, (
+        "does not say what the cap currently is, so you cannot tell what raising it means"
+    )
+
+
+def test_a_call_that_caps_itself_below_the_constant_says_so(anthropic_api):
+    """THE BUG THIS FILE'S SIBLING EXISTS FOR, reported rather than hidden.
+
+    `services/learn.py` passed 4096 while the constant said 8192, so the error
+    named a lever the failing call ignored — you raise ANTHROPIC_MAX_TOKENS,
+    redeploy, and hit the identical 4096 wall. `tests/test_output_cap.py` stops
+    that call site from existing; this makes the message honest if one ever does,
+    because the two guards fail in opposite directions and only this one survives
+    a deliberate per-call cap.
+    """
+    anthropic_api["queue"] = _truncated()
+
+    _, err = complete_json("system", "user", SCHEMA, max_tokens=1024)
+
+    assert "1024" in err, "does not name the cap that actually stopped the answer"
+    assert str(anthropic_client.ANTHROPIC_MAX_TOKENS) in err
+    assert "below" in err, "does not say the call capped itself under the configured value"
+
+
 def test_a_truncated_answer_is_never_partially_used(anthropic_api):
     """The half-written object is present in the response and must be discarded —
     a Manual merged from half a merge is worse than no merge."""

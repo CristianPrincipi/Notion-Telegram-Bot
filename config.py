@@ -196,8 +196,36 @@ PDF_PARSE_TIMEOUT      = 120   # PyPDF2 text extraction: CPU-bound and unbounded
 # implement.py and implement_diet.py — so an upgrade meant finding all three.
 ANTHROPIC_MODEL = "claude-sonnet-4-5"
 
-ANTHROPIC_MAX_TOKENS = 8192    # output cap. Stays well under the ~16k above which
-                               # the SDK refuses a non-streaming request outright.
+# OUTPUT cap: the default ceiling on one answer, and the ONE number describing
+# it. Overridable from the environment because it is the lever the truncation
+# error names, and that error arrives at the exact moment you cannot afford a
+# code change and a redeploy to act on it.
+#
+# It was not always the only number: services.learn.summarize_with_claude passed
+# a literal 4096, SHADOWING this at the one call site that can plausibly hit the
+# cap. A ~50-minute podcast summarised against a 5-7 section schema was cut off
+# mid-object, nothing was saved, and the error advised raising a constant that
+# call site ignored. Same class as SUMMARY_INPUT_CHARS and MANUAL_SOURCE_CHARS —
+# one budget, two numbers — except a shadowed constant does not drift into being
+# wrong, it starts that way.
+#
+# A caller may still pass its own value, and ANTHROPIC_ROUTE_MAX_TOKENS below is
+# what that is for: a DIFFERENT budget, named, not an anonymous literal.
+#
+# The ceiling on raising it is ANTHROPIC_READ_TIMEOUT, not the SDK. The comment
+# here used to say 8192 "stays well under the ~16k above which the SDK refuses a
+# non-streaming request outright" — that guard exists, but messages.create only
+# reaches it when the client timeout is the SDK default, and _client() always
+# sets one. So it has never applied to David, and reasoning from it would have
+# capped this at a limit nothing was enforcing.
+ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS") or 8192)
+
+# The routing calls answer with a LIST OF SECTION NAMES, not prose, so they are
+# a genuinely smaller budget and capping them separately is real money on the
+# Implement path. It is named here because it was the same anonymous 2048 in
+# services/implement.py and services/implement_diet.py, which is one edit away
+# from being two different numbers for one decision.
+ANTHROPIC_ROUTE_MAX_TOKENS = 2048
 
 # INPUT cap: how much source text one summarisation may be given. ~100k chars
 # covers a 2-hour video transcript in a single call.
@@ -422,6 +450,9 @@ OPTIONAL_ENV = {
     "BUDGET_CEILING":          "Monthly budget ceiling in euros. Defaults to 300.",
     "MONTHS_DB_ID":            ("Notion database the month pages live in. Discovered from the "
                                 f"Expenses '{EXPENSE_MONTH_RELATION}' relation when unset."),
+    "ANTHROPIC_MAX_TOKENS":       ("Output-token ceiling for one Claude answer. Defaults to "
+                                   "8192. Raise it if a long source is summarised to a "
+                                   "truncated page — that error names this variable."),
     "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn and "
                                    "Implement are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
