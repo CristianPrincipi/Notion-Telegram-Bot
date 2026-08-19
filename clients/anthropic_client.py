@@ -254,10 +254,23 @@ def complete_json(system: str, user: str, schema: dict | None = None,
     # Checked before reading the content: a tool call cut off mid-object is not
     # partially usable, and the old code's "JSON parse error" for this named
     # neither the cause nor the fix.
+    #
+    # The message names the cap that was ACTUALLY USED, and says where to raise
+    # it, because for a while it did neither usefully: it advised raising
+    # ANTHROPIC_MAX_TOKENS while services/learn.py passed its own 4096, so the
+    # one lever the message named was the one the failing call ignored. It also
+    # read like ANTHROPIC_DAILY_BUDGET_USD's refusal below, which IS a Railway
+    # variable — while this one was a source literal, so acting on the advice
+    # meant a code change and a deploy. Both halves are true now; keep them
+    # true. If a caller ever passes a cap of its own again, say so here.
     if response.stop_reason == "max_tokens":
+        note = ("" if max_tokens == ANTHROPIC_MAX_TOKENS else
+                f" (this call caps itself at {max_tokens}, below the configured "
+                f"{ANTHROPIC_MAX_TOKENS})")
         return None, (f"Claude hit the {max_tokens}-token output cap and the answer was cut "
-                      f"off mid-object. Nothing was saved. Try a shorter source, or raise "
-                      f"ANTHROPIC_MAX_TOKENS.")
+                      f"off mid-object. Nothing was saved{note}. Try a shorter source, or "
+                      f"raise ANTHROPIC_MAX_TOKENS on Railway — it is {ANTHROPIC_MAX_TOKENS} "
+                      f"now.")
 
     if response.stop_reason == "refusal":
         return None, "Claude declined to answer this one. Nothing was saved."

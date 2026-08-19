@@ -3,7 +3,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from clients.anthropic_client import complete_json
-from config import ANTHROPIC_TIMEOUT, DIET_SUMMARY_CHARS, is_unverified_source
+from config import (
+    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, DIET_SUMMARY_CHARS,
+    is_unverified_source,
+)
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 # One implementation of the cut and one wording of its warning, shared with the
@@ -374,7 +377,7 @@ def route_sections(paths: list, summary_text: str, summary_title: str):
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
         f"=== SUMMARY: {summary_title} ===\n{summary_text}"
     )
-    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=2048)
+    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS)
 
 
 _MERGE_SYSTEM = """You merge newly learned content into specific sections of a personal DIET page.

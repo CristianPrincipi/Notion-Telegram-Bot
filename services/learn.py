@@ -467,7 +467,12 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
         # it fires silently — which is exactly why it is not the primary place.
         f"Content:\n{text[:SUMMARY_INPUT_CHARS]}"
     )
-    return complete_json(_SYSTEM, user_msg, _SUMMARY_SCHEMA, max_tokens=4096)
+    # No max_tokens here on purpose. This used to pass 4096, which SHADOWED
+    # config.ANTHROPIC_MAX_TOKENS (8192) at the one call site that can
+    # plausibly hit an output cap — a long podcast against a schema asking for
+    # 5-7 sections. So the summary was cut off mid-object, nothing was saved,
+    # and the error told you to raise a constant this line ignored.
+    return complete_json(_SYSTEM, user_msg, _SUMMARY_SCHEMA)
 
 
 # ─── 3. NOTION BLOCK BUILDER ───────────────────────────────────────────────────

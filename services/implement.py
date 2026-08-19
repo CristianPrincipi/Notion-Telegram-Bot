@@ -45,7 +45,10 @@ import re
 
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
-from config import ANTHROPIC_TIMEOUT, MANUAL_SOURCE_CHARS, is_unverified_source
+from config import (
+    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, MANUAL_SOURCE_CHARS,
+    is_unverified_source,
+)
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -371,7 +374,7 @@ def route_sections(section_paths: list, source_text: str, source_title: str):
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
         f"=== SOURCE: {source_title} ===\n{source_text}"
     )
-    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=2048)
+    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS)
 
 
 _MERGE_SYSTEM = """You merge new knowledge into specific sections of a personal Manual.
