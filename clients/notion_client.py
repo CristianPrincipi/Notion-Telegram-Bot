@@ -247,7 +247,17 @@ def database_property_type(db_id: str, property_name: str):
 def search_page_in_db(db_id: str, query: str, exact: bool = False):
     """Search a Notion database for a page by title. Returns (page_object, error).
 
-    Returns the most recently created match — see CREATED_DESC.
+    THREE answers, and the middle one is not an error:
+
+        (page, None)   found — the most recently created match, see CREATED_DESC
+        (None, None)   the read worked and nothing matches
+        (None, error)  the read failed
+
+    "Nothing matches" used to be (None, "No page found matching 'X'"), the same
+    shape as a failure. The callers that CREATE a page when it is missing had to
+    let "missing" fall through, so they discarded the error — and a failed read
+    built a second Diet page or Manual. A caller that acts on "missing" must
+    refuse on an error; see tests/test_lookup_outcomes.py.
     """
     try:
         title_prop, prop_err = title_property(db_id)
@@ -269,7 +279,7 @@ def search_page_in_db(db_id: str, query: str, exact: bool = False):
             return None, f"Notion {resp.status_code}: {resp.text[:200]}"
         results = resp.json().get("results", [])
         if not results:
-            return None, f"No page found matching '{query}'"
+            return None, None
         return results[0], None
     except Exception as e:
         return None, str(e)

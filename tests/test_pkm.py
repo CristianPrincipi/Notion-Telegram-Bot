@@ -82,7 +82,7 @@ def manual(monkeypatch):
     def search_page_in_db(db_id, query, exact=False):
         state["searched"].append((db_id, query, exact))
         if state["page"] is None:
-            return None, f"No page found matching '{query}'"
+            return None, None       # nothing matches — an empty answer, not an error
         return state["page"], None
 
     def get_children(block_id):

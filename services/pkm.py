@@ -261,15 +261,22 @@ async def run_get(user_text: str, *, notify, notify_md=None) -> None:
     # event loop they would freeze every other command for the whole walk.
     page_title = _manual_title_for(area)
     page, perr = await asyncio.to_thread(search_page_in_db, db_id, page_title, True)
+    if perr:
+        # A failed read, which used to be announced as "No Manual page found"
+        # with the real error underneath — two messages that contradict each
+        # other, the wrong one first. The Notion detail goes out as a SEPARATE
+        # plain message: inside a `code span` Markdown v1 ignores backslash
+        # escapes, so escaping cannot make it safe — only sending it unformatted can.
+        await notify_md(
+            f"❌ Could not search the *{escape_md(area)}* database for its "
+            f"*{escape_md(page_title)}* page. Notion said:",
+        )
+        await notify(perr)
+        return
     if not page:
         await notify_md(
             f"❌ No *{escape_md(page_title)}* page found in the *{escape_md(area)}* database.",
         )
-        # The Notion detail goes out as a SEPARATE plain message: it used to sit in
-        # a `code span`, where Markdown v1 ignores backslash escapes, so escaping
-        # cannot make it safe — only sending it unformatted can.
-        if perr and "No page found" not in perr:
-            await notify(perr)
         return
 
     await notify_md(f"🔎 Searching the *{escape_md(area)}* manual…")

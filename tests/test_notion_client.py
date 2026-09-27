@@ -244,15 +244,35 @@ def test_search_page_in_db_can_match_exactly():
 
 
 @responses.activate
-def test_search_page_in_db_reports_no_match():
+def test_nothing_matching_is_an_empty_answer_not_an_error():
+    """(None, None): the read worked and there is no such page.
+
+    It used to be (None, "No page found matching 'X'") — the same shape as a
+    failed read — so a caller that CREATES the page when it is missing could not
+    tell "there is none" from "Notion did not answer". The two that do create
+    (the Diet page, an area's Manual) discarded the error to make "not found"
+    fall through, and so made a second page whenever a lookup failed.
+    """
     serve_schema()
     responses.add(responses.POST, QUERY_URL, status=200,
                   json={"results": [], "has_more": False})
 
     found, err = search_page_in_db(DB_ID, "Nonexistent")
 
+    assert (found, err) == (None, None)
+
+
+@responses.activate
+def test_a_failed_search_is_an_error_not_an_empty_answer():
+    """The other half: a read that did not work must never look like a clean
+    "nothing here", or the create-if-missing callers make a duplicate."""
+    serve_schema()
+    responses.add(responses.POST, QUERY_URL, status=502, body="bad gateway")
+
+    found, err = search_page_in_db(DB_ID, "Dune")
+
     assert found is None
-    assert "Nonexistent" in err
+    assert err and "502" in err
 
 
 # ─── THE TITLE PROPERTY IS DISCOVERED, NOT ASSUMED ─────────────────────────────

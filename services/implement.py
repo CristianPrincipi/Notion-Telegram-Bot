@@ -880,6 +880,13 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
 
     source_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, page_name)
     if err:
+        # An outage, not a typo: telling you to check the title would send you
+        # after the wrong problem.
+        await notify_md(f"❌ Could not search your Learn database for *{escape_md(page_name)}*, "
+                        "so nothing was changed. Notion said:")
+        await notify(err)
+        return
+    if source_page is None:
         await notify_md(f"❌ Could not find *{escape_md(page_name)}* in your Learn database.\n\n"
             f"Make sure you used `Learn` to save it first, and that the title matches.",
         )
@@ -925,8 +932,18 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
     try:
         async with page_lock(area_db_id):
             await notify_md(f"📂 Looking for Manual in *{escape_md(area_name)}*…")
-            manual_page, _ = await asyncio.to_thread(
+            manual_page, err = await asyncio.to_thread(
                 search_page_in_db, area_db_id, MANUAL_PAGE_TITLE, exact=True)
+            if err:
+                # REFUSED, never read as "no Manual yet". That branch is
+                # _first_run, which builds a whole Manual from scratch — so a
+                # transient failure here used to put a second one beside yours.
+                await notify_md(
+                    f"❌ Could not check the *{escape_md(area_name)}* database for its Manual, "
+                    "so nothing was written — building one now could duplicate the one you "
+                    "have. Try again in a minute. Notion said:")
+                await notify(err)
+                return
 
             if manual_page is None:
                 done = await _first_run(area_db_id, area_name,
