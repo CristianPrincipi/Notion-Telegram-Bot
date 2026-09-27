@@ -117,6 +117,15 @@ message you eventually notice; a confident wrong answer you act on. Every proact
 builder now returns `(text, error)`, and `scheduler._run_job` is the single place
 those three states — send / stay silent / report — are told apart.
 
+**Nor is an empty result an error** — the same collapse the other way round.
+`search_page_in_db` used to report "nothing matches" as `(None, "No page found
+matching 'X'")`. The two callers that CREATE a page when it is missing (the Diet
+page, an area's Manual) needed "missing" to fall through, so they discarded the
+error — and every transient Notion failure built a second page, skeleton and all,
+beside the real one, under a reply that said "First run". It now answers
+`(page, None)` / `(None, None)` / `(None, error)`, and **a create-if-missing
+caller refuses on an error, never reads it as missing** (`tests/test_lookup_outcomes.py`).
+
 **Everything sent with Markdown goes through `telegram_text`.** Legacy Markdown has
 no literal asterisk, so one stray `*` in a Notion category, a Claude-written
 heading, or a slice of an uploaded PDF made Telegram reject the whole message —

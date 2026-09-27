@@ -538,8 +538,16 @@ def _resolve_path(path: str, block_map: dict):
 
 def find_or_create_diet_page():
     """Find the 'Diet' page in DIET_ID, or create it with the full skeleton.
-    Returns (page_id, was_created, error)."""
-    page, _ = search_page_in_db(DIET_ID, DIET_PAGE_TITLE, exact=True)
+    Returns (page_id, was_created, error).
+
+    Creates ONLY when the lookup worked and found nothing. A failed lookup is
+    refused, never read as "missing": that used to build a second Diet page,
+    skeleton and all, beside the real one on any transient Notion error.
+    """
+    page, err = search_page_in_db(DIET_ID, DIET_PAGE_TITLE, exact=True)
+    if err:
+        return None, False, (f"could not look for the existing {DIET_PAGE_TITLE} page, "
+                             f"so none was created: {err}")
     if page:
         return page["id"], False, None
 
@@ -624,6 +632,12 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
     await notify_md(f"🔍 Searching for *{escape_md(summary_name)}* in Learn database…")
     summary_page, err = await asyncio.to_thread(search_page_in_db, LEARN_ID, summary_name)
     if err:
+        # An outage, not a typo — see the same branch in implement.run_implement.
+        await notify_md(f"❌ Could not search your Learn database for *{escape_md(summary_name)}*, "
+                        "so nothing was changed. Notion said:")
+        await notify(err)
+        return
+    if summary_page is None:
         await notify_md(f"❌ Could not find *{escape_md(summary_name)}* in your Learn database.\n"
             "Make sure you used `Learn` to save it and the title matches.",
         )

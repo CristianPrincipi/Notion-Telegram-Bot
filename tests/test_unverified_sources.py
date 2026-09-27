@@ -234,7 +234,7 @@ def test_the_first_run_warns_before_building_the_whole_manual(wired, monkeypatch
     wired["source"] = f"⚠️ {UNVERIFIED_MARKER}. No source text was read."
     monkeypatch.setattr(implement, "search_page_in_db",
                         lambda db, name, exact=False: (
-                            (None, "not found") if db == "area-db-1"
+                            (None, None) if db == "area-db-1"     # no Manual yet
                             else ({"id": "source-1", "properties": {}}, None)))
     monkeypatch.setattr(implement, "build_manual",
                         lambda text, topic, title="": (
