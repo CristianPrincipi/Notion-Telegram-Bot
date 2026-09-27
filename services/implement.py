@@ -46,8 +46,8 @@ import re
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
 from config import (
-    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, MANUAL_SOURCE_CHARS,
-    is_unverified_source,
+    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, IMPLEMENTED_PROPERTY, MANUAL_PAGE_TITLE,
+    MANUAL_SOURCE_CHARS, MANUAL_TITLE_PROPERTY, is_unverified_source,
 )
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
@@ -150,7 +150,7 @@ def create_manual_page(db_id: str, blocks: list[dict]) -> tuple[str | None, str 
     """Create a new Manual page in a database. Returns (page_id, error)."""
     return create_page(
         db_id,
-        {"Name": {"title": [{"text": {"content": "Manual"}}]}},
+        {MANUAL_TITLE_PROPERTY: {"title": [{"text": {"content": MANUAL_PAGE_TITLE}}]}},
         children=blocks,
         icon="📋",
     )
@@ -612,7 +612,7 @@ def build_manual_blocks(merged: dict) -> list[dict]:
 
     sources = merged.get("sources", [])
     if sources:
-        blocks.append(_heading2("📚 Sources"))
+        blocks.append(_heading2(f"📚 {SOURCES_SECTION}"))
         for source in sources:
             blocks.append(_bullet(source))
 
@@ -926,7 +926,7 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
         async with page_lock(area_db_id):
             await notify_md(f"📂 Looking for Manual in *{escape_md(area_name)}*…")
             manual_page, _ = await asyncio.to_thread(
-                search_page_in_db, area_db_id, "Manual", exact=True)
+                search_page_in_db, area_db_id, MANUAL_PAGE_TITLE, exact=True)
 
             if manual_page is None:
                 done = await _first_run(area_db_id, area_name,
@@ -947,7 +947,7 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
         return
 
     # ── Mark the source Learn page as implemented (best-effort) ────────────────
-    await asyncio.to_thread(update_page, source_page_id, {"Implemented": {"checkbox": True}})
+    await asyncio.to_thread(update_page, source_page_id, {IMPLEMENTED_PROPERTY: {"checkbox": True}})
 
 
 # The one line every Implement message uses to say the source was not read.

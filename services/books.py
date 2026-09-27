@@ -25,7 +25,10 @@ from clients import telegram_files
 from clients.notion_client import (
     CREATED_DESC, append_children, body_excerpt, notion_request, query_database,
 )
-from config import GENRE_MAP, genre_help
+from config import (
+    BOOK_AREA_RELATION, BOOK_AUTHOR_PROPERTY, BOOK_GENRE_PROPERTY, BOOK_TITLE_PROPERTY,
+    GENRE_MAP, genre_help,
+)
 from telegram_text import escape_md
 
 logger = logging.getLogger(__name__)
@@ -46,10 +49,10 @@ def add_New_Book(name, author, genre):
     data = {
         "parent": {"database_id": LETTI_ID},
         "properties": {
-            "Name":   {"title": [{"text": {"content": name}}]},
-            "Author": {"rich_text": [{"text": {"content": author}}]},
-            "Genre":  {"multi_select": [{"name": genre}]},
-            "Area":   {"relation": [{"id": LITERATURE_ID}]},
+            BOOK_TITLE_PROPERTY:  {"title": [{"text": {"content": name}}]},
+            BOOK_AUTHOR_PROPERTY: {"rich_text": [{"text": {"content": author}}]},
+            BOOK_GENRE_PROPERTY:  {"multi_select": [{"name": genre}]},
+            BOOK_AREA_RELATION:   {"relation": [{"id": LITERATURE_ID}]},
         }
     }
     response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
@@ -70,7 +73,7 @@ def find_Book_Page(book_name):
     """
     results, err = query_database(
         LETTI_ID,
-        filter_obj={"property": "Name", "title": {"contains": book_name.strip()}},
+        filter_obj={"property": BOOK_TITLE_PROPERTY, "title": {"contains": book_name.strip()}},
         sorts=CREATED_DESC,
     )
     if err:

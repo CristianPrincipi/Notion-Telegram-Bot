@@ -51,7 +51,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
 | `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
-| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
@@ -64,7 +64,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `bot/long_messages.py` | `split_for_telegram` / `send_long` — the **one** splitter for a reply over Telegram's limit, and it is bound where `notify` is | Which channel splits — that is each adapter's decision |
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
-| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the `Source URL` property, the duplicate check and its ` !` override) | Manual merging; the unverified marker's TEXT (that is `config.py`) |
+| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the duplicate check on the `Source URL` column and its ` !` override) | Manual merging; the unverified marker's TEXT and any column NAME (those are `config.py`) |
 | `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id`, the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge) and the additions-only rule for unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
@@ -86,7 +86,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
-| `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) and the `Implemented` property name | Sending; un-ticking the checkbox (nothing does) |
+| `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) | Sending; un-ticking the checkbox (nothing does); the `Implemented` column's NAME, which both Implement paths write and so lives in `config.py` |
 | `proactive/takeaway.py` | `build_takeaway` — one takeaway bullet resurfaced weekly. Owns finding the takeaways section in a page (`takeaways_in`) and the bounded skip-and-retry over pages that have none | Sending; the heading's TEXT (that is `config.TAKEAWAYS_HEADING`) |
 
 `budget.py` is the last module at the root, and it belongs there: it is
@@ -290,6 +290,15 @@ later outage, and only one never read successfully fails. On failure the lookup 
 REFUSED and names the schema read — never widened back to `"Name"`, because guessing
 would restore exactly the misleading error it removes, *intermittently*, which is
 harder to diagnose than a bug that happens every time.
+
+**Every Notion name has one home: `config.py`'s NOTION SCHEMA.** Column names and
+the titles of pages David finds by name (`Manual`, `Diet`) are declared there, **per
+database** even where two agree — Books and Learn both say `"Name"`, and renaming one
+must not rename the other. Only writes name a title column; reads discover it (above).
+There used to be fifteen names and three constants, and one of those three,
+`IMPLEMENTED_PROPERTY`, sat in `proactive/` where its writers in `services/` could not
+import it — so all three spelled it out. `tests/test_notion_schema.py` refuses a quoted
+name in a payload, filter, schema table, property read or page lookup anywhere else.
 
 **Notion database IDs are `{AREA}_ID` in the environment.** `get_area_db_id` derives the
 name (`"Brain"` → `BRAIN_ID`), so adding an area means adding an env var, not code.
@@ -630,10 +639,11 @@ prefix and no input can satisfy two. That is asserted, not assumed
 one turns it red and has to be positioned deliberately.
 
 `tests/test_layering.py` is the architectural gate, in the same family as
-`test_telegram_text`'s parse_mode walk, `test_data_integrity`'s weekday scan and
-`test_concurrency`'s lock-key scan. All four read the SOURCE, because no runtime
-assertion can tell a database id from a page id, or a service from a handler. All four
-carry a can-this-guard-actually-fail test, because a guard that cannot go red reads like
+`test_telegram_text`'s parse_mode walk, `test_data_integrity`'s weekday scan,
+`test_concurrency`'s lock-key scan and `test_notion_schema`'s column-name scan. All five
+read the SOURCE, because no runtime assertion can tell a database id from a page id, a
+service from a handler, or a column name from a string that merely looks like one. All
+five carry a can-this-guard-actually-fail test, because a guard that cannot go red reads like
 protection and is not.
 
 **The source scans walk `bot/`, `clients/`, `services/` and `proactive/`, not just the

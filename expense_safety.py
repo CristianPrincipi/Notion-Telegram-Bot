@@ -54,6 +54,7 @@ from typing import NamedTuple
 
 import pending_choice
 from clients.notion_client import get_page_title
+from config import EXPENSE_AMOUNT_PROPERTY, EXPENSE_CATEGORY_PROPERTY, EXPENSE_DATE_PROPERTY
 from pending_choice import PENDING_TTL_SECONDS, parse_selection  # noqa: F401 — re-exported
 from telegram_text import escape_md
 
@@ -133,12 +134,12 @@ class Undo(NamedTuple):
 def choice_from_page(page: dict) -> Choice:
     """Reduce a Notion expense row to the fields that distinguish it."""
     props = page.get("properties") or {}
-    categories = (props.get("Category") or {}).get("multi_select") or []
+    categories = (props.get(EXPENSE_CATEGORY_PROPERTY) or {}).get("multi_select") or []
     return Choice(
         page_id=page.get("id") or "",
         name=get_page_title(page),
-        amount=(props.get("Amount") or {}).get("number"),
-        date=((props.get("Date") or {}).get("date") or {}).get("start") or "",
+        amount=(props.get(EXPENSE_AMOUNT_PROPERTY) or {}).get("number"),
+        date=((props.get(EXPENSE_DATE_PROPERTY) or {}).get("date") or {}).get("start") or "",
         category=", ".join(option.get("name") or "" for option in categories).strip(", "),
     )
 
@@ -150,11 +151,12 @@ def previous_properties(page: dict) -> dict:
     the same call as making one — with the old numbers.
     """
     props = page.get("properties") or {}
-    categories = (props.get("Category") or {}).get("multi_select") or []
+    categories = (props.get(EXPENSE_CATEGORY_PROPERTY) or {}).get("multi_select") or []
     return {
-        "Amount": {"number": (props.get("Amount") or {}).get("number")},
-        "Category": {"multi_select": [{"name": option["name"]} for option in categories
-                                      if option.get("name")]},
+        EXPENSE_AMOUNT_PROPERTY: {"number": (props.get(EXPENSE_AMOUNT_PROPERTY) or {}).get("number")},
+        EXPENSE_CATEGORY_PROPERTY: {"multi_select": [{"name": option["name"]}
+                                                     for option in categories
+                                                     if option.get("name")]},
     }
 
 

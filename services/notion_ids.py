@@ -35,7 +35,10 @@ It also runs standalone (prints to logs) if you ever prefer that route:
 import os
 import asyncio
 
-from config import EXPENSE_MONTH_RELATION
+from config import (
+    EXPENSE_AMOUNT_PROPERTY, EXPENSE_CATEGORY_PROPERTY, EXPENSE_DATE_PROPERTY,
+    EXPENSE_MONTH_RELATION, EXPENSE_TITLE_PROPERTY,
+)
 from services.month import canonical_title, current_month_id
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -47,11 +50,11 @@ NOTION_KEY  = os.environ.get("NOTION_KEY")
 
 # The columns the expense + budget code depends on, and the type each MUST be.
 EXPECTED_EXPENSE_PROPS = {
-    "Name":                   "title",
-    "Amount":                 "number",
-    "Date":                   "date",
-    "Category":               "multi_select",
-    EXPENSE_MONTH_RELATION:   "relation",
+    EXPENSE_TITLE_PROPERTY:     "title",
+    EXPENSE_AMOUNT_PROPERTY:    "number",
+    EXPENSE_DATE_PROPERTY:      "date",
+    EXPENSE_CATEGORY_PROPERTY:  "multi_select",
+    EXPENSE_MONTH_RELATION:     "relation",
 }
 
 

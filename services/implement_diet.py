@@ -4,8 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from clients.anthropic_client import complete_json
 from config import (
-    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, DIET_SUMMARY_CHARS,
-    is_unverified_source,
+    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, DIET_PAGE_TITLE, DIET_SUMMARY_CHARS,
+    DIET_TITLE_PROPERTY, IMPLEMENTED_PROPERTY, is_unverified_source,
 )
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
@@ -539,7 +539,7 @@ def _resolve_path(path: str, block_map: dict):
 def find_or_create_diet_page():
     """Find the 'Diet' page in DIET_ID, or create it with the full skeleton.
     Returns (page_id, was_created, error)."""
-    page, _ = search_page_in_db(DIET_ID, "Diet", exact=True)
+    page, _ = search_page_in_db(DIET_ID, DIET_PAGE_TITLE, exact=True)
     if page:
         return page["id"], False, None
 
@@ -547,7 +547,7 @@ def find_or_create_diet_page():
     # Notion only nests 2 levels deep per create request).
     page_id, err = create_page(
         DIET_ID,
-        {"Name": {"title": [{"text": {"content": "Diet"}}]}},
+        {DIET_TITLE_PROPERTY: {"title": [{"text": {"content": DIET_PAGE_TITLE}}]}},
         icon="🥗",
     )
     if not page_id:
@@ -722,7 +722,7 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
                     f"Diet page — nothing was changed.",
                 )
                 await asyncio.to_thread(update_page, summary_id,
-                                        {"Implemented": {"checkbox": True}})
+                                        {IMPLEMENTED_PROPERTY: {"checkbox": True}})
                 return
 
             # Resolve every routed path NOW, so one the model invented is reported
@@ -776,7 +776,7 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
             # ── Step H: Mark the source Learn page as implemented (best-effort) ────────
             # The act of running Implement marks it processed, so the Learn-nudge job
             # stops surfacing it regardless of how many Diet sections matched.
-            await asyncio.to_thread(update_page, summary_id, {"Implemented": {"checkbox": True}})
+            await asyncio.to_thread(update_page, summary_id, {IMPLEMENTED_PROPERTY: {"checkbox": True}})
 
             # ── Step G: apply surgically ───────────────────────────────────────────────
             await notify("📝 Applying updates to Notion…")

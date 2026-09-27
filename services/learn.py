@@ -11,9 +11,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
 from config import (
-    ANTHROPIC_TIMEOUT, DEFAULT_LEARN_EMOJI, KNOWLEDGE_RECALL_TYPES, LEARN_TYPES,
-    PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT, SUMMARY_INPUT_CHARS,
-    TAKEAWAYS_HEADING, UNVERIFIED_NOTE,
+    ANTHROPIC_TIMEOUT, BOOK_AUTHOR_PROPERTY, BOOK_TITLE_PROPERTY, DEFAULT_LEARN_EMOJI,
+    KNOWLEDGE_RECALL_TYPES, LEARN_AUTHOR_PROPERTY, LEARN_SOURCE_PROPERTY,
+    LEARN_TITLE_PROPERTY, LEARN_TYPES, PDF_PARSE_TIMEOUT, SOURCE_FETCH_TIMEOUT,
+    SUMMARY_INPUT_CHARS, TAKEAWAYS_HEADING, UNVERIFIED_NOTE,
 )
 from clients.notion_client import (
     CREATED_DESC, create_page, database_property_type, get_page_title,
@@ -43,12 +44,9 @@ SUPPORTED_TYPES = list(LEARN_TYPES)
 #
 # The check is cheap (one query) and it happens BEFORE the fetch and before
 # Claude, so a duplicate costs one request and nothing else.
-
-# The property David matches on. It is not created by this code: adding a column
-# to a database David does not own the schema of is a bigger decision than
-# de-duplicating one command. When it is missing, run_learn says so and carries
-# on — see the note there.
-LEARN_SOURCE_PROPERTY = "Source URL"
+#
+# The property matched on is config.LEARN_SOURCE_PROPERTY, with the rest of the
+# Notion schema.
 
 # Parameters that identify the CLICK, not the DOCUMENT. Stripped so the copy of a
 # link out of a newsletter and the same link off the site match each other.
@@ -555,6 +553,18 @@ def _get_db_id(content_type: str) -> str | None:
     return os.environ.get(learn_type.db_env) if learn_type else None
 
 
+# What each database a Learn type can be filed in calls its title and author
+# columns, keyed by the same env-var name config.LEARN_TYPES files types under.
+# `Learn book` goes to Books and every other type to Learn, through the one
+# properties dict below, so the names have to be chosen per database rather
+# than written once. tests/test_notion_schema.py fails if a type names a
+# database that is missing here.
+_COLUMNS_BY_DB = {
+    "LEARN_ID": (LEARN_TITLE_PROPERTY, LEARN_AUTHOR_PROPERTY),
+    "LETTI_ID": (BOOK_TITLE_PROPERTY,  BOOK_AUTHOR_PROPERTY),
+}
+
+
 def create_learn_page(content_type: str, title: str, blocks: list[dict],
                       metadata: dict | None = None) -> tuple[bool, str, str | None]:
     """Create a Notion page. Returns (success, page_id_or_error, incomplete).
@@ -579,13 +589,14 @@ def create_learn_page(content_type: str, title: str, blocks: list[dict],
     if not db_id:
         return False, f"No Notion database configured for type '{content_type}'.", None
 
+    title_property, author_property = _COLUMNS_BY_DB[LEARN_TYPES[content_type].db_env]
     properties: dict = {
-        "Name": {"title": [{"text": {"content": title[:2000]}}]},
+        title_property: {"title": [{"text": {"content": title[:2000]}}]},
     }
     # Add Author if the target DB has that field (books/articles)
     author = metadata.get("author", "")
     if author and content_type in ("book", "article"):
-        properties["Author"] = {"rich_text": [{"text": {"content": author[:500]}}]}
+        properties[author_property] = {"rich_text": [{"text": {"content": author[:500]}}]}
 
     # The de-duplication key, written only when the column exists and the caller
     # resolved its type. A property Notion does not know about is a 400 on the

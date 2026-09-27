@@ -16,11 +16,62 @@ logger = logging.getLogger(__name__)
 # Monthly budget ceiling, in euros. Override on Railway with BUDGET_CEILING.
 BUDGET_CEILING = float(os.environ.get("BUDGET_CEILING", "300"))
 
-# The Expenses column that relates a row to its month page. services/month.py
-# follows this relation to discover WHICH database the month pages live in, so it
-# is named once here rather than spelled out at each call site
-# (services/notion_ids.py checks the same column when it validates the schema).
-EXPENSE_MONTH_RELATION = "Account"
+
+# ─── NOTION SCHEMA ─────────────────────────────────────────────────────────────
+# Every Notion column David names, and every page it looks up by title — one
+# home. A column renamed in Notion is one line changed here and nothing else.
+#
+# Keyed per DATABASE, not per name, even where two values agree: Books and Learn
+# both call their title "Name" today, but they are two databases, and renaming
+# one must not rename the other. `Learn book` files into Books through the same
+# code path as every other Learn type, which is why
+# services/learn.create_learn_page picks these by database.
+#
+# Only WRITES name a title column. Reads discover it — notion_client.title_property
+# for searches, services/month.py for the month pages — so the *_TITLE_PROPERTY
+# lines are what a page CREATE sends, and nothing reads them back.
+#
+# Why here and not beside the code that uses them: several have readers in two
+# layers. IMPLEMENTED_PROPERTY is written by services/ and read by proactive/,
+# and services/ may not import proactive/ — so while it lived in learn_nudge.py
+# the writers could not use it, and spelled it out themselves.
+# tests/test_notion_schema.py refuses a quoted name anywhere else, so a new call
+# site cannot quietly start a second home.
+
+# Expenses (EXPENSES_ID)
+EXPENSE_TITLE_PROPERTY    = "Name"        # title
+EXPENSE_AMOUNT_PROPERTY   = "Amount"      # number
+EXPENSE_DATE_PROPERTY     = "Date"        # date
+EXPENSE_CATEGORY_PROPERTY = "Category"    # multi-select, values from CATEGORY_MAP
+# The column that relates a row to its month page. services/month.py follows it
+# to discover WHICH database the month pages live in, and services/notion_ids.py
+# checks it when it validates the schema.
+EXPENSE_MONTH_RELATION    = "Account"     # relation → the month pages
+
+# Books (LETTI_ID) — also where `Learn book` pages are filed
+BOOK_TITLE_PROPERTY  = "Name"             # title
+BOOK_AUTHOR_PROPERTY = "Author"           # rich text
+BOOK_GENRE_PROPERTY  = "Genre"            # multi-select, values from GENRE_MAP
+BOOK_AREA_RELATION   = "Area"             # relation → the Areas database (LITERATURE_ID)
+
+# Learn (LEARN_ID)
+LEARN_TITLE_PROPERTY  = "Name"            # title
+LEARN_AUTHOR_PROPERTY = "Author"          # rich text; articles only
+# The de-duplication key. It is not created by this code: adding a column to a
+# database David does not own the schema of is a bigger decision than
+# de-duplicating one command. When it is missing, run_learn says so and carries
+# on — see the note there.
+LEARN_SOURCE_PROPERTY = "Source URL"      # URL, or rich text
+# Ticked by both Implement paths, read by the Saturday nudge — which REFUSES
+# when the column is missing (proactive/learn_nudge.py says why).
+IMPLEMENTED_PROPERTY  = "Implemented"     # checkbox
+
+# The one page David keeps in each area database ({AREA}_ID) and in DIET_ID:
+# found by exact title, created on first use.
+MANUAL_TITLE_PROPERTY = "Name"            # title
+MANUAL_PAGE_TITLE     = "Manual"
+DIET_TITLE_PROPERTY   = "Name"            # title
+DIET_PAGE_TITLE       = "Diet"
 
 
 # ─── SHORTCUT MAPS ─────────────────────────────────────────────────────────────
