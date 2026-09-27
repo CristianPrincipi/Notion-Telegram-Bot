@@ -79,7 +79,7 @@ _ANY_OBJECT = {"type": "object", "properties": {}}
 
 
 # ─── CLIENT ────────────────────────────────────────────────────────────────────
-# One client per thread. The SDK's httpx client is not documented as thread-safe
+# One client per thread. The SDK's httpx2 client is not documented as thread-safe
 # and every call here runs inside an asyncio.to_thread worker — the same hazard
 # notion_client.py solves for requests.Session and calendar_client.py for
 # httplib2, for the same reason.

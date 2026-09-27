@@ -6,4 +6,9 @@
 
 pytest>=8.0
 responses>=0.25     # intercepts requests/* so Notion is testable offline
+# test_anthropic_client builds the SDK's client on a MockTransport, so it imports
+# the SDK's HTTP library directly. anthropic pulls it in anyway; a direct import
+# is declared. httpx2 is the maintained fork of httpx (pydantic/httpx2) that
+# anthropic 1.x is built on — its own version line, starting at 2.0.
+httpx2>=2.0
 ruff>=0.6
