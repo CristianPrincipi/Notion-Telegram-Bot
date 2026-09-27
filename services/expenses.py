@@ -35,7 +35,10 @@ from clients.calendar_client import now_local
 from clients.notion_client import (
     CREATED_DESC, body_excerpt, notion_request, query_database, set_archived, update_page,
 )
-from config import EXPENSE_MONTH_RELATION
+from config import (
+    EXPENSE_AMOUNT_PROPERTY, EXPENSE_CATEGORY_PROPERTY, EXPENSE_DATE_PROPERTY,
+    EXPENSE_MONTH_RELATION, EXPENSE_TITLE_PROPERTY,
+)
 from services.month import current_month_id
 from page_lock import WRITE_LOCK_TIMEOUT_SECONDS, PageBusy, page_lock
 from telegram_text import escape_md
@@ -101,11 +104,11 @@ def add_Expenses(name, amount, category):
     data = {
         "parent": {"database_id": EXPENSES_ID},
         "properties": {
-            "Name": {
+            EXPENSE_TITLE_PROPERTY: {
                 "title": [{"text": {"content": name}}]},
-            "Amount": {"number": amount},
-            "Date": {"date": {"start": today}},
-            "Category":{"multi_select": [{"name": category}]},
+            EXPENSE_AMOUNT_PROPERTY: {"number": amount},
+            EXPENSE_DATE_PROPERTY: {"date": {"start": today}},
+            EXPENSE_CATEGORY_PROPERTY: {"multi_select": [{"name": category}]},
             EXPENSE_MONTH_RELATION: {"relation": [{"id": month_id}]}
         }
     }
@@ -157,7 +160,7 @@ def find_expense_matches(name):
     return query_database(
         EXPENSES_ID,
         filter_obj={"and": [
-            {"property": "Name", "title": {"contains": name.strip()}},
+            {"property": EXPENSE_TITLE_PROPERTY, "title": {"contains": name.strip()}},
             {"property": EXPENSE_MONTH_RELATION, "relation": {"contains": month_id}},
         ]},
         sorts=CREATED_DESC,
@@ -171,8 +174,8 @@ def update_Expense(page_id, amount, category):
         "PATCH",
         f"https://api.notion.com/v1/pages/{page_id}",
         json={"properties": {
-            "Amount": {"number": amount},
-            "Category": {"multi_select": [{"name": category}]},
+            EXPENSE_AMOUNT_PROPERTY: {"number": amount},
+            EXPENSE_CATEGORY_PROPERTY: {"multi_select": [{"name": category}]},
         }},
     )
 

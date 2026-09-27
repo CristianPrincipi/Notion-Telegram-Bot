@@ -31,7 +31,9 @@ from datetime import datetime
 
 import pytz
 
-from config import BUDGET_CEILING, EXPENSE_MONTH_RELATION
+from config import (
+    BUDGET_CEILING, EXPENSE_AMOUNT_PROPERTY, EXPENSE_CATEGORY_PROPERTY, EXPENSE_MONTH_RELATION,
+)
 from services.month import current_month_id
 from clients.notion_client import query_database
 from telegram_text import escape_md
@@ -86,9 +88,9 @@ def compute_budget() -> tuple[dict | None, str | None]:
     total = 0.0
     for page in results:
         props = page.get("properties", {})
-        amount = props.get("Amount", {}).get("number", 0) or 0
+        amount = props.get(EXPENSE_AMOUNT_PROPERTY, {}).get("number", 0) or 0
         total += amount
-        cat_multi = props.get("Category", {}).get("multi_select", [])
+        cat_multi = props.get(EXPENSE_CATEGORY_PROPERTY, {}).get("multi_select", [])
         category = cat_multi[0].get("name", "Other") if cat_multi else "Other"
         per_category[category] = per_category.get(category, 0) + amount
 

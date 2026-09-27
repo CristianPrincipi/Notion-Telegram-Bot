@@ -34,6 +34,7 @@ import re
 from difflib import SequenceMatcher
 
 from clients.notion_client import get_children, search_page_in_db, extract_rich_text
+from config import DIET_PAGE_TITLE, MANUAL_PAGE_TITLE
 from services.implement import get_area_db_id
 from telegram_text import escape_md
 
@@ -46,8 +47,9 @@ GET_PATTERN = r"(?i)^get\s+(.+?)\s+-\s+(.+)$"
 # Arguments that mean "list everything in this area" instead of a topic lookup.
 _DISCOVERY_WORDS = {"?", "list", "topics", "index", "all"}
 
-# Areas whose manual page is NOT titled "Manual". Extend here as you add manuals.
-_AREA_PAGE_TITLE = {"diet": "Diet"}
+# Areas whose manual page is NOT titled MANUAL_PAGE_TITLE. Keyed by the area name
+# as typed; the titles themselves are config's, the same ones Implement creates.
+_AREA_PAGE_TITLE = {"diet": DIET_PAGE_TITLE}
 
 # Score thresholds for the resolver.
 _STRONG = 0.93   # confident match
@@ -55,7 +57,7 @@ _FLOOR  = 0.60   # below this we treat as "no match"
 
 
 def _manual_title_for(area_name: str) -> str:
-    return _AREA_PAGE_TITLE.get(area_name.strip().lower(), "Manual")
+    return _AREA_PAGE_TITLE.get(area_name.strip().lower(), MANUAL_PAGE_TITLE)
 
 
 # ─── TEXT NORMALISATION & MATCHING ─────────────────────────────────────────────

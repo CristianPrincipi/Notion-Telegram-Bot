@@ -38,14 +38,13 @@ from clients.calendar_client import now_local
 from clients.notion_client import (
     database_property_type, get_page_title, query_database,
 )
-from config import LEARN_NUDGE_MAX_ITEMS, LEARN_NUDGE_STALE_DAYS
+# IMPLEMENTED_PROPERTY is the checkbox both Implement paths write. It lives in
+# config.py rather than here because the writers are in services/, which may not
+# import proactive/ — a string spelled two ways in two layers is how a marker
+# gets reworded in one of them and silently stops being detected in the other.
+from config import IMPLEMENTED_PROPERTY, LEARN_NUDGE_MAX_ITEMS, LEARN_NUDGE_STALE_DAYS
 
 LEARN_ID = os.environ.get("LEARN_ID")
-
-# The checkbox both Implement paths write. Named once here: the writers are in
-# services/, and a string spelled two ways in two layers is how a marker gets
-# reworded in one of them and silently stops being detected in the other.
-IMPLEMENTED_PROPERTY = "Implemented"
 
 
 def _pending_filter(cutoff_iso: str) -> dict:
