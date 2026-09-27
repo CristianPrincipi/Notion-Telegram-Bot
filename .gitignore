@@ -11,3 +11,9 @@ venv/
 
 # Running daily Anthropic spend (see anthropic_client.py).
 .anthropic_spend.json
+
+# Local-only working notes: the current plan, the roadmap, and personal Claude
+# Code instructions. See CLAUDE.md's "Implementation Plan Tracking".
+PLAN.md
+ROADMAP.md
+CLAUDE.local.md

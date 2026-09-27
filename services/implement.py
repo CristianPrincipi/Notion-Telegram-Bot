@@ -471,7 +471,7 @@ def merge_sections(targets: list, source_text: str, source_title: str,
 # THE COST IS REAL. _MERGE_SYSTEM asks for "the FULL merged content", and a model
 # reproducing twenty lines verbatim will eventually reword one. Those sections are
 # held back and named rather than written, which is the safe direction but is not
-# a free one. See PLAN.md's open question.
+# a free one. How often it fires is unmeasured — see CLAUDE.md's Open questions.
 
 
 def _comparable(line: str) -> str:

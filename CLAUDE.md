@@ -816,6 +816,14 @@ For any non-trivial task (multi-file changes, new features,
 refactors, migrations), maintain a plan file at `PLAN.md` in
 the project root.
 
+**`PLAN.md` is local-only.** It is in `.gitignore` (with
+`ROADMAP.md` and `CLAUDE.local.md`) and is never committed —
+do not `git add -f` it. So nothing committed may cite it: a
+code comment or doc that says "see PLAN.md" points a public
+reader at a file they do not have. When a plan settles
+something the repo needs to remember, write it where it
+lives — the code, this file's Open questions, or `docs/`.
+
 ### Before writing any code
 1. Create or update `PLAN.md` with the full list of steps
    required, grouped under milestones.
