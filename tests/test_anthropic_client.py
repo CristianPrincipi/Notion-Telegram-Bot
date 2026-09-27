@@ -14,16 +14,21 @@ call, and all three shared the same three failures:
   3. FRAGILE EXTRACTION. `re.search(r"\\{.*\\}", raw, re.DOTALL)` is greedy, so
      any trailing prose containing a brace was swallowed into the match.
 
-The HTTP layer is a real httpx MockTransport rather than a stubbed
+The HTTP layer is a real httpx2 MockTransport rather than a stubbed
 `complete_json`, because the retry under test belongs to the SDK client — a
 stub would assert that the test agrees with itself.
+
+httpx2, not httpx: anthropic 1.x is built on the httpx2 fork and refuses an
+httpx client at construction, so the fixture has to speak the SDK's own
+transport. A transport from the wrong package is a TypeError in every test's
+setup, not a silent pass-through.
 """
 
 import json
 import logging
 
 import anthropic
-import httpx
+import httpx2
 import pytest
 
 from clients import anthropic_client
@@ -65,16 +70,16 @@ def anthropic_api(monkeypatch, tmp_path):
 
     state = {"queue": [], "requests": []}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         state["requests"].append(json.loads(request.content.decode()))
         status, body = state["queue"].pop(0) if state["queue"] else (200, message())
-        return httpx.Response(status, json=body)
+        return httpx2.Response(status, json=body)
 
     anthropic_client._thread_local.client = anthropic.Anthropic(
         api_key="test-anthropic-key",
         timeout=anthropic_client.ANTHROPIC_READ_TIMEOUT,
         max_retries=anthropic_client.ANTHROPIC_MAX_RETRIES,
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
     yield state
     del anthropic_client._thread_local.client

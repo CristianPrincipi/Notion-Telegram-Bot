@@ -5,8 +5,15 @@ python-telegram-bot[job-queue]>=21.0
 # The official SDK, not hand-rolled requests calls: it owns the retry/backoff on
 # 429/5xx/529 that the three copied Anthropic calls never had, and it reads the
 # `retry-after` header, which a hand-written `2 ** attempt` cannot. Pure Python
-# over httpx — nothing to compile, so it is safe for Railway's build image.
-anthropic>=0.69
+# over httpx2 — nothing to compile, so it is safe for Railway's build image.
+#
+# THE ONE CEILING IN THIS FILE, and it is here because a floor alone let a
+# major version in unreviewed: `>=0.69` resolved to 1.x the day 1.0 shipped
+# (2026-08-20), 1.x moved the SDK from httpx to httpx2, and the test fixture
+# that hands the SDK an httpx client stopped constructing — CI red on every PR,
+# while Railway would have deployed the same untested major on the next merge.
+# The next major gets read (its MIGRATION.md) before it gets installed.
+anthropic>=1.0,<2
 requests>=2.31
 pytz>=2024.1
 PyPDF2>=3.0
