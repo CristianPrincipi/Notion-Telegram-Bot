@@ -345,6 +345,12 @@ environment-read scan. Each carries a test that it can actually fail.
 previous version running silently — so CI on the pull request is the real gate.
 Work on a branch, open a PR, merge when CI is green.
 
+**Shipping with Claude Code.** `/ship-feature` (`.claude/skills/ship-feature/`)
+turns a finished branch into a pull request: it checks the diff against the
+Documentation contract in `CLAUDE.md` and updates the docs and `CHANGELOG.md` the
+change requires, runs `ruff` and `pytest`, opens the PR from a fixed template and
+waits for CI and the review. It never merges.
+
 ### The automated review on a fork
 
 `.github/workflows/claude-code-review.yml` reviews every pull request with

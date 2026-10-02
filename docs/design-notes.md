@@ -360,6 +360,21 @@ long after the same bug had been fixed for expense dates at that one call site.
 `date.today()`, `datetime.today()`, `datetime.utcnow()` and a bare `datetime.now()`
 anywhere in production code: fixing the class, not the line.
 
+### Shipping goes through the Documentation contract
+
+The docs drifted every time they were left to memory. The hand-written help
+advertised `Learn recipe`, which `run_learn` rejects, and never mentioned `Learn
+podcast`; the README's environment table and the startup error described the same
+variables in two texts that were supposed to be one; a workflow comment shipped
+naming a cause that was false. None of it failed a test, because nothing read the
+docs.
+
+So the contract in `CLAUDE.md` names, for each kind of change, the docs it must
+update in the same PR, and `/ship-feature` applies it: it classifies the diff row by
+row, shows the table — "not needed" always with a reason, because a row skipped
+silently is a doc that drifts — updates what applies, and only then opens the PR.
+It never merges: merging deploys, and that decision stays with a person.
+
 ## Dates and times
 
 The grammar `Remind` and `Agenda` share. The rules themselves are in
