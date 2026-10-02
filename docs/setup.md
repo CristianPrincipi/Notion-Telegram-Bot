@@ -140,10 +140,9 @@ needs.
    **Calendar ID**. For your main calendar it is your Gmail address.
    → `GOOGLE_CALENDAR_ID`
 
-**Do not skip step 7.** Without `GOOGLE_CALENDAR_ID`, David uses `primary`,
-which for a service account is *its own* calendar — one nobody can see.
-Reminders would be created there, confirmed, and never shown to you. The
-[first-run checklist](#8-first-run-checklist) catches this.
+**Do not skip step 7.** Without `GOOGLE_CALENDAR_ID` the calendar commands
+refuse, and say so. (`primary` is refused too: for a service account it means
+*its own* calendar, which nobody can see.)
 
 ## 5. Anthropic and Supadata
 
@@ -215,7 +214,7 @@ Send these in order. Each one checks a different piece of the setup.
 | `undo` | the expense restored | — |
 | `D e Test` | deleted again — this is clean-up | — |
 | `Remind Test tr 10` | a confirmation naming tomorrow's full date at 10:00 | calendar access — see [Troubleshooting](troubleshooting.md) |
-| *(open Google Calendar)* | **the Test event, tomorrow at 10:00** | it is not there → `GOOGLE_CALENDAR_ID` is unset or wrong ([§4 step 7](#4-google-calendar)) |
+| *(open Google Calendar)* | **the Test event, tomorrow at 10:00** | it is not there → `GOOGLE_CALENDAR_ID` names a different calendar ([§4 step 7](#4-google-calendar)) |
 | `Agenda tr` | tomorrow, named in full, with the Test event | — |
 | `Cancel Test` | the event deleted | — |
 | `Learn article <any article URL>` | a summary page in Learn (costs a few cents) | the reply says why |

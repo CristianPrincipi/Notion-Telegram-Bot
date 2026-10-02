@@ -54,14 +54,17 @@ which column, e.g. `Author is not a property that exists`.
   reverse for `LITERATURE_ID`). Send `DBs`: it lists every database David can see
   with its ID.
 
+## Calendar commands say `GOOGLE_CALENDAR_ID` is not set
+
+Set it to your calendar's ID ([Setup § 4](setup.md#4-google-calendar), step 7).
+David refuses to run without it — and refuses `primary` — because for a service
+account `primary` is its *own* calendar: reminders would be created where nobody
+sees them, and `Agenda` would read that empty calendar and call a busy day free.
+
 ## Reminders are confirmed but never show up
 
-`GOOGLE_CALENDAR_ID` is unset or wrong. Unset, it defaults to `primary`, which
-for a service account is the service account's *own* calendar — invisible to
-you, so every reminder is created and confirmed somewhere you will never look.
-Set it to your calendar's ID ([Setup § 4](setup.md#4-google-calendar), step 7).
-
-The same mistake makes `Agenda` say a busy day is free.
+`GOOGLE_CALENDAR_ID` names a calendar other than the one you are looking at.
+Check it against **Settings → your calendar → Integrate calendar → Calendar ID**.
 
 ## Calendar commands fail
 

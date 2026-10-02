@@ -35,7 +35,7 @@ line were not there.
 | Variable | Default | What it is |
 | --- | --- | --- |
 | `GOOGLE_CREDENTIALS_JSON` | — | The service-account JSON key for Google Calendar, pasted whole. Without it, `Remind`, `Agenda`, `Cancel` and the briefings' calendar half fail. |
-| `GOOGLE_CALENDAR_ID` | `primary` | The calendar David reads and writes. **Set it** whenever you set `GOOGLE_CREDENTIALS_JSON`: `primary` is the *service account's own* calendar, which you never see — reminders would be created there successfully and you would never be shown one. Use your calendar's ID (for your main Google calendar, your Gmail address). |
+| `GOOGLE_CALENDAR_ID` | — | The calendar David reads and writes: your calendar's ID (for your main Google calendar, your Gmail address). **Needed whenever you set `GOOGLE_CREDENTIALS_JSON`** — without it the calendar commands refuse, and so does `primary`, which for a service account is its *own* calendar, one nobody can see. |
 | `SUPADATA_KEY` | — | [Supadata](https://supadata.ai) API key for YouTube transcripts. Without it, `Learn video` fails; everything else works. |
 | `BRAIN_ID` | — | The Brain area database ID, for `Implement … - Brain` and `Get … - Brain`. |
 | `FINANCE_ID` | — | The Finance area database ID, for `Implement … - Finance` and `Get … - Finance`. |
