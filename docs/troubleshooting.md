@@ -94,8 +94,7 @@ deliberate limit, and the reply is telling you the summary is partial.
 ## `Learn` or `Implement` is refused: daily budget reached
 
 David's estimate of today's Anthropic spend passed `ANTHROPIC_DAILY_BUDGET_USD`
-(default $5). Wait for the day to turn (midnight server time — UTC on Railway),
-or raise the variable.
+(default $5). Wait for midnight (Europe/Rome), or raise the variable.
 
 ## `Implement` says an update is already in progress
 

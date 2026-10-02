@@ -49,7 +49,6 @@ import json
 import logging
 import os
 import threading
-from datetime import date
 
 import anthropic
 
@@ -63,6 +62,7 @@ from config import (
     ANTHROPIC_READ_TIMEOUT,
     env_or,
 )
+from clients.calendar_client import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,11 @@ def estimated_cost(input_tokens: int, output_tokens: int) -> float:
 
 
 def _today() -> str:
-    return date.today().isoformat()
+    # The PROJECT day, not the host's. This was `date.today()` — UTC on Railway —
+    # so the budget turned over at 01:00 or 02:00 Rome time, the one date in David
+    # not read through now_local(). tests/test_data_integrity.py now refuses a
+    # clock read with no timezone anywhere in production code.
+    return now_local().date().isoformat()
 
 
 def _load_spend() -> dict:
