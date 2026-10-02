@@ -32,7 +32,13 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@v1
+        # PINNED, both the action and the model. `@v1` is a moving tag: on
+        # 2026-10-01 it moved to a release whose default model ended every
+        # review in ~2 s with is_error and no tokens spent (PR #41), with no
+        # change on this side. This SHA is what `v1` pointed at for the last
+        # green reviews; the model is the one they ran. Bump both on purpose,
+        # in a PR of their own, and watch that PR's review go green.
+        uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790  # v1 as of 2026-09-27
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -46,5 +52,6 @@ jobs:
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          # e.g. '--model claude-sonnet-5 --allowed-tools Bash(gh pr *)'
+          claude_args: '--model claude-sonnet-5'
 
