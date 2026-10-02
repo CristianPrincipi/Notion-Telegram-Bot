@@ -65,7 +65,12 @@ def add_New_Book(name, author, genre):
 
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
-    """Search LETTI database for a book by name. Returns page_id or None.
+    """Search LETTI database for a book by name.
+
+    Three answers, like search_page_in_db: (page_id, None) found, (None, None)
+    nothing matches, (None, error) the read failed. It used to return a bare
+    None for the last two, so during a Notion outage `Add q` told you the book
+    was not in your library — a confident answer about data it had not read.
 
     Sorted newest-first, so with two editions of the same title in the library
     the quote lands on the same one every time instead of on whichever row
@@ -78,8 +83,8 @@ def find_Book_Page(book_name):
     )
     if err:
         logger.error("find_Book_Page(%r) failed: %s", book_name, err)
-        return None
-    return results[0]["id"] if results else None
+        return None, err
+    return (results[0]["id"] if results else None), None
 
 
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
@@ -232,13 +237,23 @@ async def run_add_book(name, author, genre_shortcut, *, notify, notify_md=None):
         await notify("❌ Error: Could not connect to Notion. Check your API keys.")
 
 
+async def _report_lookup_failure(book_name, err, notify):
+    """An outage is not a missing book: saying "not found" would send you to check
+    a title that was fine. Plain text — the error is Notion's, not David's."""
+    await notify(f"❌ Could not search your library for '{book_name}', so nothing "
+                 f"was saved. Notion said:\n{err}")
+
+
 async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify_md=None):
     """`Add q [Book] - [Title] - [Full quote]`, and the refusal for the PDF form."""
     notify_md = notify_md or notify
 
     await notify(f"🔍 Searching '{book_name}' in library...")
-    page_id = await asyncio.to_thread(find_Book_Page, book_name)
+    page_id, err = await asyncio.to_thread(find_Book_Page, book_name)
 
+    if err:
+        await _report_lookup_failure(book_name, err, notify)
+        return
     if not page_id:
         await notify(f"⚠️ I didn't find '{book_name}' in the library.")
         return
@@ -274,7 +289,10 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
 
     # Find book in Notion
     await notify(f"🔍 Searching \'{book_name}\' in library…")
-    page_id = await asyncio.to_thread(find_Book_Page, book_name)
+    page_id, err = await asyncio.to_thread(find_Book_Page, book_name)
+    if err:
+        await _report_lookup_failure(book_name, err, notify)
+        return
     if not page_id:
         await notify(f"⚠️ \'{book_name}\' not found in library.")
         return

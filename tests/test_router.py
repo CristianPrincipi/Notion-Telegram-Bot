@@ -55,7 +55,7 @@ from conftest import FakeContext, FakeUpdate, run, written_ok
 # ─── SENTINELS ─────────────────────────────────────────────────────────────────
 
 NO_HANDLER   = "(no handler)"      # command answered with a reply only
-BOOK_PAGE_ID = "book-page-id"      # what the stubbed find_Book_Page returns
+BOOK_PAGE_ID = "book-page-id"      # the page the stubbed find_Book_Page finds
 BUDGET_TEXT  = "MOCK BUDGET RECAP"
 # budget() returns (recap, error), so the spy must too — a double returning a
 # bare string would keep the `B` rows green against a shape the command no
@@ -121,7 +121,7 @@ SPY_TARGETS = [
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("handle_agenda",    ("_update", "day"),                        None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
-    ("find_Book_Page",   ("book_name",),                            BOOK_PAGE_ID,         False),
+    ("find_Book_Page",   ("book_name",),                            (BOOK_PAGE_ID, None), False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
     ("add_Expenses",     ("name", "amount", "category"),            True,                 False),
     # The destructive pair is find-then-write, so both halves are spied: the
@@ -806,7 +806,7 @@ def test_the_docs_list_exactly_the_learn_types_learn_supports():
 # call behind a route fails — the other half of "did this command work?".
 
 def test_quote_reports_a_book_that_is_not_in_the_library(router, monkeypatch):
-    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: None)
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: (None, None))
     update = FakeUpdate(text="Add q Missing - Ch 1 - some text")
 
     run(david.handle_message(update, FakeContext()))

@@ -104,7 +104,7 @@ def david_stubs(monkeypatch):
     stub_module(monkeypatch, bot.budget, {"budget": budget_stub})
     stubs |= stub_module(monkeypatch, books, {
         "add_New_Book":   lambda name, author, genre: "book-page-id",
-        "find_Book_Page": lambda book_name: "book-page-id",
+        "find_Book_Page": lambda book_name: ("book-page-id", None),
         "add_Quote":      lambda page_id, quote_title, quote_text: (written_ok(2), None),
     })
     stubs |= stub_module(monkeypatch, expenses, {
