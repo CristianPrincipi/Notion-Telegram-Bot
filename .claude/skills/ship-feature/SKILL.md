@@ -60,6 +60,11 @@ this change triggers it. Use the diff, not the branch name:
 
 "Not needed" always gets a reason. A row you skip without one is a doc that drifts.
 
+A row firing is a question, not a verdict. A new `❌` message that passes on an
+error `docs/troubleshooting.md` already explains (a Notion 400/404, a calendar
+share) needs no new entry — say which entry covers it. A failure the person could
+cause or fix themselves does.
+
 ## 4. Update the docs
 
 For each row that applies, edit the doc it names:
@@ -90,8 +95,14 @@ pytest
 
 - Both must pass. If either fails, **stop and report** — do not ship a red branch.
 - **A bug fix needs a test that fails without it.** If the diff fixes a bug and
-  adds no test that would have caught it, stop and say so. If you wrote the test,
-  confirm it fails against the old code (revert the fix, run it, restore).
+  adds no test that would have caught it, stop and say so. Show that it fails
+  against the old code: either it was written first and run before the fix, or
+  put the old file back (`git show origin/main:<path> > <path>`), run it, and
+  restore.
+- **A changed return shape breaks test doubles.** If a function now returns
+  something different (a value became `(value, error)`, say), find every double
+  with `grep -rn <name> tests/` and give it the new shape — a double must return
+  what production returns, or the tests pass against a shape nothing produces.
 - Check that every relative link you added or changed in Markdown points at a file
   and heading that exist.
 
