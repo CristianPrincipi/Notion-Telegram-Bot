@@ -481,9 +481,10 @@ TAKEAWAY_MAX_ATTEMPTS = 5
 
 
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────
-# Every environment variable David reads, in one place. The descriptions are the
-# same text the README table and the startup error message use, so there is only
-# one copy to keep accurate.
+# Every environment variable David reads, in one place. The descriptions here are
+# what the startup error and the not-set warnings print. docs/configuration.md
+# and .env.example describe the same variables for someone setting David up:
+# a variable added here gets a row there and a line there, in the same PR.
 
 REQUIRED_ENV = {
     "TELEGRAM_TOKEN":    "Telegram bot token from @BotFather.",

@@ -183,7 +183,7 @@ def test_required_and_optional_do_not_overlap():
 
 
 def test_every_declared_var_has_a_purpose():
-    """The descriptions are what the README table and the error message show."""
+    """The descriptions are what the startup error and the not-set warnings show."""
     for name, purpose in {**config.REQUIRED_ENV, **config.OPTIONAL_ENV}.items():
         assert purpose.strip(), f"{name} has no description"
 
