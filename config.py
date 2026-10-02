@@ -510,7 +510,9 @@ OPTIONAL_ENV = {
                                 "Notion cannot be reached. David resolves the real page itself."),
     "SUPADATA_KEY":            "Supadata API key for YouTube transcripts. Without it, `Learn video` fails.",
     "GOOGLE_CREDENTIALS_JSON": "Service-account JSON for Google Calendar. Without it, reminders fail.",
-    "GOOGLE_CALENDAR_ID":      "Target calendar. Defaults to 'primary'.",
+    "GOOGLE_CALENDAR_ID":      ("Your calendar's ID (for your main calendar, your Gmail address). "
+                                "Without it the calendar commands refuse: a service account's "
+                                "'primary' is its own calendar, which nobody can see."),
     "DIET_ID":                 "Notion Diet area database ID. Needed by `Implement ... - Diet`.",
     "BRAIN_ID":                "Notion Brain area database ID. Needed by `Implement ... - Brain`.",
     "FINANCE_ID":              "Notion Finance area database ID. Needed by `Implement ... - Finance`.",

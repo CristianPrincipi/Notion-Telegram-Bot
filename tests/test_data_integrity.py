@@ -9,6 +9,7 @@ Each test asserts the CORRECT behaviour, so on current main it fails. The test
 name says what should happen; the docstring says what happens instead today.
 """
 
+import ast
 import pathlib
 import re
 from datetime import datetime, timezone
@@ -201,6 +202,87 @@ def test_expense_is_dated_in_rome_not_utc(midnight_in_rome, monkeypatch):
     body = responses.calls[0].request.body
     sent = body.decode() if isinstance(body, bytes) else body
     assert '"start": "2025-06-11"' in sent, f"dated wrongly: {sent}"
+
+
+# The bug above was fixed at its one call site, and the class it belongs to was
+# left open: clients/anthropic_client._today() went on reading `date.today()`, so
+# the daily Anthropic budget turned over at server midnight (UTC on Railway)
+# while every other date in David was Rome's. A clock read with no timezone IS
+# the host's clock. This refuses every spelling of one, anywhere in production
+# code; a read that passes a timezone is the project clock and passes.
+
+NAIVE_CLOCK_READS = {"date.today", "datetime.today", "datetime.utcnow",
+                     "datetime.date.today", "datetime.datetime.today",
+                     "datetime.datetime.utcnow"}
+NOW = {"datetime.now", "datetime.datetime.now"}
+
+
+def _naive_clock_reads(source):
+    """(line, call) for every clock read that does not name a timezone."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = ast.unparse(node.func)
+        if name in NAIVE_CLOCK_READS or (name in NOW and not node.args and not node.keywords):
+            found.append((node.lineno, ast.unparse(node)))
+    return found
+
+
+def _production_sources():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    files = sorted(root.glob("*.py"))
+    for package in ("bot", "clients", "proactive", "services"):
+        files += sorted((root / package).rglob("*.py"))
+    return root, files
+
+
+def test_no_production_code_reads_the_servers_clock():
+    root, files = _production_sources()
+    offenders = [f"{path.relative_to(root)}:{line}: {call}"
+                 for path in files
+                 for line, call in _naive_clock_reads(path.read_text(encoding="utf-8"))]
+
+    assert offenders == [], (
+        "a clock read without a timezone is the HOST's clock (UTC on Railway) — "
+        "use clients.calendar_client.now_local():\n  " + "\n  ".join(offenders))
+
+
+@pytest.mark.parametrize("code", [
+    "date.today()",
+    "datetime.today()",
+    "datetime.utcnow()",
+    "datetime.now()",
+    "datetime.datetime.now()",
+    "datetime.date.today().isoformat()",
+])
+def test_the_clock_guard_catches_each_spelling(code):
+    assert _naive_clock_reads(code), f"the guard misses {code!r}"
+
+
+@pytest.mark.parametrize("code", [
+    "datetime.now(TIMEZONE)",
+    "datetime.now(tz=TIMEZONE)",
+    "now_local()",
+    "date(2026, 6, 12)",
+])
+def test_the_clock_guard_leaves_timezone_aware_reads_alone(code):
+    assert not _naive_clock_reads(code)
+
+
+def test_the_clock_guard_is_reading_real_clock_reads():
+    """It must see the repo's own timezone-aware `datetime.now(TIMEZONE)` calls,
+    or a green run could mean it is scanning nothing."""
+    root, files = _production_sources()
+    names = {path.relative_to(root).as_posix() for path in files}
+    for package in ("bot", "clients", "proactive", "services"):
+        assert any(name.startswith(f"{package}/") for name in names), package
+
+    aware = sum(ast.unparse(node.func) in NOW
+                for path in files
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(node, ast.Call))
+    assert aware >= 3, "the guard no longer sees the repo's datetime.now(TIMEZONE) calls"
 
 
 # ─── BUG 4: WEEKDAY MAPPING ────────────────────────────────────────────────────

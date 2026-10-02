@@ -29,3 +29,11 @@ The first public release — it becomes `1.0.0` when tagged.
 - **Notion template**, and documentation for setting David up from scratch:
   setup, configuration, Notion schema, features, customization, architecture and
   troubleshooting.
+
+### Changed
+
+- **`GOOGLE_CALENDAR_ID` no longer defaults to `primary`.** To a service account
+  that is its own calendar, which nobody can see, so reminders were created and
+  confirmed there and `Agenda` reported busy days as free. The calendar commands
+  now refuse, with a message saying what to set, until it names your calendar.
+  If you deployed before this change, set it before updating.

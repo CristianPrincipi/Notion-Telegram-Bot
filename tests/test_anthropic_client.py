@@ -26,10 +26,12 @@ setup, not a silent pass-through.
 
 import json
 import logging
+from datetime import datetime
 
 import anthropic
 import httpx2
 import pytest
+import pytz
 
 from clients import anthropic_client
 from clients.anthropic_client import ANSWER_TOOL, complete_json
@@ -377,6 +379,22 @@ def test_a_new_day_starts_from_zero(anthropic_api, monkeypatch):
     monkeypatch.setattr(anthropic_client, "_spend", {"day": "", "usd": 0.0, "calls": 0})
 
     assert anthropic_client.spend_today()["usd"] == 0.0
+
+
+def test_the_budget_day_is_the_project_day_not_the_servers(monkeypatch):
+    """`_today()` was `date.today()` — the HOST clock, UTC on Railway — so the
+    day's budget turned over at 01:00 or 02:00 Rome time, the one clock in
+    David that did not use now_local(). 00:30 on 1 March in Rome is still
+    28 February in UTC: the budget day must be the 1st.
+
+    raising=False so that, on code that never imported now_local, the patch
+    installs harmlessly and the assertion is what fails.
+    """
+    rome = pytz.timezone("Europe/Rome")
+    monkeypatch.setattr(anthropic_client, "now_local",
+                        lambda: rome.localize(datetime(2031, 3, 1, 0, 30)), raising=False)
+
+    assert anthropic_client._today() == "2031-03-01"
 
 
 def test_an_unwritable_spend_file_does_not_fail_the_call(anthropic_api, monkeypatch):

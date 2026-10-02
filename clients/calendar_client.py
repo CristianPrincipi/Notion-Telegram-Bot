@@ -24,7 +24,12 @@ from config import env_or
 TIMEZONE_NAME = "Europe/Rome"
 TIMEZONE = pytz.timezone(TIMEZONE_NAME)
 
-CALENDAR_ID = env_or("GOOGLE_CALENDAR_ID", "primary")
+# NO DEFAULT, and `primary` is refused (see _get_service). To a service account,
+# `primary` is its OWN calendar — real, writable, and seen by nobody. It used to
+# be the default, so a deploy that set the key and not this booked every Remind
+# where you would never see it, confirmed it, and read that empty calendar back
+# as a free day. tests/test_calendar_target.py.
+CALENDAR_ID = env_or("GOOGLE_CALENDAR_ID")
 _CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
@@ -68,6 +73,15 @@ def _get_service():
 
     if not _CREDS_JSON:
         return None, "GOOGLE_CREDENTIALS_JSON is not set in environment."
+
+    # Checked BEFORE building, so a cached service above always means the ID was
+    # valid. A refusal, not a fallback: the calendar is optional, so this costs
+    # the calendar commands and nothing else, and says why each time.
+    if CALENDAR_ID.strip().lower() in ("", "primary"):
+        return None, ("GOOGLE_CALENDAR_ID is not set to your calendar. Without it the "
+                      "service account would use its own calendar, which nobody can see. "
+                      "Set it to your calendar's ID: Google Calendar → Settings → your "
+                      "calendar → Integrate calendar → Calendar ID.")
 
     try:
         from googleapiclient.discovery import build

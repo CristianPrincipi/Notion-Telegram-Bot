@@ -35,7 +35,7 @@ line were not there.
 | Variable | Default | What it is |
 | --- | --- | --- |
 | `GOOGLE_CREDENTIALS_JSON` | — | The service-account JSON key for Google Calendar, pasted whole. Without it, `Remind`, `Agenda`, `Cancel` and the briefings' calendar half fail. |
-| `GOOGLE_CALENDAR_ID` | `primary` | The calendar David reads and writes. **Set it** whenever you set `GOOGLE_CREDENTIALS_JSON`: `primary` is the *service account's own* calendar, which you never see — reminders would be created there successfully and you would never be shown one. Use your calendar's ID (for your main Google calendar, your Gmail address). |
+| `GOOGLE_CALENDAR_ID` | — | The calendar David reads and writes: your calendar's ID (for your main Google calendar, your Gmail address). **Needed whenever you set `GOOGLE_CREDENTIALS_JSON`** — without it the calendar commands refuse, and so does `primary`, which for a service account is its *own* calendar, one nobody can see. |
 | `SUPADATA_KEY` | — | [Supadata](https://supadata.ai) API key for YouTube transcripts. Without it, `Learn video` fails; everything else works. |
 | `BRAIN_ID` | — | The Brain area database ID, for `Implement … - Brain` and `Get … - Brain`. |
 | `FINANCE_ID` | — | The Finance area database ID, for `Implement … - Finance` and `Get … - Finance`. |
@@ -45,7 +45,7 @@ line were not there.
 | `MONTHS_DB_ID` | discovered | The database the month pages live in. Unset, David finds it by following the Expenses `Account` relation, which is what you want. |
 | `MONTH_ID` | — | **Outage fallback only.** If Notion cannot be reached the first time David looks up this month's page, it uses this page ID rather than nothing. David finds the real page itself; you never need to update this. |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | The longest answer one Claude call may return. Raise it if a long source comes back as a truncated page — that error message names this variable. |
-| `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused until the day turns — midnight by the server's clock, which on Railway is UTC. |
+| `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused until midnight, Europe/Rome. |
 | `ANTHROPIC_SPEND_FILE` | `.anthropic_spend.json` | Where the day's running spend is kept. On Railway the disk is wiped on every deploy, so a redeploy resets the day's count — a bounded over-spend, not a broken bot. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. An unrecognised value logs a warning and falls back to `INFO`. |
 
