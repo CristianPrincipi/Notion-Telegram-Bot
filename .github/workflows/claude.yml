@@ -32,12 +32,19 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        # PINNED, both the action and the model. `@v1` is a moving tag: on
-        # 2026-10-01 it moved to a release whose default model ended every
-        # review in ~2 s with is_error and no tokens spent (PR #41), with no
-        # change on this side. This SHA is what `v1` pointed at for the last
-        # green reviews; the model is the one they ran. Bump both on purpose,
-        # in a PR of their own, and watch that PR's review go green.
+        # PINNED, both the action and the model: `@v1` is a moving tag, and a
+        # new release can change the action and its default model with nobody
+        # reviewing it. This SHA is what `v1` pointed at for the reviews that
+        # last passed, and the model is the one they ran. Bump both on purpose,
+        # in a PR of their own. That PR's own review SKIPS (the action refuses a
+        # workflow file that differs from main's), so it is verified on the
+        # next PR after merge.
+        #
+        # A review that fails in ~2 s with is_error, no tokens and $0 spent is
+        # the CREDENTIAL, not the pin: check CLAUDE_CODE_OAUTH_TOKEN first
+        # (`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`).
+        # On 2026-10-02 an expired token looked exactly like a broken release,
+        # and pinning the release changed nothing until the token was replaced.
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790  # v1 as of 2026-09-27
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
