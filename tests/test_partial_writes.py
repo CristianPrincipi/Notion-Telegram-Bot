@@ -135,7 +135,7 @@ def test_add_quote_reports_what_reached_the_page():
 
 @pytest.fixture
 def book_found(monkeypatch):
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-page-1")
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: ("book-page-1", None))
 
 
 def quote_it(monkeypatch, result):

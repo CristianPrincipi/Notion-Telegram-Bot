@@ -28,7 +28,7 @@ def spies(monkeypatch):
 
     def find_Book_Page(book_name):
         calls["find_Book_Page"] = {"book_name": book_name}
-        return BOOK_PAGE
+        return BOOK_PAGE, None
 
     def add_Quote(page_id, quote_title, quote_text):
         calls["add_Quote"] = {"page_id": page_id, "quote_title": quote_title,
@@ -117,7 +117,7 @@ def test_quote_caption_rejects_a_non_pdf_attachment(spies):
 
 
 def test_quote_caption_reports_a_book_that_is_not_in_the_library(spies, monkeypatch):
-    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: None)
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: (None, None))
     update = upload(QUOTE_CAPTION)
 
     run(david.handle_document(update, FakeContext()))

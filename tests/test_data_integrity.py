@@ -70,7 +70,7 @@ def notion_writes(monkeypatch):
     # The quote path must be stubbed too, or the mid-sentence `Add q` case below
     # reaches find_Book_Page and makes a REAL request to api.notion.com — which
     # would pass for the wrong reason and break the suite's offline guarantee.
-    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: "book-page-id")
+    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: ("book-page-id", None))
     monkeypatch.setattr(books, "add_Quote",
                         lambda page_id, quote_title, quote_text:
                         calls.append({"quote_title": quote_title,
@@ -112,7 +112,7 @@ def test_book_lookup_searches_past_the_first_page():
                   status=200, json={"results": [{"id": "found-on-page-2"}],
                                     "has_more": False, "next_cursor": None})
 
-    assert books.find_Book_Page("Dune") == "found-on-page-2"
+    assert books.find_Book_Page("Dune") == ("found-on-page-2", None)
 
 
 # ─── BUG 2: COMMA DECIMALS AND UNANCHORED MATCHING ─────────────────────────────

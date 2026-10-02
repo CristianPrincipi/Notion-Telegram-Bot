@@ -300,7 +300,7 @@ def slow_command_stubs(monkeypatch):
 
     monkeypatch.setattr(bot.learn, "handle_learn", noop)
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: "book-1")
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: ("book-1", None))
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
     monkeypatch.setattr(bot.budget, "budget", lambda: ("TOTAL", None))
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)

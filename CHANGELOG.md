@@ -37,3 +37,9 @@ The first public release — it becomes `1.0.0` when tagged.
   confirmed there and `Agenda` reported busy days as free. The calendar commands
   now refuse, with a message saying what to set, until it names your calendar.
   If you deployed before this change, set it before updating.
+
+### Fixed
+
+- **`Add q` no longer says a book is missing when Notion is down.** A failed
+  library search used to read as "I didn't find 'Dune' in the library"; it now
+  says it could not search, and passes on Notion's error.
