@@ -18,11 +18,13 @@ from datetime import datetime, timedelta
 
 import pytz
 
+from config import env_or
+
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 TIMEZONE_NAME = "Europe/Rome"
 TIMEZONE = pytz.timezone(TIMEZONE_NAME)
 
-CALENDAR_ID = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+CALENDAR_ID = env_or("GOOGLE_CALENDAR_ID", "primary")
 _CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]

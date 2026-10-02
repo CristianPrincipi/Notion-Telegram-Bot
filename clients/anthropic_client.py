@@ -61,13 +61,14 @@ from config import (
     ANTHROPIC_MODEL,
     ANTHROPIC_OUTPUT_COST_PER_MTOK,
     ANTHROPIC_READ_TIMEOUT,
+    env_or,
 )
 
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-SPEND_FILE = os.environ.get("ANTHROPIC_SPEND_FILE", ".anthropic_spend.json")
+SPEND_FILE = env_or("ANTHROPIC_SPEND_FILE", ".anthropic_spend.json")
 
 # The tool the model is forced to call. The name is arbitrary but it is what the
 # model sees, so it reads as an instruction: emit the answer, structured.

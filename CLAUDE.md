@@ -51,7 +51,7 @@ cannot save it inside a `code span`. `bot/notify.py` is the only place they are 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
 | `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
-| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`) and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`), `env_or` and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
@@ -337,6 +337,13 @@ Railway.
 `__main__` and raises `SystemExit` listing *every* problem at once — a misconfigured deploy
 costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIONAL_ENV`
 and the README table when you introduce one.
+
+**A blank variable is an unset one, and `config.env_or` is the only reader with a
+default.** `os.environ.get(name, default)` falls back only when the key is ABSENT, so
+a `.env` line `BUDGET_CEILING=` or a Railway variable created empty reached
+`float("")` and killed David at import, before `validate()` — which already treated
+the same blank as unset — could say anything. `tests/test_config_validate.py` refuses
+a two-argument `os.environ.get` / `os.getenv` anywhere else.
 
 **One model name, one client.** `config.ANTHROPIC_MODEL` is the only place the model
 is named, and `clients.anthropic_client.complete_json` is the only way to reach the API. A

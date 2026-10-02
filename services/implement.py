@@ -853,7 +853,8 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
             "`Implement [Page Name] - [Target Area]`\n\n"
             "Example: `Implement Memory Techniques - Brain`\n\n"
             "The page must exist in your Learn database.\n"
-            "The target area must have `AREA_[NAME]_ID` set on Railway.",
+            "The target area's database ID must be set on Railway as "
+            "`[AREA]_ID` — `BRAIN_ID` for Brain.",
         )
         return
 
