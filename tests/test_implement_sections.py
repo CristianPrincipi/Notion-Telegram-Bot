@@ -23,6 +23,7 @@ itself.
 """
 
 import logging
+import re
 
 import pytest
 
@@ -669,3 +670,33 @@ def test_the_ledger_only_ever_appends(ledger):
 
     assert ledger["deletes"] == ["p-1", "p-2"], (
         "the ledger deleted something, or the section write stopped deleting")
+
+
+# ─── THE USAGE MESSAGE ─────────────────────────────────────────────────────────
+
+def test_the_usage_message_names_a_variable_get_area_db_id_actually_reads(monkeypatch):
+    """It said "`AREA_[NAME]_ID` set on Railway" — a variable nothing reads.
+
+    get_area_db_id derives `BRAIN_ID` from "Brain", as the not-configured
+    message a few lines further down already said; following the usage message
+    produced `AREA_BRAIN_ID` and an area David still could not find. So the
+    variable the message names, for the area in the message's OWN example, is
+    set here and get_area_db_id must find it.
+    """
+    said = []
+
+    async def collect(text):
+        said.append(text)
+
+    run(implement.run_implement("Implement with no area", notify=collect))
+
+    usage = said[0]
+    example_area = re.search(r"`Implement .+? - (\w+)`", usage).group(1)
+    named = re.findall(r"`([A-Z][A-Z_]*_ID)`", usage)
+    assert named, f"the usage message names no concrete variable:\n{usage}"
+
+    for variable in named:
+        monkeypatch.setenv(variable, "area-db-from-the-message")
+    assert implement.get_area_db_id(example_area) == "area-db-from-the-message", (
+        f"the usage message names {named} for {example_area!r}, which "
+        "get_area_db_id does not read")

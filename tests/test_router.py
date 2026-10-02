@@ -47,6 +47,7 @@ import bot.month
 import bot.notion_ids
 import bot.pkm
 import bot.reminder
+import config
 import david
 from services import books, cancel, expenses, learn
 from conftest import FakeContext, FakeUpdate, run, written_ok
@@ -689,6 +690,47 @@ def test_help_explains_that_diet_is_implemented_differently():
     """Implement routes Diet to implement_diet.py, which merges into a toggle
     tree instead of a flat Manual. The hand-written help never said so."""
     assert "Diet" in david.build_help()
+
+
+def _help_block(command) -> str:
+    """The paragraph of the `h` message that documents `command`."""
+    usage = f"`{command.help.usage[0]}`"
+    blocks = [block for block in david.build_help().split("\n\n") if usage in block]
+    assert len(blocks) == 1, f"{command.name!r} is documented in {len(blocks)} blocks"
+    return blocks[0]
+
+
+def _command(name):
+    return next(c for c in david.COMMANDS if c.name == name)
+
+
+def test_each_destructive_command_explains_the_numbered_list_exactly_once():
+    """What the flag-derived note used to be for, asserted instead of generated.
+
+    A destructive command that asks before it acts is only reassuring if its
+    help says so, so a new one cannot ship without the sentence. And ONCE: the
+    generated note used to repeat what `Cancel`'s own note already said.
+    """
+    for command in david.COMMANDS:
+        if command.destructive:
+            assert _help_block(command).count("Several matches") == 1, command.name
+
+
+def test_cancel_help_states_its_own_window_not_the_expense_one():
+    """`Cancel` searches the next CANCEL_SEARCH_DAYS days. The generated note
+    appended "`Cancel` search this month only" to any block with a destructive
+    command, one line under the block saying "next 30 days" — false, and
+    ungrammatical, because the sentence was written for the `U e` / `D e` pair."""
+    block = _help_block(_command("Cancel"))
+
+    assert "this month" not in block
+    assert f"next {config.CANCEL_SEARCH_DAYS} days" in block
+
+
+def test_the_expense_help_still_says_this_month_only():
+    block = _help_block(_command("U e"))
+
+    assert "`U e` and `D e` search this month only" in block
 
 
 # ─── THE README COMMANDS TABLE ─────────────────────────────────────────────────

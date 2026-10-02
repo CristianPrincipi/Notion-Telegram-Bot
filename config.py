@@ -12,9 +12,24 @@ from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
+
+def env_or(name: str, default: str = "") -> str:
+    """The variable, stripped — or `default` when it is unset OR blank.
+
+    The ONE definition of "unset", shared by validate() and every reader with a
+    default. `os.environ.get(name, default)` falls back only when the key is
+    ABSENT, so a `.env` line `BUDGET_CEILING=` (or a Railway variable created
+    without a value) reached float("") and killed David at import, before
+    validate() could say anything — while validate() itself had always treated
+    the same blank as unset. tests/test_config_validate.py refuses a default
+    passed to os.environ.get anywhere but here.
+    """
+    return os.environ.get(name, "").strip() or default
+
+
 # ─── BUDGET ────────────────────────────────────────────────────────────────────
 # Monthly budget ceiling, in euros. Override on Railway with BUDGET_CEILING.
-BUDGET_CEILING = float(os.environ.get("BUDGET_CEILING", "300"))
+BUDGET_CEILING = float(env_or("BUDGET_CEILING", "300"))
 
 
 # ─── NOTION SCHEMA ─────────────────────────────────────────────────────────────
@@ -269,7 +284,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-5"
 # reaches it when the client timeout is the SDK default, and _client() always
 # sets one. So it has never applied to David, and reasoning from it would have
 # capped this at a limit nothing was enforcing.
-ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS") or 8192)
+ANTHROPIC_MAX_TOKENS = int(env_or("ANTHROPIC_MAX_TOKENS", "8192"))
 
 # The routing calls answer with a LIST OF SECTION NAMES, not prose, so they are
 # a genuinely smaller budget and capping them separately is real money on the
@@ -347,7 +362,7 @@ ANTHROPIC_MAX_RETRIES = 3
 ANTHROPIC_INPUT_COST_PER_MTOK  = 3.00
 ANTHROPIC_OUTPUT_COST_PER_MTOK = 15.00
 
-ANTHROPIC_DAILY_BUDGET_USD = float(os.environ.get("ANTHROPIC_DAILY_BUDGET_USD", "5"))
+ANTHROPIC_DAILY_BUDGET_USD = float(env_or("ANTHROPIC_DAILY_BUDGET_USD", "5"))
 
 
 # ─── WEEKDAYS ──────────────────────────────────────────────────────────────────
@@ -531,7 +546,7 @@ def validate() -> None:
     """
     problems = []
 
-    missing = [name for name in REQUIRED_ENV if not os.environ.get(name, "").strip()]
+    missing = [name for name in REQUIRED_ENV if not env_or(name)]
     if missing:
         problems.append(f"Missing {len(missing)} required environment variable(s):")
         problems += [f"    {name} — {REQUIRED_ENV[name]}" for name in missing]
@@ -539,7 +554,7 @@ def validate() -> None:
     # OWNER_ID gates every inbound message and is turned into an int to build the
     # Telegram filter, so a non-numeric value is just as fatal as a missing one —
     # and would otherwise crash with a bare ValueError during handler setup.
-    owner_id = os.environ.get("OWNER_ID", "").strip()
+    owner_id = env_or("OWNER_ID")
     if owner_id and not _is_int(owner_id):
         problems.append(
             f"OWNER_ID must be a numeric Telegram user ID, got {owner_id!r}. "
@@ -550,11 +565,12 @@ def validate() -> None:
         raise SystemExit(
             "David cannot start — the environment is incomplete.\n\n"
             + "\n".join(problems)
-            + "\n\nSet these in the Railway service variables, then redeploy."
+            + "\n\nSet them in the Railway service variables and redeploy — or, on a "
+              "local run, in your .env file, then `dotenv run -- python david.py` again."
         )
 
     for name, purpose in OPTIONAL_ENV.items():
-        if not os.environ.get(name, "").strip():
+        if not env_or(name):
             logger.warning("%s is not set — %s", name, purpose)
 
 

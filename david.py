@@ -327,9 +327,11 @@ class Command:
     # away (Hard Rule 4). It is not a second copy of that wiring: the guards are
     # driven by the expense_safety.UPDATE/DELETE action the handler passes to
     # _start_destructive_expense, and there never was a hardcoded list to
-    # replace. What the flag drives is the shared warning in the generated help,
-    # and tests/test_router.py asserts the flag and the guarded path agree — a
-    # destructive command that skipped the lookup turns that test red.
+    # replace. tests/test_router.py asserts the flag and the guarded path agree —
+    # a destructive command that skipped the lookup turns that test red — and
+    # that every destructive command's help explains the numbered list once.
+    # The flag used to GENERATE that sentence, scope included, which put "this
+    # month only" under `Cancel`; each feature states its own scope now.
     destructive: bool = False
 
 
@@ -352,7 +354,12 @@ _LEARN_USAGE = tuple(
 
 HELP_GROUPS = {
     "notion_ids": HelpGroup(label="🩺 *FIND NOTION IDs*"),
-    "expense":    HelpGroup(notes=(f"Categories: {category_help()}",)),
+    # The scope sentence is the EXPENSE guard's, so it lives on the expense
+    # group: `Cancel` is destructive too and searches a window, not a month, and
+    # states it in its own note.
+    "expense":    HelpGroup(notes=(f"Categories: {category_help()}",
+                                   "`U e` and `D e` search this month only. Several "
+                                   "matches → I list them and wait for a number.")),
 }
 
 COMMANDS = [
@@ -582,17 +589,7 @@ def build_help() -> str:
         else:
             lines = [line for member in members for line in _render_entry(member.help)]
 
-        notes = list(group.notes)
-        # The destructive flag earning its keep: the guard that makes `U e` and
-        # `D e` safe is only reassuring if you know it is there, and naming the
-        # commands from the flag means a third one cannot be added without this
-        # sentence growing to cover it.
-        guarded = [member.name for member in members if member.destructive]
-        if guarded:
-            notes.append(" and ".join(f"`{name}`" for name in guarded)
-                         + " search this month only. Several matches → I list them "
-                           "and wait for a number.")
-        lines += [f"_{note}_" for note in notes]
+        lines += [f"_{note}_" for note in group.notes]
 
         rendered.append("\n".join(lines))
 
