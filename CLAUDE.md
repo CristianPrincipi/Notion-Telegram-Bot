@@ -335,8 +335,8 @@ Railway.
 
 **All secrets come from environment variables.** `config.validate()` runs first in
 `__main__` and raises `SystemExit` listing *every* problem at once — a misconfigured deploy
-costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIONAL_ENV`
-and the README table when you introduce one.
+costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIONAL_ENV`,
+a row to `docs/configuration.md` and a line to `.env.example` when you introduce one.
 
 **A blank variable is an unset one, and `config.env_or` is the only reader with a
 default.** `os.environ.get(name, default)` falls back only when the key is ABSENT, so

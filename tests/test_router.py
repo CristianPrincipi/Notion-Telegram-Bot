@@ -733,21 +733,23 @@ def test_the_expense_help_still_says_this_month_only():
     assert "`U e` and `D e` search this month only" in block
 
 
-# ─── THE README COMMANDS TABLE ─────────────────────────────────────────────────
-# With `h` generated, the README's Commands table is the LAST hand-written copy
-# of the command set — and it carries the same shape the bug had, a row reading
-# `Learn video|article|podcast|book|pdf [source]` with the types spelled out by
-# hand. It cannot be generated (it is prose, with a description per command that
-# is worth writing), so it is checked instead.
+# ─── THE DOCUMENTED COMMANDS TABLE ─────────────────────────────────────────────
+# With `h` generated, the Commands table in docs/features.md is the LAST
+# hand-written copy of the command set — and it carries the same shape the bug
+# had, a row reading `Learn video|article|podcast|book|pdf [source]` with the
+# types spelled out by hand. It cannot be generated (it is prose, with a
+# description per command that is worth writing), so it is checked instead. It
+# lived in the README until the docs were split into docs/; the checks moved
+# with it.
 
-README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+FEATURES = pathlib.Path(__file__).resolve().parent.parent / "docs" / "features.md"
 TABLE_ROW = re.compile(r"^\|(.+?)\|", re.M)      # first column of a table row
 PIPE_IN_SPAN = r"\|"                             # escaped pipe inside a code span
 
 
 def _commands_section() -> str:
-    """The README's `## Commands` section, including its subsections."""
-    text = README.read_text(encoding="utf-8")
+    """docs/features.md's `## Commands` section, including its subsections."""
+    text = FEATURES.read_text(encoding="utf-8")
     start = text.index("## Commands")
     rest = text[start + len("## Commands"):]
     end = rest.find("\n## ")
@@ -763,31 +765,31 @@ def _documented_commands() -> list[str]:
     return spans
 
 
-def test_the_readme_table_documents_every_command():
-    """A command missing from the README is undiscoverable outside the chat."""
+def test_the_docs_table_documents_every_command():
+    """A command missing from the docs is undiscoverable outside the chat."""
     section = _commands_section()
 
     for command in david.COMMANDS:
         assert f"`{command.name}" in section, (
-            f"{command.name!r} is a command but the README's Commands section omits it"
+            f"{command.name!r} is a command but docs/features.md's Commands section omits it"
         )
 
 
-def test_the_readme_table_documents_nothing_that_is_not_a_command():
+def test_the_docs_table_documents_nothing_that_is_not_a_command():
     """The other direction: a row cannot outlive the command it describes."""
     names = sorted((c.name for c in david.COMMANDS), key=len, reverse=True)
 
     for documented in _documented_commands():
         assert any(documented == name or documented.startswith(f"{name} ")
                    for name in names), (
-            f"the README documents {documented!r}, which is not a command"
+            f"docs/features.md documents {documented!r}, which is not a command"
         )
 
 
-def test_the_readme_lists_exactly_the_learn_types_learn_supports():
+def test_the_docs_list_exactly_the_learn_types_learn_supports():
     """The `Learn recipe` bug's last hiding place.
 
-    The README spells the types out by hand — `Learn video|article|…` — so it is
+    The docs spell the types out by hand — `Learn video|article|…` — so they are
     the one copy left that can advertise a type handle_learn rejects, or omit one
     it accepts.
     """
@@ -795,7 +797,7 @@ def test_the_readme_lists_exactly_the_learn_types_learn_supports():
     documented = set(learn_row.removeprefix("Learn ").split(" ")[0].split("|"))
 
     assert documented == set(learn.SUPPORTED_TYPES), (
-        f"README lists {sorted(documented)}, learn supports {sorted(learn.SUPPORTED_TYPES)}"
+        f"docs list {sorted(documented)}, learn supports {sorted(learn.SUPPORTED_TYPES)}"
     )
 
 
