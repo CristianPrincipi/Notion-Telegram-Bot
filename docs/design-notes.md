@@ -375,6 +375,13 @@ row, shows the table — "not needed" always with a reason, because a row skippe
 silently is a doc that drifts — updates what applies, and only then opens the PR.
 It never merges: merging deploys, and that decision stays with a person.
 
+The skill is the first line and `tests/test_docs_sync.py` the second, because a
+procedure can be skipped and a test cannot. Wherever a doc copies a list the code
+owns — the environment variables, the Notion names, the scheduled jobs, the
+command names, the link targets — a test compares the two in both directions, and
+each check is proved able to fail by deleting an entry from the real doc in memory.
+What the tests cannot see (whether a sentence is still true) stays the skill's job.
+
 ## Dates and times
 
 The grammar `Remind` and `Agenda` share. The rules themselves are in

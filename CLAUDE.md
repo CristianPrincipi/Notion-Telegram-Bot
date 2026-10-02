@@ -122,7 +122,7 @@ pip install -r requirements-dev.txt && ruff check . && pytest
 - `tests/test_router.py` is the pre-deploy gate. A new command needs a `Command`, a
   `SPY_TARGETS` entry and rows; a `known_bug` row is updated in the commit that fixes it;
   a moved function moves its spy (`SPY_HOMES`); no input may match two commands.
-- The help is generated from `david.COMMANDS` — never write it by hand.
+- The help is generated from `david.COMMANDS`; `tests/test_docs_sync.py` checks docs against code ("(tested)" below).
 - Source scans (layering, `parse_mode` senders, weekdays, lock keys, Notion names,
   environment reads, clock reads) walk the root and `bot/`, `clients/`, `services/`,
   `proactive/`. A new package joins all of them. Each scan has a can-it-fail test.
@@ -142,9 +142,9 @@ if a review fails in seconds with no tokens spent, replace `CLAUDE_CODE_OAUTH_TO
 | Change | Update in the same PR |
 | --- | --- |
 | A command added, changed or removed | the Commands table in `docs/features.md` (tested); examples there |
-| An environment variable | `config.REQUIRED_ENV` / `OPTIONAL_ENV`, `docs/configuration.md`, `.env.example` |
-| A Notion column, database or looked-up page | `config.py` NOTION SCHEMA, `docs/notion-schema.md`, and the Notion template (say so in the PR) |
-| A scheduled job or its time | the scheduled-messages table in `docs/features.md` |
+| An environment variable | `config.REQUIRED_ENV` / `OPTIONAL_ENV`, `docs/configuration.md`, `.env.example` (tested) |
+| A Notion column, database or looked-up page | `config.py` NOTION SCHEMA, `docs/notion-schema.md` (tested), and the Notion template (say so in the PR) |
+| A scheduled job or its time | the scheduled-messages table in `docs/features.md` (tested) |
 | A setup step or a new account/service | `docs/setup.md` |
 | A new way for setup or a command to fail | `docs/troubleshooting.md` |
 | A rule or convention | this file (the rule) and `docs/design-notes.md` (the why) |
