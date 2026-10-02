@@ -2,8 +2,9 @@
 
 How David is built and why. [Features](features.md) describes what each command
 does from the chat; this page is for changing the code. The rules contributors
-must keep are stated tersely in [`CLAUDE.md`](../CLAUDE.md); this page carries
-the reasoning.
+must keep are stated tersely in [`CLAUDE.md`](../CLAUDE.md), and the reasoning
+behind each one — usually the bug that produced it — is in
+[Design notes](design-notes.md). This page is the overview.
 
 David is a single-user Telegram bot that runs as one **polling worker**
 (`python david.py`): no web server, no port, no database of its own. Notion
@@ -43,10 +44,63 @@ report progress through a `notify` callback that the bot layer binds to
 logger. `tests/test_layering.py` fails if that is ever broken, so the rule holds
 by test rather than by habit.
 
+## Module map
+
+What each file owns — and, as important, what it must not.
+
+| File | Owns | Must NOT own |
+| --- | --- | --- |
+| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
+| `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`), `env_or` and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message | Anything a service could decide |
+| `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
+| `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
+| `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
+| `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
+| `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
+| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
+| `bot/undo.py` | `undo` — which SERVICE reverses the kind of thing last destroyed (`REVERSERS`). Peeks the kind, never consumes the record | How to reverse anything; the take-and-put-back pair stays in the service that knows when a reversal did not happen |
+| `bot/budget.py` | `B`. The one handler that never needed a split: `budget.py` is telegram-free, so this does the offloading and picks the channel itself | Aggregation, recap wording |
+| `bot/long_messages.py` | `split_for_telegram` / `send_long` — the **one** splitter for a reply over Telegram's limit, and it is bound where `notify` is | Which channel splits — that is each adapter's decision |
+| `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
+| `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
+| `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the duplicate check on the `Source URL` column and its ` !` override) | Manual merging; the unverified marker's TEXT and any column NAME (those are `config.py`) |
+| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id`, the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge) and the additions-only rule for unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`) |
+| `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
+| `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
+| `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
+| `clients/calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
+| `clients/telegram_files.py` | Attachment validation and the bounded PDF download | What the bytes are for |
+| `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
+| `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
+| `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
+| `pending_choice.py` | The ONE pending slot and the ONE undo slot, both tagged by the kind that owns them, plus the rules that must not differ between two destructive commands: the 2-minute expiry, the strict-digit selection, the range check | Which fields tell two matches apart, any message wording, the shape of a reversal — those are per-feature |
+| `expense_safety.py` | The expense half of the above: `Choice` / `Pending` / `Undo` shaped for a Notion row, and every message `U e` / `D e` print | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts. And the machine itself, which is `pending_choice.py` |
+| `calendar_safety.py` | The same, for `Cancel`: what tells two same-named events apart, and the re-create-from-snapshot undo record | Google calls, Telegram sends — `services/cancel.py` acts |
+| `services/month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `run_month` | Expense writes, budget maths |
+| `budget.py` | Expense aggregation + recap text (`compute_budget`, `format_budget`, `budget` — the two fallible ones return `(value, error)`) | Notion HTTP, Telegram |
+| `services/pkm.py` | `Get [Topic] - [Area]` — read a section back out of a Manual: index, fuzzy resolve, discovery. Read-only, no Claude call | Writing anything; knowing how Manuals are built |
+| `services/reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
+| `services/agenda.py` | `Agenda [day]` — read one day back out of the calendar, and `format_events_inline`, the ONE event renderer (`proactive/briefing.py` imports it) | What a day token means (`parse_day`, in the client); sending |
+| `services/cancel.py` | `Cancel [Name]` — the window-scoped `find_event_matches`, the `CALENDAR_ID` lock over lookup **and** delete, and the re-create undo | The window's SIZE (that is `config.CANCEL_SEARCH_DAYS`); the messages (that is `calendar_safety.py`) |
+| `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
+| `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
+| `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
+| `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) | Sending; un-ticking the checkbox (nothing does); the `Implemented` column's NAME, which both Implement paths write and so lives in `config.py` |
+| `proactive/takeaway.py` | `build_takeaway` — one takeaway bullet resurfaced weekly. Owns finding the takeaways section in a page (`takeaways_in`) and the bounded skip-and-retry over pages that have none | Sending; the heading's TEXT (that is `config.TAKEAWAYS_HEADING`) |
+
+`budget.py` is the last module at the root, and it belongs there: it is
+telegram-free already, so `bot/budget.py` is a real adapter rather than a
+placeholder. The other four — `month.py`, `pkm.py`, `reminder.py`,
+`notion_ids.py` — were split into `services/` + `bot/` and are now under
+`tests/test_layering.py`, which could not see them at the root.
+
+New features get a module. `david.py` routes to them; it does not absorb them.
+
 ## The rules the code keeps
 
-Each one exists because its absence shipped a bug. The full statements, with the
-history, are in [`CLAUDE.md`](../CLAUDE.md#hard-rules).
+Each one exists because its absence shipped a bug; the history is in
+[Design notes](design-notes.md#hard-rules).
 
 1. **Notion is the single source of truth.** No local database and no cached
    copy treated as authoritative — Railway's disk is wiped on every deploy. A

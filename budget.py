@@ -11,8 +11,8 @@ Step 4) read from one source of truth.
 
 BOTH FALLIBLE FUNCTIONS RETURN (value, error), and neither ever returns a bare
 None. They used to: `None` meant "Notion failed" AND "there is nothing to
-report", which is the collapse CLAUDE.md names under "An error is never the same
-value as an empty result". It cost the same thing here it cost one layer up —
+report", which is the collapse docs/design-notes.md names under "An error is never
+the same value as an empty result". It cost the same thing here it cost one layer up —
 `briefing._budget_line` dropped the pace line silently during an outage, and
 `budget_watch._should_warn` could not fire at all, so a month you were
 overspending went unreported for as long as Notion was unhappy.

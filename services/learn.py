@@ -729,7 +729,8 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
     #
     # Only URL sources have an identity to compare. A book title and a PDF upload
     # do not, so they skip this entirely rather than being matched on something
-    # weaker — see "`Learn book` is not de-duplicated" in CLAUDE.md's Open questions.
+    # weaker — see "`Learn book` is not de-duplicated" in docs/design-notes.md's
+    # Open questions.
     normalised   = normalise_source_url(source)
     source_property_type = ""
     if normalised:

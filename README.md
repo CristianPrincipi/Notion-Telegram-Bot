@@ -58,6 +58,7 @@ Every step in detail: **[Setup](docs/setup.md)** — about an hour from nothing.
 | [Customization](docs/customization.md) | Categories, schedules, areas, prompts, new commands |
 | [Troubleshooting](docs/troubleshooting.md) | What to check when something does not work |
 | [Architecture](docs/architecture.md) | How it is built and why — for changing the code |
+| [Design notes](docs/design-notes.md) | The bug behind each rule the code keeps |
 | [Changelog](CHANGELOG.md) | What changed, release by release |
 
 ## Development

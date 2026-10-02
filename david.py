@@ -57,7 +57,7 @@ FINANCE_ID = os.environ.get("FINANCE_ID")
 # themselves, the way every other feature module already does (config.py owns the
 # contract, not the values). The four above have had no reader in this file for
 # some time; they are left alone rather than swept up, along with DATABASE_ID,
-# which CLAUDE.md records as deliberately unexplained.
+# which docs/design-notes.md's Open questions record as deliberately unexplained.
 
 
 # --- BUDGET --- #

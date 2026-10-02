@@ -17,3 +17,6 @@ venv/
 PLAN.md
 ROADMAP.md
 CLAUDE.local.md
+
+# Claude Code's per-person settings. The rest of .claude/ (rules/) is shared.
+.claude/settings.local.json
