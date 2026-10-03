@@ -124,8 +124,8 @@ pip install -r requirements-dev.txt && ruff check . && pytest
   a moved function moves its spy (`SPY_HOMES`); no input may match two commands.
 - The help is generated from `david.COMMANDS`; `tests/test_docs_sync.py` checks docs against code ("(tested)" below).
 - Source scans (layering, `parse_mode` senders, weekdays, lock keys, Notion names,
-  environment reads, clock reads) walk the root and `bot/`, `clients/`, `services/`,
-  `proactive/`. A new package joins all of them. Each scan has a can-it-fail test.
+  environment reads, clock reads, logger names) walk the root and `bot/`, `clients/`,
+  `services/`, `proactive/`. A new package joins all of them. Each scan has a can-it-fail test.
 - A process-lifetime cache needs an autouse fixture clearing it (`_title_props`, `_db_schemas`).
 - A fixture whose shape depends on the runner builds every shape by hand; bulk-text
   fixtures never repeat a paragraph (trafilatura drops duplicates).
