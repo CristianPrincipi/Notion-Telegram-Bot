@@ -6,7 +6,9 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
-The first public release — it becomes `1.0.0` when tagged.
+## [1.0.0] - 2026-10-03
+
+The first public release.
 
 ### Added
 
@@ -43,3 +45,6 @@ The first public release — it becomes `1.0.0` when tagged.
 - **`Add q` no longer says a book is missing when Notion is down.** A failed
   library search used to read as "I didn't find 'Dune' in the library"; it now
   says it could not search, and passes on Notion's error.
+
+[Unreleased]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/releases/tag/v1.0.0
