@@ -380,7 +380,8 @@ them until October 2026: `--comment` at the end of the prompt, the inline-commen
 tool in `--allowedTools`, and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` in
 `settings`. `tests/test_review_workflow.py` fails if one goes missing;
 [the design notes](design-notes.md#the-reviews-answer-is-its-comment) have the
-story.
+story. A review usually takes 6 to 9 minutes and has taken 30; the job is
+cancelled at 45.
 
 If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything
