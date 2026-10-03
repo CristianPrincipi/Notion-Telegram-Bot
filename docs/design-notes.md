@@ -97,6 +97,11 @@ Markdown v1 ignores backslash escapes — escaping cannot save them, so the repo
 used to fail on exactly the ugly Notion errors they existed to report. Do not
 "fix" them back into Markdown; each carries a comment saying so.
 
+`v` is the fourth, for the same reason from another side: it interpolates a commit
+subject, and this repo's subjects are full of backticks, asterisks and underscores.
+There the rule is not a comment — `services.version.run_version` has no `notify_md`
+parameter at all, and a test asserts the signature.
+
 ### A budget belongs to whatever consumes it, and there is one of it
 
 The article
@@ -473,6 +478,34 @@ fire for any of them, so the limit is the trigger, not the prompt: `synchronize`
 is gone, and closing and reopening a pull request is the deliberate way to ask
 for another review. The cost is that a fix pushed after the review is read by
 nobody but the tests.
+
+### `v` answers from the running process, never from the repository
+
+`Agenda` and `Cancel` merged, passed CI, and were missing from the running bot for
+three days: Railway's last deploy predated the merge, and the merges after it
+produced no deployment at all. A failed deploy was already known to be silent;
+what was missing was a way to notice. Finding out took a local run, a start-up
+smoke test and thirty deployment records read through the GitHub API. David knew
+the answer the whole time and could not say it.
+
+So `v` reports the commit, branch, subject and deployment from the variables
+Railway injects into the container it actually started. A committed `VERSION`
+file, or one written by a build step, records what the SOURCE says, which was
+never in doubt — the two had drifted three days apart. Three decisions follow from
+that, and `services/version.py` argues each at length:
+
+- **A missing value is named, never guessed.** `unknown — RAILWAY_… is not set`,
+  with no placeholder that could pass for a commit. An unknown build that renders
+  like a known one is the bug this command exists to end.
+- **The four `RAILWAY_*` names are outside `REQUIRED_ENV` / `OPTIONAL_ENV`.** That
+  contract is what the owner sets, and `config.validate()` warns about what is
+  unset — it would tell every local run to set a variable the platform owns.
+  `docs/configuration.md` documents them outside the two tested tables.
+- **Uptime is there because a commit alone cannot tell a fresh deploy from a
+  restart of the same build,** and it comes from `now_local()`.
+
+The command was written in August 2026, in a pull request that was closed
+unmerged, and ported unchanged in October.
 
 ## Dates and times
 

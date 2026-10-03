@@ -58,7 +58,7 @@ What each file owns — and, as important, what it must not.
 | `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
-| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
+| `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py`, `bot/version.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
 | `bot/undo.py` | `undo` — which SERVICE reverses the kind of thing last destroyed (`REVERSERS`). Peeks the kind, never consumes the record | How to reverse anything; the take-and-put-back pair stays in the service that knows when a reversal did not happen |
 | `bot/budget.py` | `B`. The one handler that never needed a split: `budget.py` is telegram-free, so this does the offloading and picks the channel itself | Aggregation, recap wording |
 | `bot/long_messages.py` | `split_for_telegram` / `send_long` — the **one** splitter for a reply over Telegram's limit, and it is bound where `notify` is | Which channel splits — that is each adapter's decision |
@@ -84,6 +84,7 @@ What each file owns — and, as important, what it must not.
 | `services/agenda.py` | `Agenda [day]` — read one day back out of the calendar, and `format_events_inline`, the ONE event renderer (`proactive/briefing.py` imports it) | What a day token means (`parse_day`, in the client); sending |
 | `services/cancel.py` | `Cancel [Name]` — the window-scoped `find_event_matches`, the `CALENDAR_ID` lock over lookup **and** delete, and the re-create undo | The window's SIZE (that is `config.CANCEL_SEARCH_DAYS`); the messages (that is `calendar_safety.py`) |
 | `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
+| `services/version.py` | `v` — which build the PROCESS is running: commit, branch, subject, deployment and uptime, read from the variables Railway injects. Plain text only: `run_version` has no `notify_md` to send Markdown down | The repo's idea of the version (no `VERSION` file, no git); the environment contract — the four `RAILWAY_*` names are outside `config` on purpose |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
 | `proactive/heartbeat.py` | `build_heartbeat` — the weekly liveness proof; runs the Calendar/Notion/month probes | Sending (that is `scheduler.py`) |
 | `proactive/learn_nudge.py` | `build_nudge` — the weekly list of Learn pages never merged into a Manual. Owns what "pending" means (one Notion filter) | Sending; un-ticking the checkbox (nothing does); the `Implemented` column's NAME, which both Implement paths write and so lives in `config.py` |
