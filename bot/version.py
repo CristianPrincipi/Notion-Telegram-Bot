@@ -9,7 +9,7 @@ which Markdown cannot be trusted to survive, and `run_version` has no parameter
 to receive it anyway. See the comment on that function for why the plain channel
 is the correct one here rather than a shortcut.
 
-No splitting (see bot/long_messages.py): the reply is five short lines and cannot
+No splitting (see bot/long_messages.py): the reply is six short lines and cannot
 grow with anything — a commit subject is the only variable-length part of it.
 """
 

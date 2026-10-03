@@ -278,7 +278,11 @@ def test_the_service_reports_through_notify_with_no_update_at_all(monkeypatch):
     complete implementation of this service's whole interface — no bot, no
     `Update`, and nothing Markdown-shaped to bind."""
     deployed(monkeypatch)
-    start_and_now(monkeypatch, up_for=timedelta(minutes=2))
+    # run_version takes no start time: it reads the module's. Pin BOTH ends, or
+    # "now" lands before the real import time and the reply reports a clock that
+    # moved backwards.
+    monkeypatch.setattr(version, "_STARTED_AT",
+                        start_and_now(monkeypatch, up_for=timedelta(minutes=2)))
     sent = []
 
     async def collect(text):
@@ -288,3 +292,7 @@ def test_the_service_reports_through_notify_with_no_update_at_all(monkeypatch):
 
     assert len(sent) == 1
     assert "b09739d" in sent[0]
+    assert "(2m)" in sent[0], "the uptime of a process started two minutes ago"
+    assert "unknown" not in sent[0], (
+        "everything was known — this used to pass through the backwards-clock "
+        "branch, because the clock was pinned and the process start was not")
