@@ -3,7 +3,9 @@
 `claude-review` ran 53 times and never posted a comment: its prompt lacked
 `--comment`, and the action was never told to install the inline-comment tool.
 Nothing failed, because a mute review is green. Then 5 of 12 runs turned out to
-stop in ~20 seconds without reviewing, and nothing said why either.
+stop in ~20 seconds without reviewing, and nothing said why either: the review
+had started its agents in the background and ended its turn, and the action stops
+reading at the first result.
 
 These tests read the REAL workflow file. They hold the things it needs to be able
 to comment, and they run the "Show what the review concluded" step's own script —
@@ -29,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "claude-code-review.yml"
 
 INLINE_COMMENT_TOOL = "mcp__github_inline_comment__create_inline_comment"
+NO_BACKGROUND = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 
 
 def read_workflow() -> str:
@@ -60,6 +63,12 @@ def review_problems(text: str) -> list[str]:
         problems.append(
             f"--allowedTools does not name {INLINE_COMMENT_TOOL}: "
             "the action does not install the inline-comment server without it"
+        )
+
+    if not re.search(rf'"{NO_BACKGROUND}": "1"', live):
+        problems.append(
+            f"settings does not set {NO_BACKGROUND} to 1: an agent started in the "
+            "background outlives the run, and the review ends having read nothing"
         )
 
     # The verdict step reads another step's output by id. A renamed id leaves it
@@ -131,6 +140,29 @@ def test_a_missing_inline_comment_tool_is_caught():
     assert f",{INLINE_COMMENT_TOOL}" in uncommented(text)
     problems = review_problems(text.replace(f",{INLINE_COMMENT_TOOL}", ""))
     assert any(INLINE_COMMENT_TOOL in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        lambda text: text.replace(f'"{NO_BACKGROUND}": "1"', f'"{NO_BACKGROUND}": "0"'),
+        lambda text: text.replace(f'                "{NO_BACKGROUND}": "1"\n', ""),
+    ],
+    ids=["set-to-0", "removed"],
+)
+def test_background_tasks_left_on_are_caught(broken):
+    text = read_workflow()
+    changed = broken(text)
+    assert changed != text
+    problems = review_problems(changed)
+    assert any(NO_BACKGROUND in problem for problem in problems), problems
+
+
+def test_the_settings_block_is_json_the_action_can_read():
+    """The action parses `settings` as JSON; a trailing comma would drop the whole block."""
+    block = re.search(r"settings: \|\n((?:\s+.*\n)+?)\s+plugin_marketplaces:", read_workflow())
+    assert block, "the settings block was not found in the workflow"
+    assert json.loads(block.group(1)) == {"env": {NO_BACKGROUND: "1"}}
 
 
 def test_a_commented_out_setting_does_not_count():
