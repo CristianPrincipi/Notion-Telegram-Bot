@@ -165,10 +165,14 @@ gh pr checks <number> --watch
   one that *fails* in seconds with no tokens spent means `CLAUDE_CODE_OAUTH_TOKEN`
   has stopped working.
 - **The review's answer is its comment, not its green check.** Read both kinds:
-  `gh pr view <number> --comments` for the summary ("No issues found" when it is
-  clean) and `gh api repos/{owner}/{repo}/pulls/<number>/comments` for the inline
-  findings. A review that ran and left neither has reported nothing — say so; do
-  not report it as passed.
+  `gh pr view <number> --comments` for a summary and
+  `gh api repos/{owner}/{repo}/pulls/<number>/comments` for the inline findings.
+  If it left neither, it has reported nothing: read the review job's last step,
+  "Show what the review concluded", and report its final message — never report
+  that review as passed.
+- **Check each finding before acting on it.** A finding is a claim: verify it
+  against the code, and say when the line is right and the reason is not. A
+  committable suggestion is not checked by being committable.
 - Report: the PR link, CI, the review (real or skipped, and what its comments
   say), and anything under **Before you merge**.
 

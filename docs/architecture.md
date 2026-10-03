@@ -366,14 +366,20 @@ Claude. On a fork it needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret
 (`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`); without
 one, remove the workflow or ignore its failures.
 
-**The review's answer is its comment, not its green check.** A review that ran
-leaves a comment on the pull request — "No issues found" at the least, inline
-comments when it found something. A green check with no comment has reported
-nothing. The workflow needs two things to be able to comment, and it ran without
-either until October 2026: `--comment` at the end of the prompt, and
-`--allowedTools` naming the inline-comment tool in `claude_args`. Keep both when
-you edit it; [the design notes](design-notes.md#the-reviews-answer-is-its-comment)
-have the story.
+**The review's answer is its comment, not its green check.** When it finds
+something it comments inline on the pull request, as `claude[bot]`. A green check
+with no comment has told you nothing yet: open the review job and read its last
+step, "Show what the review concluded", which prints the review's final message
+and the tool calls it was refused. That is the only place that says whether the
+review finished or stopped. Check a finding before applying it — the review can
+be right about the line and wrong about the reason.
+
+The workflow needs three settings to review and report, and ran without any of
+them until October 2026: `--comment` at the end of the prompt, the inline-comment
+tool in `--allowedTools`, and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` in
+`settings`. `tests/test_review_workflow.py` fails if one goes missing;
+[the design notes](design-notes.md#the-reviews-answer-is-its-comment) have the
+story.
 
 If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything

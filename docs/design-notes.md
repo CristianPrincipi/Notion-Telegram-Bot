@@ -411,26 +411,46 @@ while `test` ran, mergeable once it was green.
 
 For two months a green `claude-review` was read as "reviewed, nothing found". The
 workflow ran 53 times, 50 of them green, and the repository held no inline comment,
-no pull-request review and no bot comment from any of them. It could not have:
+no pull-request review and no bot comment from any of them. Three things were
+missing, and each alone was enough:
 
-- the review plugin posts nothing unless its prompt carries `--comment` — it prints
-  what it found to the terminal, which in Actions is the job log, where the action
-  hides it;
-- and the action installs the inline-comment server only when `--allowedTools`
-  names its tool, which `claude_args` did not.
+- **`--comment`.** The review plugin posts nothing unless its prompt carries it: it
+  prints what it found to the terminal, which in Actions is the job log, where the
+  action hides it.
+- **The inline-comment tool in `--allowedTools`.** The action installs the server
+  that posts a finding only when `claude_args` names its tool.
+- **`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`.** The review starts its first agents in
+  the background and ends its turn; the action stops reading at Claude's first
+  result message, so the run was over before the agents reported. 5 of 12 runs
+  went that way — about 20 seconds, no Opus agent, green — and the other 7 were
+  the runs where the model happened to wait inside its turn.
 
-The check was green because the job finished. Turns and cost proved the review
-ran; nothing could show what it found. It is the calendar's bug in another place —
-silence read as an answer, like an empty agenda read as a free day.
+The check was green because the job finished. Every one of those merges was
+recorded as "review green, no comments": for 5 of the 12 nothing had been reviewed,
+and for the rest nothing found could have been posted. It is the calendar's bug in
+another place — silence read as an answer, like an empty agenda read as a free day.
 
-The first fix considered was `--comment` alone, and it would have been worse than
-the bug: a clean pull request would have received "No issues found", and one with
-findings would have had no tool to post them with — silent exactly when it
-mattered. That was caught by reading the action's source at the pinned SHA before
-shipping — not after, as with the token that was mistaken for a broken release.
+It took three pull requests, and their order is the lesson. The first added
+`--comment` and the tool, both read from the plugin and from the action's source at
+the pinned SHA before shipping; `--comment` alone, the first idea, would have
+posted "No issues found" on a clean pull request and had no tool to post a finding
+with. The next review was still silent, and the log hid why. So the second added
+no fix at all, only a step that prints the run's final message and the tool calls
+it was refused — not the transcript, which can carry any tool's output into a
+public log. It printed "Both background agents are running; I'll wait for their
+completion notifications", and the third fix was chosen from that sentence instead
+of guessed. The token that was mistaken for a broken release, the day before, was
+the same lesson learned the expensive way: when a failing run hides its error, get
+the error first.
 
-So the rule reads the comment, not the check: a review that leaves no comment has
-reported nothing, whatever colour it is.
+So the rule reads the comment, not the check, and the step stays: a review that
+leaves no comment has reported nothing, and the step says how it ended.
+`tests/test_review_workflow.py` holds the workflow to all three settings.
+
+Two things the first complete review taught. Refused tool calls are not the
+signal: it was refused 19 and posted its finding anyway. And a finding is a claim
+to check, not an edit to apply: its one comment flagged a line that was indeed
+stale, for a reason that was false, with a suggested wording that was wrong too.
 
 ## Dates and times
 
