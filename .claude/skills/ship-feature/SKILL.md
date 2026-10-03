@@ -159,6 +159,11 @@ manual check.>
 gh pr checks <number> --watch
 ```
 
+- **The review runs once, when the PR is opened** — which is why step 8 opens it
+  only after everything is committed and pushed. A push afterwards is not
+  reviewed: say so when you report a fix made after the review. Closing and
+  reopening the PR runs it again; that spends a full review, so it is the
+  person's call.
 - **A real review takes minutes and costs dollars.** If `claude-review` passes in a
   few seconds, read its log: a PR that edits a file under `.github/workflows/` is
   never reviewed (the action skips itself, and GitHub shows the skip as a pass), and

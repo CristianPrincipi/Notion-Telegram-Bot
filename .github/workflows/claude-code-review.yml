@@ -2,7 +2,12 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # ONCE PER PULL REQUEST: no `synchronize`. Every push used to start a full
+    # review - 6 to 30 minutes of the Claude subscription's allowance each -
+    # and one pull request was reviewed three times in an hour. The review
+    # reads the pull request as it is OPENED, so push everything first. To ask
+    # for another, close and reopen it: that is what `reopened` is kept for.
+    types: [opened, ready_for_review, reopened]
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"
