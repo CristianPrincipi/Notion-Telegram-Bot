@@ -349,3 +349,107 @@ def test_the_scan_is_not_reading_nothing():
     assert _defaulted_env_reads((REPO / "config.py").read_text(encoding="utf-8")), (
         "env_or must itself pass a default to os.environ.get — if it no longer "
         "does, the exemption is guarding nothing")
+
+
+# ─── A NAME READ FROM THE ENVIRONMENT IS USED ─────────────────────────────────
+#
+# `david.py` read DATABASE_ID, LEARN_ID, DIET_ID, BRAIN_ID and FINANCE_ID at
+# import and nothing ever used the names; `services/implement.py` did the same
+# with BRAIN_ID. Each read like live configuration — DATABASE_ID stayed for
+# months as "unexplained, so it stays" — and a dead read is how a variable ends
+# up set on the server, documented and maintained for nobody. Ruff does not flag
+# an unused module-level name, so this does.
+
+def _environment_names(source: str) -> list:
+    """(line, name) for every module-level name bound from the environment."""
+    found = []
+    for node in ast.parse(source).body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            continue
+        for inner in ast.walk(node.value):
+            code = ast.unparse(inner)
+            reads = (isinstance(inner, ast.Call) and code.startswith(
+                         ("os.environ.get(", "os.getenv(", "env_or(", "config.env_or("))
+                     or isinstance(inner, ast.Subscript) and ast.unparse(inner.value) == "os.environ")
+            if reads:
+                found.append((node.lineno, node.targets[0].id))
+                break
+    return found
+
+
+def unread_environment_names(sources: dict) -> list:
+    """Offences: a name bound from the environment that no production code reads.
+
+    Read means: used by name in its own module, or reached from any module as
+    `something.NAME` or `from … import NAME`. Tests do not count — a name only a
+    test reads configures nothing.
+    """
+    trees = {path: ast.parse(source) for path, source in sources.items()}
+    offences = []
+    for home, source in sorted(sources.items()):
+        for line, name in _environment_names(source):
+            used = any(
+                (isinstance(node, ast.Name) and node.id == name
+                 and isinstance(node.ctx, ast.Load) and path == home)
+                or (isinstance(node, ast.Attribute) and node.attr == name)
+                or (isinstance(node, ast.ImportFrom) and any(a.name == name for a in node.names))
+                for path, tree in trees.items() for node in ast.walk(tree))
+            if not used:
+                offences.append(f"{home}:{line}: {name} is read from the environment and never used")
+    return offences
+
+
+def production_sources() -> dict:
+    return {path.relative_to(REPO).as_posix(): path.read_text(encoding="utf-8")
+            for path in scanned_files()}
+
+
+def test_every_name_read_from_the_environment_is_used():
+    offences = unread_environment_names(production_sources())
+    assert not offences, (
+        "a module-level name is bound from the environment and nothing reads it — "
+        "delete the read, or the variable is maintained for nobody:\n  "
+        + "\n  ".join(offences))
+
+
+def test_a_dead_environment_read_is_caught():
+    """The real one, put back in memory: the read david.py carried for months."""
+    sources = production_sources()
+    marker = 'OWNER_ID = os.environ.get("OWNER_ID")\n'
+    assert sources["david.py"].count(marker) == 1
+    sources["david.py"] = sources["david.py"].replace(
+        marker, marker + 'DATABASE_ID = os.environ.get("DATABASE_ID")\n')
+
+    offences = unread_environment_names(sources)
+
+    assert len(offences) == 1
+    assert offences[0].startswith("david.py:") and "DATABASE_ID" in offences[0]
+
+
+@pytest.mark.parametrize("code", [
+    'X = os.environ.get("X")',
+    'X = os.getenv("X")',
+    'X = os.environ["X"]',
+    'X = float(env_or("X", "1"))',
+    'X = config.env_or("X")',
+])
+def test_the_unread_scan_sees_each_way_of_reading(code):
+    assert unread_environment_names({"module.py": code}) == [
+        "module.py:1: X is read from the environment and never used"]
+
+
+@pytest.mark.parametrize("sources", [
+    {"module.py": 'X = os.environ.get("X")\n\ndef f():\n    return X\n'},
+    {"module.py": 'X = os.environ.get("X")\n', "other.py": "import module\nprint(module.X)\n"},
+    {"module.py": 'X = os.environ.get("X")\n', "other.py": "from module import X\n"},
+    {"module.py": 'X = "a constant"\n'},
+], ids=["used-in-its-module", "read-as-an-attribute", "imported-by-name", "not-from-the-environment"])
+def test_the_unread_scan_leaves_a_used_name_alone(sources):
+    assert unread_environment_names(sources) == []
+
+
+def test_the_unread_scan_is_not_reading_nothing():
+    names = [name for source in production_sources().values() for _, name in _environment_names(source)]
+    assert len(names) >= 20, "the scan no longer sees the repo's environment names"
+    assert "TELEGRAM_TOKEN" in names and "EXPENSES_ID" in names

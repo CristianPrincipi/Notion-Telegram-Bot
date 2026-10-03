@@ -20,7 +20,6 @@ FAKE_ENV = {
     "OWNER_ID":        "424242",
     "ANTHROPIC_API_KEY": "test-anthropic-key",
     "NOTION_KEY":      "test-notion-key",
-    "DATABASE_ID":     "test-database-id",
     "EXPENSES_ID":     "test-expenses-id",
     "MONTH_ID":        "test-month-id",
     "LETTI_ID":        "test-letti-id",

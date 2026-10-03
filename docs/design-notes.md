@@ -856,8 +856,11 @@ collapsed `except`, the hard-coded `"Name"`, and caching a failed schema read.
 
 Found in the code, not resolved here — do not "fix" these by guessing intent:
 
-- **Unreferenced code:** `DATABASE_ID` in `david.py` — still the only one left, and still
-  unexplained, so it stays. (`implement.clear_page_blocks` was on this list and no longer
+- ~~**Unreferenced code:** `DATABASE_ID` in `david.py` — still the only one left, and still
+  unexplained, so it stays.~~ Removed in October 2026, by decision rather than by
+  guess: nothing read it, nobody could say what it had been for, and a variable kept
+  because it is unexplained is one the next person sets on their server for nothing.
+  (`implement.clear_page_blocks` was on this list and no longer
   exists; only `clear_page_blocks_by_id` does, and it is live. `reminder.build_today_message` /
   `build_tomorrow_message` were here too and have been deleted — they had zero
   callers and carried a copy of the error/empty collapse that made them look like
@@ -961,10 +964,14 @@ refactor and a fix hidden inside a move is a fix nobody reviewed.
   `extract_quote_from_pdf` with `clients.telegram_files.DOWNLOAD_TIMEOUT_SECONDS`, read
   live off the module so the two stay one value, as they were in `david.py`. It is the
   right duration and the wrong name.
-- **`LEARN_ID`, `DIET_ID`, `BRAIN_ID` and `FINANCE_ID` in `david.py` have no reader.**
+- ~~**`LEARN_ID`, `DIET_ID`, `BRAIN_ID` and `FINANCE_ID` in `david.py` have no reader.**
   They predate the split (each feature module reads its own), and they are left alongside
   `DATABASE_ID` rather than swept up in a refactor that was supposed to move code, not
-  delete it.
+  delete it.~~ Removed, with a `BRAIN_ID` read in `services/implement.py` that nothing
+  used either. The variables themselves are untouched — the feature modules read them.
+  Ruff does not flag an unused module-level name, so `tests/test_config_validate.py`
+  now refuses a name bound from the environment that no production code reads; run on
+  the code as it was, it named exactly these six.
 - ~~**`test_async_io.test_a_slow_command_no_longer_freezes_the_bot` can hang the suite
   rather than fail it.** Its watcher coroutine spins on `while not in_flight.is_set()`
   with no timeout, so if the stall it waits for never starts — which is exactly what a

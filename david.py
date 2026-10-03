@@ -46,18 +46,10 @@ logger = logging.getLogger("david")
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = os.environ.get("OWNER_ID")
-DATABASE_ID = os.environ.get("DATABASE_ID")
 CHAT_ID = os.environ.get("CHAT_ID")
-LEARN_ID = os.environ.get("LEARN_ID")
-DIET_ID = os.environ.get("DIET_ID")
-BRAIN_ID = os.environ.get("BRAIN_ID")
-FINANCE_ID = os.environ.get("FINANCE_ID")
-# EXPENSES_ID, LETTI_ID and LITERATURE_ID left with the code that read them —
-# services/expenses.py and services/books.py now read them from the environment
-# themselves, the way every other feature module already does (config.py owns the
-# contract, not the values). The four above have had no reader in this file for
-# some time; they are left alone rather than swept up, along with DATABASE_ID,
-# which docs/design-notes.md's Open questions record as deliberately unexplained.
+# Only what this file reads itself. Every database id is read by the feature
+# module that uses it (config.py owns the contract, not the values), and a name
+# bound here that nothing reads is refused by tests/test_config_validate.py.
 
 
 # --- BUDGET --- #

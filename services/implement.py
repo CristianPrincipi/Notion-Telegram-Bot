@@ -60,7 +60,6 @@ from clients.notion_client import (
 
 # ─── ENV ───────────────────────────────────────────────────────────────────────
 LEARN_ID = os.environ.get("LEARN_ID")
-BRAIN_ID = os.environ.get("BRAIN_ID")
 
 # The H2 that holds one H3 per routine step. It is the only section that grows
 # new subsections, so it is the only place a new step can be added.
