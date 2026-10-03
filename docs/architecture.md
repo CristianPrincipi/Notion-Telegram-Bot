@@ -345,6 +345,15 @@ environment-read scan. Each carries a test that it can actually fail.
 previous version running silently — so CI on the pull request is the real gate.
 Work on a branch, open a PR, merge when CI is green.
 
+On this repository that is enforced: `main` is protected, and a merge needs a pull
+request, up to date with `main`, with the `test` check green — for the owner too.
+A fork starts unprotected. To get the same, add a branch protection rule for `main`
+under Settings → Branches: require a pull request (no approvals, if you work
+alone), require the `test` status check — with GitHub Actions as its source, not
+"any source" — and the branch to be up to date, and do not allow administrators
+to bypass it. The reasons are in the
+[design notes](design-notes.md#main-is-protected-its-owner-included).
+
 **Shipping with Claude Code.** `/ship-feature` (`.claude/skills/ship-feature/`)
 turns a finished branch into a pull request: it checks the diff against the
 Documentation contract in `CLAUDE.md` and updates the docs and `CHANGELOG.md` the
@@ -357,6 +366,21 @@ waits for CI and the review. It never merges.
 Claude. On a fork it needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret
 (`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`); without
 one, remove the workflow or ignore its failures.
+
+**The review's answer is its comment, not its green check.** When it finds
+something it comments inline on the pull request, as `claude[bot]`. A green check
+with no comment has told you nothing yet: open the review job and read its last
+step, "Show what the review concluded", which prints the review's final message
+and the tool calls it was refused. That is the only place that says whether the
+review finished or stopped. Check a finding before applying it — the review can
+be right about the line and wrong about the reason.
+
+The workflow needs three settings to review and report, and ran without any of
+them until October 2026: `--comment` at the end of the prompt, the inline-comment
+tool in `--allowedTools`, and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` in
+`settings`. `tests/test_review_workflow.py` fails if one goes missing;
+[the design notes](design-notes.md#the-reviews-answer-is-its-comment) have the
+story.
 
 If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything
