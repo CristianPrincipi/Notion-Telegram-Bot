@@ -349,8 +349,9 @@ On this repository that is enforced: `main` is protected, and a merge needs a pu
 request, up to date with `main`, with the `test` check green — for the owner too.
 A fork starts unprotected. To get the same, add a branch protection rule for `main`
 under Settings → Branches: require a pull request (no approvals, if you work
-alone), require the `test` status check and the branch to be up to date, and do
-not allow administrators to bypass it. The reasons are in the
+alone), require the `test` status check — with GitHub Actions as its source, not
+"any source" — and the branch to be up to date, and do not allow administrators
+to bypass it. The reasons are in the
 [design notes](design-notes.md#main-is-protected-its-owner-included).
 
 **Shipping with Claude Code.** `/ship-feature` (`.claude/skills/ship-feature/`)

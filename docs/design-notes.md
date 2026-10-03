@@ -421,14 +421,17 @@ missing, and each alone was enough:
   that posts a finding only when `claude_args` names its tool.
 - **`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`.** The review starts its first agents in
   the background and ends its turn; the action stops reading at Claude's first
-  result message, so the run was over before the agents reported. 5 of 12 runs
-  went that way — about 20 seconds, no Opus agent, green — and the other 7 were
-  the runs where the model happened to wait inside its turn.
+  result message, so the run was over before the agents reported. Only the 12
+  most recent reviews had their logs read — pull requests #37 to #51 — and 5 of
+  those went that way: about 20 seconds, no Opus agent, green. The other 7 were
+  the runs where the model happened to wait inside its turn. The earlier runs
+  were not examined.
 
-The check was green because the job finished. Every one of those merges was
-recorded as "review green, no comments": for 5 of the 12 nothing had been reviewed,
-and for the rest nothing found could have been posted. It is the calendar's bug in
-another place — silence read as an answer, like an empty agenda read as a free day.
+The check was green because the job finished. Each of those 12 pull requests was
+merged on "review green, no comments": for 5 of them nothing had been reviewed,
+and for the other 7 — as for every run before them, whatever it did — nothing
+found could have been posted. It is the calendar's bug in another place — silence
+read as an answer, like an empty agenda read as a free day.
 
 It took three pull requests, and their order is the lesson. The first added
 `--comment` and the tool, both read from the plugin and from the action's source at

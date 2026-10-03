@@ -134,7 +134,7 @@ pip install -r requirements-dev.txt && ruff check . && pytest
 
 A push to `main` deploys on Railway, and a failed deploy is silent — the previous
 version keeps running. Branch → `/ship-feature` (contract, CHANGELOG, tests, PR) → `test`
-green → merge. `main` is protected, owner included; never loosen it to land a change.
+green → merge; never commit to `main` — it is protected, owner included; never loosen that.
 The review action is pinned by SHA with a model and answers with a COMMENT — green with
 none reported nothing; if it fails in seconds with no tokens spent, replace `CLAUDE_CODE_OAUTH_TOKEN`.
 
