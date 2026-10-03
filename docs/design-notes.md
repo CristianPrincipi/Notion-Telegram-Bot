@@ -464,6 +464,16 @@ the job has a `timeout-minutes` of 45 — above the slowest review that was wort
 waiting for, and the test refuses a limit at or below it. A job it stops shows as
 cancelled, which is loud; the failure worth fearing was always the quiet one.
 
+And it runs once per pull request, when it is opened. While 5 reviews in 12 were
+ending in twenty seconds, a review on every push was cheap by accident; once every
+review ran in full, the pull request that verified the fix was reviewed three
+times in an hour, each one drawing on the Claude subscription the token belongs
+to. The plugin's own stop — "Claude has already commented on this PR" — did not
+fire for any of them, so the limit is the trigger, not the prompt: `synchronize`
+is gone, and closing and reopening a pull request is the deliberate way to ask
+for another review. The cost is that a fix pushed after the review is read by
+nobody but the tests.
+
 ## Dates and times
 
 The grammar `Remind` and `Agenda` share. The rules themselves are in

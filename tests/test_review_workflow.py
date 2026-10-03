@@ -74,6 +74,19 @@ def review_problems(text: str) -> list[str]:
             "background outlives the run, and the review ends having read nothing"
         )
 
+    triggers = re.findall(r"^\s*types: \[(.*)\]\s*$", live, flags=re.MULTILINE)
+    if len(triggers) != 1:
+        problems.append(f"expected one pull_request types list, found {len(triggers)}")
+    else:
+        types = {name.strip() for name in triggers[0].split(",")}
+        if "synchronize" in types:
+            problems.append(
+                "the review triggers on synchronize: every push starts a full review, "
+                "and the review is meant to run once per pull request"
+            )
+        if "opened" not in types:
+            problems.append("the review does not trigger on opened: no pull request is reviewed at all")
+
     limits = re.findall(r"^\s*timeout-minutes: (\d+)\s*$", live, flags=re.MULTILINE)
     if len(limits) != 1:
         problems.append(
@@ -171,6 +184,19 @@ def test_background_tasks_left_on_are_caught(broken):
     assert changed != text
     problems = review_problems(changed)
     assert any(NO_BACKGROUND in problem for problem in problems), problems
+
+
+def test_a_review_on_every_push_is_caught():
+    text = read_workflow()
+    assert "types: [opened, " in text
+    problems = review_problems(text.replace("types: [opened, ", "types: [opened, synchronize, "))
+    assert any("synchronize" in problem for problem in problems), problems
+
+
+def test_a_review_that_never_starts_is_caught():
+    text = read_workflow()
+    problems = review_problems(text.replace("types: [opened, ", "types: ["))
+    assert any("no pull request is reviewed" in problem for problem in problems), problems
 
 
 def test_a_review_job_with_no_time_limit_is_caught():
