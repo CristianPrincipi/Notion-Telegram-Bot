@@ -70,3 +70,53 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
+      - name: Show what the review concluded
+        # The action hides the run's output, so a review that stopped in its
+        # first step and one that read everything and found nothing look the
+        # same from here: green, and silent. 5 of the 12 reviews before this
+        # step ended in ~20 s without reviewing, and nothing said why.
+        #
+        # This prints the run's FINAL MESSAGE and the tool calls it was
+        # REFUSED, and nothing else. Not the transcript: that can carry any
+        # tool's output into a public log, which is why the action hides it.
+        # It never fails the job - it reports, the checks decide.
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          path = os.environ.get("EXECUTION_FILE", "")
+          if not path or not os.path.isfile(path):
+              print("No execution file: the action skipped this pull request, or failed before running Claude.")
+              raise SystemExit(0)
+
+          try:
+              with open(path, encoding="utf-8") as handle:
+                  messages = json.load(handle)
+              result = [m for m in messages if isinstance(m, dict) and m.get("type") == "result"][-1]
+          except Exception as error:
+              print(f"Could not read the review's result: {error!r}")
+              raise SystemExit(0)
+
+
+          def clip(text, limit):
+              text = str(text)
+              if len(text) <= limit:
+                  return text
+              return f"{text[:limit]} ... [{len(text) - limit} more characters]"
+
+
+          print(f"Review ended: {result.get('subtype')}, {result.get('num_turns')} turns.")
+          print("Final message:")
+          print(clip(result.get("result") or "(none)", 4000))
+
+          denials = result.get("permission_denials") or []
+          print(f"\nTool calls refused: {len(denials)}")
+          for denial in denials:
+              tool_input = json.dumps(denial.get("tool_input"), ensure_ascii=False)
+              print(f"- {denial.get('tool_name')}: {clip(tool_input, 1500)}")
+          PY
+
