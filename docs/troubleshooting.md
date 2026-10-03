@@ -147,4 +147,7 @@ final message and the tool calls it was refused.
 Refused tool calls are normal — the first complete review listed 19 — so read the
 final message, not the count.
 
+**No review ran on your latest push?** Expected: the review runs once, when the
+pull request is opened. Close and reopen the pull request to run it again.
+
 More in [Architecture](architecture.md#the-automated-review-on-a-fork).

@@ -362,7 +362,8 @@ waits for CI and the review. It never merges.
 
 ### The automated review on a fork
 
-`.github/workflows/claude-code-review.yml` reviews every pull request with
+`.github/workflows/claude-code-review.yml` reviews every pull request once, when
+it is opened, with
 Claude. On a fork it needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret
 (`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`); without
 one, remove the workflow or ignore its failures.
@@ -382,6 +383,12 @@ tool in `--allowedTools`, and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` in
 [the design notes](design-notes.md#the-reviews-answer-is-its-comment) have the
 story. A review usually takes 6 to 9 minutes and has taken 30; the job is
 cancelled at 45.
+
+**It runs once per pull request.** A push to an open pull request is not
+reviewed, so push everything before opening it. To have a changed pull request
+reviewed again, close and reopen it. A review is paid for from the Claude
+subscription behind the token, and a review on every push spent a full one each
+time.
 
 If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything
