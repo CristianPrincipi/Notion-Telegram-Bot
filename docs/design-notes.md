@@ -790,6 +790,22 @@ They used to stop at the root, which meant a file that moved into a package
 dropped silently out of the guard while it kept passing green. If you add a package, add
 it to those lists.
 
+### A test that listens for a log line names a logger that exists
+
+`test_every_call_logs_its_token_counts` passed in the full suite and failed when
+its file ran alone, for two months. It raised the level of the logger
+`anthropic_client` and asserted on what was captured — and that had been the
+module's logger until the clients moved under `clients/`, where `getLogger(__name__)`
+became `clients.anthropic_client`. The test went on raising the level of a logger
+nothing wrote to. It stayed green in the full suite because an earlier file imports
+`david`, whose logging setup puts the ROOT logger at INFO; alone, the root is at
+WARNING and the line is never emitted.
+
+A stale name is silent in exactly the run everybody does, so
+`tests/test_observability.py` checks every `logger=` a test names against the
+loggers the code creates. Fixing the one line would have left the next moved
+module to do the same. After the fix every test file was run alone: all 42 pass.
+
 ### A process-lifetime cache needs an autouse fixture that clears it
 
 `notion_client._title_props` lives for the life of the process, which is right in
@@ -949,12 +965,16 @@ refactor and a fix hidden inside a move is a fix nobody reviewed.
   They predate the split (each feature module reads its own), and they are left alongside
   `DATABASE_ID` rather than swept up in a refactor that was supposed to move code, not
   delete it.
-- **`test_async_io.test_a_slow_command_no_longer_freezes_the_bot` can hang the suite
+- ~~**`test_async_io.test_a_slow_command_no_longer_freezes_the_bot` can hang the suite
   rather than fail it.** Its watcher coroutine spins on `while not in_flight.is_set()`
   with no timeout, so if the stall it waits for never starts — which is exactly what a
-  mis-targeted `monkeypatch` produces — pytest never returns. It cost a debugging round
-  during the split. A bound there would turn that into a normal red.
-- **`tests/test_anthropic_client.py` fails when run alone.**
+  mis-targeted `monkeypatch` produces — pytest never returns.~~ Resolved: the watcher
+  has a deadline (`PATIENCE`) and fails with a message that names the likely cause.
+  Checked by aiming the patch at the wrong name: without the deadline the test was
+  still running when it was killed at 25 seconds; with it, a red in 7.
+- ~~**`tests/test_anthropic_client.py` fails when run alone.**
   `test_every_call_logs_its_token_counts` passes in the full suite and fails as a
-  single file, at HEAD and before the split alike — an order dependency, probably the
-  daily-spend state. Pre-existing, unrelated to layering, and worth its own look.
+  single file — an order dependency, probably the daily-spend state.~~ Resolved, and
+  it was neither the spend state nor unrelated to layering: the test listened to the
+  logger name the module had before it moved under `clients/`. See "A test that
+  listens for a log line names a logger that exists" under Testing.

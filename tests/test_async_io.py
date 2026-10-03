@@ -455,6 +455,10 @@ def test_proactive_jobs_build_their_text_off_the_loop(offloaded, monkeypatch, jo
 
 STALL = 0.3
 CAP   = 0.05
+# How long a watcher waits for a stall to START before calling the test broken.
+# The handler reaches its blocking call in milliseconds; this is slack for a slow
+# runner, and the price of a mis-aimed patch.
+PATIENCE = 5.0
 
 
 def stalls(*_args, **_kwargs):
@@ -578,7 +582,16 @@ def test_a_slow_command_no_longer_freezes_the_bot():
         return "MOCK BUDGET", None
 
     async def other_traffic():
-        while not in_flight.is_set():      # don't start before the call is running
+        # Don't start before the call is running — but don't wait for ever for
+        # it either. If the patch below misses the name handle_message resolves
+        # (a moved module does that), the stall never starts, and an unbounded
+        # wait here hung the whole suite instead of failing this test.
+        deadline = time.monotonic() + PATIENCE
+        while not in_flight.is_set():
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"the blocking call never started within {PATIENCE}s — is the "
+                    "monkeypatch aimed at the name handle_message resolves?")
             await asyncio.sleep(0.001)
         for i in range(5):
             events.append(f"tick-{i}")

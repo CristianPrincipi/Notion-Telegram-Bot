@@ -5,10 +5,15 @@ David crosses on every long command — Application.create_task (run_detached) a
 asyncio.to_thread. If it does not, the log lines of two overlapping commands
 interleave with nothing to tell them apart, which is the state these tests exist
 to prevent returning to.
+
+The last section is a scan over the tests themselves: a test that listens for a log
+line has to listen to a logger something logs through.
 """
 
 import asyncio
 import logging
+import re
+from pathlib import Path
 
 import pytest
 
@@ -172,3 +177,83 @@ def test_counters_are_safe_across_threads():
 
     run(main())
     assert snapshot()["commands"] == 50
+
+
+# ─── TESTS LISTEN TO LOGGERS THAT EXIST ────────────────────────────────────────
+#
+# `caplog.at_level(INFO, logger="anthropic_client")` raised the level of a logger
+# nothing wrote to: the module had moved into `clients/`, and logs through
+# `clients.anthropic_client`. The test still passed in the full suite, because an
+# earlier file imports `david`, whose setup puts the ROOT logger at INFO — and
+# failed when its file ran alone. A stale name is silent in exactly the run
+# everybody does, so the names are checked against the loggers the code creates.
+
+REPO = Path(__file__).resolve().parent.parent
+PACKAGES = ("bot", "clients", "proactive", "services")
+
+
+def production_logger_names() -> set:
+    """Every logger name production code creates: `__name__` is the module's dotted path."""
+    files = sorted(REPO.glob("*.py"))
+    for package in PACKAGES:
+        files += sorted((REPO / package).rglob("*.py"))
+
+    names = set()
+    for path in files:
+        module = ".".join(path.relative_to(REPO).with_suffix("").parts)
+        for argument in re.findall(r"logging\.getLogger\(([^)]*)\)", path.read_text(encoding="utf-8")):
+            argument = argument.strip()
+            if argument == "__name__":
+                names.add(module)
+            elif argument[:1] in ("'", '"'):
+                names.add(argument.strip("'\""))
+    return names
+
+
+def sources_of_tests() -> dict:
+    return {path.name: path.read_text(encoding="utf-8") for path in sorted((REPO / "tests").glob("*.py"))}
+
+
+def stale_logger_problems(names: set, sources: dict) -> list:
+    """Every `logger=` a test names, against the loggers that exist."""
+    listened = re.compile(r"""logger=["']([^"']+)["']""")
+    problems = []
+    for filename, source in sorted(sources.items()):
+        for number, line in enumerate(source.splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue          # a name quoted in a comment is not listened to
+            for name in listened.findall(line):
+                if name not in names:
+                    problems.append(
+                        f"tests/{filename}:{number}: listens to logger {name!r}, "
+                        "which nothing logs through"
+                    )
+    return problems
+
+
+def test_every_logger_a_test_listens_to_exists():
+    assert stale_logger_problems(production_logger_names(), sources_of_tests()) == []
+
+
+def test_a_logger_name_left_behind_by_a_moved_module_is_caught():
+    """The real bug, put back in memory: the client's tests listening to its old name."""
+    sources = sources_of_tests()
+    current = "clients.anthropic_client"
+    assert f'="{current}"' in sources["test_anthropic_client.py"]
+    sources["test_anthropic_client.py"] = sources["test_anthropic_client.py"].replace(
+        f'="{current}"', '="anthropic_client"')
+
+    problems = stale_logger_problems(production_logger_names(), sources)
+
+    assert len(problems) == 1
+    assert "test_anthropic_client.py" in problems[0] and "'anthropic_client'" in problems[0]
+
+
+def test_the_logger_scan_reads_real_loggers_and_real_tests():
+    """A scan that finds no loggers, or no listeners, passes by reading nothing."""
+    names = production_logger_names()
+    assert {"david", "clients.anthropic_client", "services.learn", "telegram_text"} <= names
+
+    listeners = [line for source in sources_of_tests().values() for line in source.splitlines()
+                 if re.search(r"""logger=["']""", line)]
+    assert len(listeners) >= 5

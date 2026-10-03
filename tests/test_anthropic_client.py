@@ -289,7 +289,7 @@ def test_the_model_name_comes_from_config(anthropic_api):
 # ─── 4. TOKEN ACCOUNTING ───────────────────────────────────────────────────────
 
 def test_every_call_logs_its_token_counts(anthropic_api, caplog):
-    with caplog.at_level(logging.INFO, logger="anthropic_client"):
+    with caplog.at_level(logging.INFO, logger="clients.anthropic_client"):
         complete_json("system", "user", SCHEMA)
 
     assert "in=120" in caplog.text
