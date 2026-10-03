@@ -13,8 +13,8 @@ what went missing — the revert check, run on every test run instead of once.
 
 Covered here: environment variables (docs/configuration.md, .env.example), the
 Notion schema (docs/notion-schema.md), the scheduled jobs (docs/features.md), and
-every relative link and anchor. Commands are covered by the Commands-table tests
-in tests/test_router.py.
+every relative link and anchor, and the changelog's `[Unreleased]` section.
+Commands are covered by the Commands-table tests in tests/test_router.py.
 """
 
 import re
@@ -215,6 +215,30 @@ def test_every_relative_link_and_anchor_resolves():
     assert problems == [], "\n".join(problems)
 
 
+# ─── 5. THE CHANGELOG ──────────────────────────────────────────────────────────
+
+def changelog_problems(changelog_md: str) -> list:
+    """A release renames `[Unreleased]`; the next change still has to land somewhere.
+
+    CLAUDE.md's Documentation contract and `/ship-feature` both write under
+    `## [Unreleased]`, so it stays the FIRST section, empty or not.
+    """
+    sections = re.findall(r"^## \[(.+?)\]", changelog_md, flags=re.MULTILINE)
+    problems = []
+    if not sections or sections[0] != "Unreleased":
+        problems.append(
+            "CHANGELOG.md's first section is not [Unreleased]: "
+            "the Documentation contract and /ship-feature write there"
+        )
+    if len(sections) != len(set(sections)):
+        problems.append("CHANGELOG.md names a section twice")
+    return problems
+
+
+def test_the_changelog_keeps_an_unreleased_section_on_top():
+    assert changelog_problems(read(ROOT / "CHANGELOG.md")) == []
+
+
 # ─── CAN THESE FAIL? ───────────────────────────────────────────────────────────
 # Each takes the REAL doc, removes one entry in memory, and asserts the check
 # names it. A check that stays quiet here is reading nothing.
@@ -287,6 +311,17 @@ def test_a_broken_link_or_anchor_is_caught():
 
     assert any("docs/set-up.md" in problem for problem in no_file), no_file
     assert any("#9-first-run-checklist" in problem for problem in no_anchor), no_anchor
+
+
+def test_a_release_that_drops_unreleased_is_caught():
+    """What a release does by hand: rename the heading. Renaming without re-adding is the bug."""
+    changelog = read(ROOT / "CHANGELOG.md")
+    assert "## [Unreleased]\n" in changelog
+    renamed = changelog.replace("## [Unreleased]\n", "", 1)
+    assert any("[Unreleased]" in problem for problem in changelog_problems(renamed))
+
+    released_twice = changelog.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [Unreleased]\n", 1)
+    assert any("twice" in problem for problem in changelog_problems(released_twice))
 
 
 def test_the_checks_are_reading_real_docs():
