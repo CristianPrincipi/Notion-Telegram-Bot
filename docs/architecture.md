@@ -345,6 +345,14 @@ environment-read scan. Each carries a test that it can actually fail.
 previous version running silently — so CI on the pull request is the real gate.
 Work on a branch, open a PR, merge when CI is green.
 
+On this repository that is enforced: `main` is protected, and a merge needs a pull
+request, up to date with `main`, with the `test` check green — for the owner too.
+A fork starts unprotected. To get the same, add a branch protection rule for `main`
+under Settings → Branches: require a pull request (no approvals, if you work
+alone), require the `test` status check and the branch to be up to date, and do
+not allow administrators to bypass it. The reasons are in the
+[design notes](design-notes.md#main-is-protected-its-owner-included).
+
 **Shipping with Claude Code.** `/ship-feature` (`.claude/skills/ship-feature/`)
 turns a finished branch into a pull request: it checks the diff against the
 Documentation contract in `CLAUDE.md` and updates the docs and `CHANGELOG.md` the
@@ -357,6 +365,15 @@ waits for CI and the review. It never merges.
 Claude. On a fork it needs a `CLAUDE_CODE_OAUTH_TOKEN` repository secret
 (`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`); without
 one, remove the workflow or ignore its failures.
+
+**The review's answer is its comment, not its green check.** A review that ran
+leaves a comment on the pull request — "No issues found" at the least, inline
+comments when it found something. A green check with no comment has reported
+nothing. The workflow needs two things to be able to comment, and it ran without
+either until October 2026: `--comment` at the end of the prompt, and
+`--allowedTools` naming the inline-comment tool in `claude_args`. Keep both when
+you edit it; [the design notes](design-notes.md#the-reviews-answer-is-its-comment)
+have the story.
 
 If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything

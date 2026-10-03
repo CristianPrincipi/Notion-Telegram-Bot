@@ -382,6 +382,56 @@ command names, the link targets — a test compares the two in both directions, 
 each check is proved able to fail by deleting an entry from the real doc in memory.
 What the tests cannot see (whether a sentence is still true) stays the skill's job.
 
+### `main` is protected, its owner included
+
+A push to `main` deploys, and a failed deploy is silent, so CI on the pull request
+is the only warning before a broken router reaches Telegram. Until 2026-10-03 that
+was a habit and not a rule: nothing stopped a merge on a red or still-running check,
+or a push straight to `main`. The docs tests above bind only if the check they run
+in does.
+
+So `main` carries a branch protection rule: a pull request, up to date with `main`,
+with the `test` check green — the check tied to GitHub Actions, so nothing else can
+report it.
+
+- **Admins are included.** The owner is the only person who merges, so a rule that
+  exempts admins binds nobody here.
+- **Up to date**, because CI on a pull request tests the merge with `main` as it was
+  when the run started; a merge in between lands a combination nobody tested.
+- **No approval is required.** A solo owner cannot approve their own pull request.
+- **`claude-review` is not required.** It skips on a pull request that edits a
+  workflow and dies with its token, and a required check that fails for reasons
+  outside the diff teaches you to override it.
+
+It was not tested by pushing to `main`: had the rule failed, the test itself would
+have deployed. It was watched on the first pull request under it instead — blocked
+while `test` ran, mergeable once it was green.
+
+### The review's answer is its comment
+
+For two months a green `claude-review` was read as "reviewed, nothing found". The
+workflow ran 53 times, 50 of them green, and the repository held no inline comment,
+no pull-request review and no bot comment from any of them. It could not have:
+
+- the review plugin posts nothing unless its prompt carries `--comment` — it prints
+  what it found to the terminal, which in Actions is the job log, where the action
+  hides it;
+- and the action installs the inline-comment server only when `--allowedTools`
+  names its tool, which `claude_args` did not.
+
+The check was green because the job finished. Turns and cost proved the review
+ran; nothing could show what it found. It is the calendar's bug in another place —
+silence read as an answer, like an empty agenda read as a free day.
+
+The first fix considered was `--comment` alone, and it would have been worse than
+the bug: a clean pull request would have received "No issues found", and one with
+findings would have had no tool to post them with — silent exactly when it
+mattered. That was caught by reading the action's source at the pinned SHA before
+shipping — not after, as with the token that was mistaken for a broken release.
+
+So the rule reads the comment, not the check: a review that leaves no comment has
+reported nothing, whatever colour it is.
+
 ## Dates and times
 
 The grammar `Remind` and `Agenda` share. The rules themselves are in

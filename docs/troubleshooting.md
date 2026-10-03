@@ -127,3 +127,20 @@ For contributors with the review workflow enabled: a review that fails in a few
 seconds, with no tokens spent, means the `CLAUDE_CODE_OAUTH_TOKEN` secret has
 stopped working. Replace it — see
 [Architecture](architecture.md#the-automated-review-on-a-fork).
+
+## The automated PR review is green but left no comment
+
+Then it reported nothing — do not read it as a pass. A review that ran leaves a
+comment on the pull request, "No issues found" at the least. Three causes, in the
+order to check them:
+
+- **The pull request edits a file under `.github/workflows/`.** The action skips
+  it, and GitHub shows the skip as a pass within seconds. Expected; the tests are
+  the only gate for that pull request.
+- **The workflow lost `--comment` or `--allowedTools`.** Without `--comment` the
+  review prints its findings into a log that hides them; without the
+  inline-comment tool in `--allowedTools` it cannot post a finding.
+- **The review took minutes and still said nothing.** Read the job log for
+  `permission_denials_count`: a tool it needed was refused.
+
+More in [Architecture](architecture.md#the-automated-review-on-a-fork).

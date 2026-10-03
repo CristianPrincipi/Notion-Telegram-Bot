@@ -164,9 +164,12 @@ gh pr checks <number> --watch
   never reviewed (the action skips itself, and GitHub shows the skip as a pass), and
   one that *fails* in seconds with no tokens spent means `CLAUDE_CODE_OAUTH_TOKEN`
   has stopped working.
-- Count the review's comments, inline ones included:
-  `gh api repos/{owner}/{repo}/pulls/<number>/comments`.
-- Report: the PR link, CI, the review (real or skipped, and its comments), and
-  anything under **Before you merge**.
+- **The review's answer is its comment, not its green check.** Read both kinds:
+  `gh pr view <number> --comments` for the summary ("No issues found" when it is
+  clean) and `gh api repos/{owner}/{repo}/pulls/<number>/comments` for the inline
+  findings. A review that ran and left neither has reported nothing — say so; do
+  not report it as passed.
+- Report: the PR link, CI, the review (real or skipped, and what its comments
+  say), and anything under **Before you merge**.
 
 **Do not merge.** Merging deploys to Railway; that decision belongs to the person.
