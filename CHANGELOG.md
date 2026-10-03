@@ -6,6 +6,13 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`v` says which build is running** — the commit, branch, commit subject,
+  Railway deployment and uptime of the bot that is answering you. A failed deploy
+  is silent, so this is how you check that a push landed. Where a value is not
+  available it says `unknown` and names it, instead of guessing.
+
 ## [1.0.0] - 2026-10-03
 
 The first public release.

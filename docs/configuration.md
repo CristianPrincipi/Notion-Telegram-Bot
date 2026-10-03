@@ -60,3 +60,17 @@ line were not there.
 | `Remind`, `Agenda`, `Cancel`, briefings | `GOOGLE_CREDENTIALS_JSON`, `GOOGLE_CALENDAR_ID` |
 
 Finding each Notion ID is covered in [Setup § Notion](setup.md#3-notion).
+
+## Set by Railway, not by you
+
+`v` reports which build is running from four variables Railway puts into the
+container it starts:
+
+`RAILWAY_GIT_COMMIT_SHA`, `RAILWAY_GIT_BRANCH`, `RAILWAY_GIT_COMMIT_MESSAGE`,
+`RAILWAY_DEPLOYMENT_ID`.
+
+Do not set them yourself, and do not add them to `.env`. They are deliberately
+absent from the tables above, which list what *you* configure: a value you typed
+would make `v` describe a build that is not the one running. Where one is missing
+— a local run, or a platform that names it differently — `v` says `unknown` and
+names the variable instead of guessing.

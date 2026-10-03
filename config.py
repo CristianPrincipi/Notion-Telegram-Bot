@@ -109,12 +109,6 @@ CATEGORY_MAP = {
     "o": "Other",
 }
 
-PRIORITY_MAP = {
-    "l": "Low",
-    "m": "Mid",
-    "h": "High",
-}
-
 # Default category when none is supplied on an expense
 DEFAULT_CATEGORY = "Food"
 
@@ -228,10 +222,6 @@ def genre_help() -> str:
 
 def category_help() -> str:
     return " · ".join(CATEGORY_MAP.keys())
-
-
-def priority_help() -> str:
-    return " · ".join(PRIORITY_MAP.keys())
 
 
 # ─── BLOCKING-CALL TIMEOUTS ────────────────────────────────────────────────────
