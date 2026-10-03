@@ -32,6 +32,9 @@ WORKFLOW = ROOT / ".github" / "workflows" / "claude-code-review.yml"
 
 INLINE_COMMENT_TOOL = "mcp__github_inline_comment__create_inline_comment"
 NO_BACKGROUND = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+# The longest review that finished and was right, in minutes. A limit at or
+# below it would cancel a review that was working.
+SLOWEST_GOOD_REVIEW = 30
 
 
 def read_workflow() -> str:
@@ -69,6 +72,18 @@ def review_problems(text: str) -> list[str]:
         problems.append(
             f"settings does not set {NO_BACKGROUND} to 1: an agent started in the "
             "background outlives the run, and the review ends having read nothing"
+        )
+
+    limits = re.findall(r"^\s*timeout-minutes: (\d+)\s*$", live, flags=re.MULTILINE)
+    if len(limits) != 1:
+        problems.append(
+            f"expected one timeout-minutes, found {len(limits)}: "
+            "without a limit a hung review runs for six hours"
+        )
+    elif int(limits[0]) <= SLOWEST_GOOD_REVIEW:
+        problems.append(
+            f"timeout-minutes is {limits[0]}: a review has taken "
+            f"{SLOWEST_GOOD_REVIEW} minutes and posted a correct finding"
         )
 
     # The verdict step reads another step's output by id. A renamed id leaves it
@@ -156,6 +171,23 @@ def test_background_tasks_left_on_are_caught(broken):
     assert changed != text
     problems = review_problems(changed)
     assert any(NO_BACKGROUND in problem for problem in problems), problems
+
+
+def test_a_review_job_with_no_time_limit_is_caught():
+    text = read_workflow()
+    limit = re.search(r"^\s*timeout-minutes: \d+\n", text, flags=re.MULTILINE)
+    assert limit, "the review job's timeout-minutes was not found"
+    problems = review_problems(text.replace(limit.group(0), ""))
+    assert any("timeout-minutes" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("minutes", [10, 20, SLOWEST_GOOD_REVIEW])
+def test_a_limit_that_would_cancel_a_working_review_is_caught(minutes):
+    text = read_workflow()
+    changed = re.sub(r"timeout-minutes: \d+", f"timeout-minutes: {minutes}", text)
+    assert changed != text
+    problems = review_problems(changed)
+    assert any("correct finding" in problem for problem in problems), problems
 
 
 def test_the_settings_block_is_json_the_action_can_read():
