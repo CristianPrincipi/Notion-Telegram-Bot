@@ -6,6 +6,8 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-04
+
 ### Added
 
 - **`v` says which build is running** — the commit, branch, commit subject,
@@ -53,5 +55,6 @@ The first public release.
   library search used to read as "I didn't find 'Dune' in the library"; it now
   says it could not search, and passes on Notion's error.
 
-[Unreleased]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/releases/tag/v1.0.0
