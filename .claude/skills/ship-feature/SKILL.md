@@ -168,7 +168,9 @@ gh pr checks <number> --watch
   few seconds, read its log: a PR that edits a file under `.github/workflows/` is
   never reviewed (the action skips itself, and GitHub shows the skip as a pass), and
   one that *fails* in seconds with no tokens spent means `CLAUDE_CODE_OAUTH_TOKEN`
-  has stopped working.
+  has stopped working. One that passes in under a minute, with a final message
+  saying the PR does not need a review, stopped at the review's own first step —
+  it happened to nine lines of docs. Report that PR as **not reviewed**.
 - **The review's answer is its comment, not its green check.** Read both kinds:
   `gh pr view <number> --comments` for a summary and
   `gh api repos/{owner}/{repo}/pulls/<number>/comments` for the inline findings.

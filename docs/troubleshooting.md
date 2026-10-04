@@ -150,15 +150,20 @@ final message and the tool calls it was refused.
 - **"No execution file".** The pull request edits a file under
   `.github/workflows/`: the action skips it, and GitHub shows the skip as a pass
   within seconds. Expected; the tests are the only gate for that pull request.
+- **A final message saying the pull request does not need a review, in under a
+  minute.** The review's first step decides whether to review at all, and it
+  judged the change too small to need one — seen on a pull request that changed
+  nine lines of documentation. Nothing is broken and nothing was reviewed; the
+  tests are the only gate for that pull request.
 - **A final message about waiting for background agents, after about 20
   seconds.** The workflow lost `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`: the review
   started its agents in the background, and the run ended before they reported.
 - **A final message that reports findings, and still no comment.** The workflow
   lost `--comment`, or the inline-comment tool in `--allowedTools`.
 
-`tests/test_review_workflow.py` fails if the workflow loses any of the three.
-Refused tool calls are normal — the first complete review listed 19 — so read the
-final message, not the count.
+`tests/test_review_workflow.py` fails if the workflow loses any of those three
+settings. Refused tool calls are normal — the first complete review listed 19 —
+so read the final message, not the count.
 
 **No review ran on your latest push?** Expected: the review runs once, when the
 pull request is opened. Close and reopen the pull request to run it again.

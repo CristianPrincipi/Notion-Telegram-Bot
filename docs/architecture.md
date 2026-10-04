@@ -395,4 +395,7 @@ If the review starts failing **within seconds**, with `is_error` and no tokens
 spent, the token has stopped working — replace it before suspecting anything
 else. A pull request that edits a workflow file is never reviewed: the action
 refuses a workflow that differs from `main`'s, and GitHub shows that skip as a
-pass.
+pass. And the review's own first step can decide a pull request does not need
+one — it did for a nine-line documentation change — and stop there: green in
+under a minute, no comment, and a final message that says so. In both cases the
+tests are the only gate.

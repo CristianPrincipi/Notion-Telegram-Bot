@@ -479,6 +479,18 @@ is gone, and closing and reopening a pull request is the deliberate way to ask
 for another review. The cost is that a fix pushed after the review is read by
 nobody but the tests.
 
+One of the plugin's stops does fire. Its first step ends the run if "The pull
+request does not need code review (e.g. automated PR, trivial change that is
+obviously correct)". The 1.1.0 release — nine lines across the changelog and this
+file — went that way: green in 52 seconds, three turns, no comment. Nothing had to
+be guessed, because the step added for the background agents printed the final
+message, and the message said it. So this is a third way to be green and silent,
+beside a workflow edit and a lost setting, and the only one that is the review
+working as written. The judgement is a model's, not a threshold: a five-file
+documentation pull request was reviewed three times. The rule already covered the
+1.1.0 release's skip — no comment, nothing reported — and the tests were that
+release's only gate.
+
 ### `v` answers from the running process, never from the repository
 
 `Agenda` and `Cancel` merged, passed CI, and were missing from the running bot for
