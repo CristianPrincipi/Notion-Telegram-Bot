@@ -919,8 +919,8 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   checkbox described as feeding it; the checkbox is written and never read.~~
   Resolved: `proactive/learn_nudge.py` reads it weekly (Saturday 10:00) and names the
   pages you saved over `LEARN_NUDGE_STALE_DAYS` ago and never merged. Step 5
-  (takeaway of the week) and Step 7 (tasks) are still unbuilt. Two things about it
-  are worth keeping straight:
+  (takeaway of the week) followed, as `proactive/takeaway.py`; Step 7 (tasks) is
+  still unbuilt. Two things about the nudge are worth keeping straight:
   - **"Pending" is decided by Notion, in one filter**, not fetched and sieved in
     Python. So the boundary is Notion's `before`, which is strict — a page exactly
     N days old is not yet named — and no test can assert that from the builder's
