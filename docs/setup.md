@@ -176,8 +176,8 @@ logs the scheduled jobs being registered and then goes quiet. If a variable is
 missing, the log shows `David cannot start` followed by the complete list.
 
 **Updates:** every push to your fork's `main` redeploys. If a build fails,
-Railway keeps the previous version running and says nothing in Telegram — check
-the deployment status after you push.
+Railway keeps the previous version running and says nothing in Telegram — after
+you push, send `v`: it answers with the commit that is actually running.
 
 ## 7. Run locally
 
@@ -206,6 +206,7 @@ Send these in order. Each one checks a different piece of the setup.
 | Send | Expect | If not |
 | --- | --- | --- |
 | `h` | the command list | no reply at all → `OWNER_ID` is wrong, or the bot is not running |
+| `v` | the commit, branch and deployment that are running, and for how long | on Railway, a line reading `unknown` → [Troubleshooting](troubleshooting.md#v-says-unknown---is-not-set). On a local run all four are `unknown`, as they should be |
 | `Month` | this month's page (e.g. `October 2026`), created in Months, with its ID | Notion access — see [Troubleshooting](troubleshooting.md) |
 | `Diag` | the Expenses database, its columns, and the month page — all found | it names what is missing |
 | `Add e Test 1` | the expense saved, in category Food | a Notion error naming a column → [schema](notion-schema.md) |

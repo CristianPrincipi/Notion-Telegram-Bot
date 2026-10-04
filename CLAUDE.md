@@ -29,7 +29,7 @@ before changing what a rule protects. The overview and the full module map are i
 | The clock | `calendar_client.now_local()`. Never a clock read without a timezone (scanned) |
 | Markdown to Telegram | `telegram_text` — `escape_md` at every interpolation site; `reply` / `send` are the only `parse_mode` senders |
 | Notion column names, looked-up page titles | `config.py`'s NOTION SCHEMA, per database even where two agree (scanned) |
-| Environment variables | `config.REQUIRED_ENV` / `OPTIONAL_ENV`; a default only through `config.env_or` (scanned) |
+| Environment variables | `config.REQUIRED_ENV` / `OPTIONAL_ENV`; a default only through `config.env_or` (scanned). Railway's own `RAILWAY_*` are read in `services/version.py`, outside that contract on purpose |
 | Splitting a long reply | `bot/long_messages.py` |
 | The pending list and the undo record | `pending_choice.py` — ONE of each across every destructive command |
 | Cutting source text to a budget | `run_learn` (`SUMMARY_INPUT_CHARS`); `run_implement` / `run_implement_diet` via `fit_to_budget` |
@@ -45,8 +45,8 @@ before changing what a rule protects. The overview and the full module map are i
 - **Nor is an empty result an error.** `search_page_in_db` answers `(page, None)` /
   `(None, None)` / `(None, error)`; a create-if-missing caller refuses on an error and
   never reads it as missing.
-- **The three error reporters send plain text on purpose** — `david.notify_error`,
-  `david.on_error`, `proactive.scheduler._report_error`. Do not convert them to Markdown.
+- **The three error reporters and `v` send plain text on purpose** — `david.notify_error`,
+  `david.on_error`, `proactive.scheduler._report_error`, `run_version`. Never convert them to Markdown.
 - **One budget, one number, one cut.** Extractors return text WHOLE; prompt builders
   never re-slice; the SECTION half of a merge prompt is never clipped (refuse instead);
   the reply says when source text was cut; the cut runs before `is_unverified_source`.
@@ -133,8 +133,8 @@ pip install -r requirements-dev.txt && ruff check . && pytest
 ## Deployment
 
 A push to `main` deploys on Railway, and a failed deploy is silent — the previous
-version keeps running. Branch → `/ship-feature` (contract, CHANGELOG, tests, PR) → `test`
-green → merge; never commit to `main` — it is protected, owner included; never loosen that.
+version keeps running (`v` says which). Branch → `/ship-feature` (contract, CHANGELOG, tests,
+PR) → `test` green → merge; never commit to `main` — it is protected, owner included; never loosen that.
 The review action is pinned by SHA with a model and answers with a COMMENT — green with
 none reported nothing; if it fails in seconds with no tokens spent, replace `CLAUDE_CODE_OAUTH_TOKEN`.
 

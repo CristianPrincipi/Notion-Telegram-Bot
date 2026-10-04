@@ -58,6 +58,7 @@ each row — and `Implement … - Diet` updates only the rows a source is about.
 | `Agenda [Day]` | What is on the calendar. Today if no day is given |
 | `Cancel [Name]` | Delete a calendar event in the next 30 days. Several matches → numbered list with their times. `undo` re-creates it |
 | `Diag` / `Find [name]` / `DBs` | Notion diagnostics: check the Expenses setup, find any page's ID, list every database David can see |
+| `v` | Which build is running: commit, branch, commit subject, deployment ID and uptime. `version` works too |
 | `h` | The in-chat command list. `help` and `aiuto` work too |
 
 ### Expenses
@@ -149,6 +150,23 @@ not discovered later.
 names whatever is missing. `Find Literature` searches every page and database
 David can see and replies with their IDs. `DBs` lists every database. All three
 are read-only.
+
+`v` says which build is answering you:
+
+```
+🤖 David
+commit   b09739d
+branch   main
+message  The calendar could be written to and never read or undone
+deploy   4addf1d4-c147-4cc9-a004-9b62180709f4
+up       2026-08-17 17:07  (3h 12m)
+```
+
+A merge is not a deploy: when a build fails, Railway keeps the previous version
+running and says nothing. After you push, send `v` — if the commit is not the one
+you pushed, it did not land. Where a value is not available (a local run, for
+one) the line says `unknown` and names what was missing; it never prints a
+placeholder that could pass for a real build.
 
 ## Dates and times
 

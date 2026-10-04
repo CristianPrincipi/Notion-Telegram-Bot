@@ -118,8 +118,21 @@ using. It also runs by itself every night at 00:05.
 
 ## I pushed a change and nothing happened
 
-Railway keeps the previous version running when a build fails, and says nothing
-in Telegram. Open the deployment list in Railway and check the latest one.
+Send `v`. It answers with the commit David is actually running; if that is not
+the commit you pushed, the deploy did not land. Railway keeps the previous
+version running when a build fails — or is never started — and says nothing in
+Telegram. Open the deployment list in Railway and check the latest one.
+
+If `v` itself gets "I didn't get that", the running version is older than the
+command.
+
+## `v` says `unknown — … is not set`
+
+David reads the build from variables Railway injects — see
+[Configuration](configuration.md#set-by-railway-not-by-you). On a local run they
+do not exist, and `unknown` is the correct answer there. On Railway, a missing
+one most likely means the service was not deployed from a GitHub repository, or
+that Railway has renamed the variable. Do not set it by hand.
 
 ## The automated PR review fails within seconds
 
