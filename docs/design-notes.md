@@ -487,8 +487,9 @@ be guessed, because the step added for the background agents printed the final
 message, and the message said it. So this is a third way to be green and silent,
 beside a workflow edit and a lost setting, and the only one that is the review
 working as written. The judgement is a model's, not a threshold: a five-file
-documentation pull request was reviewed three times. The rule already covered it —
-no comment, nothing reported — and the tests were that pull request's only gate.
+documentation pull request was reviewed three times. The rule already covered the
+1.1.0 release's skip — no comment, nothing reported — and the tests were that
+release's only gate.
 
 ### `v` answers from the running process, never from the repository
 
