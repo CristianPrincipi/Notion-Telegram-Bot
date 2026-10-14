@@ -22,7 +22,7 @@ FILE_URL   = "https://api.telegram.org/file/bot-token/doc.pdf"
 PDF_BYTES  = b"%PDF-1.4 pretend this is a book"
 BOOK_PAGE  = "book-page-id"
 
-QUOTE_CAPTION = "Add q Dune / On Fear / Fear is the mind-killer / I will face my fear"
+QUOTE_CAPTION = "Add q Dune / On Fear / Fear is the mind-killer | I will face my fear"
 
 
 @pytest.fixture
@@ -101,6 +101,21 @@ def test_quote_caption_extracts_from_the_attached_pdf(spies):
 
 
 @responses.activate
+def test_a_begin_text_holding_a_slash_reaches_the_extractor_whole(spies):
+    """Only the " | " cuts Begin from End, so a slash in the passage is the
+    passage's own."""
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
+    update = upload("Add q Dune / On Fear / Fear is / the mind-killer | I will face my fear")
+
+    run(david.handle_document(update, FakeContext()))
+
+    assert spies["find_Book_Page"] == {"book_name": "Dune"}
+    assert spies["extract"]["begin_text"] == "Fear is / the mind-killer"
+    assert spies["extract"]["end_text"]   == "I will face my fear"
+    assert spies["add_Quote"]["quote_title"] == "On Fear"
+
+
+@responses.activate
 def test_quote_caption_previews_what_it_extracted(spies):
     responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
     update = upload(QUOTE_CAPTION)
@@ -169,8 +184,9 @@ def test_quote_caption_reports_a_failed_notion_save(spies, monkeypatch):
 @pytest.mark.parametrize("caption", [
     "",
     "here you go",
-    "Add q Dune / On Fear / no end marker",        # needs a third " / " to be a PDF quote
-    "Add q Dune - On Fear - Fear is / the end",    # the old " - " form
+    "Add q Dune / On Fear / no end marker",        # needs a " | " to be a PDF quote
+    "Add q Dune / On Fear / Fear is / the end",    # the old all-slash form
+    "Add q Dune - On Fear - Fear is | the end",    # the older " - " form
     "Implement Something - Brain",                 # text-only command, not a file one
 ])
 def test_unrecognised_captions_explain_the_supported_ones(spies, caption):
@@ -199,8 +215,8 @@ def _advertised_pdf_forms():
 
     unrecognised = upload("here you go")
     run(david.handle_document(unrecognised, FakeContext()))
-    typed = FakeUpdate(text="Add q Dune / On Fear / Fear is / the mind-killer")
-    run(books.run_add_quote("Dune", "On Fear", "Fear is / the mind-killer",
+    typed = FakeUpdate(text="Add q Dune / On Fear / Fear is | the mind-killer")
+    run(books.run_add_quote("Dune", "On Fear", "Fear is | the mind-killer",
                             **with_update(typed)))
 
     forms = {"h": in_help, "unrecognised caption": shown(unrecognised),

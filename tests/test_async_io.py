@@ -156,7 +156,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     monkeypatch.setattr(books, "extract_quote_from_pdf",
                         lambda pdf, begin, end: ("the quote", None))
     update = FakeUpdate(
-        caption="Add q Dune / On Fear / Fear is / the mind-killer",
+        caption="Add q Dune / On Fear / Fear is | the mind-killer",
         document=FakeDocument())
 
     run(david.handle_document(update, FakeContext()))

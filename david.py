@@ -366,9 +366,10 @@ COMMANDS = [
     ),
     Command(
         name="Add q",
-        # Two shapes, one pattern: a full quote, or the "[Begin] / [End]" markers
+        # Two shapes, one pattern: a full quote, or the "[Begin] | [End]" markers
         # that only mean something on an attached PDF — the handler tells the
-        # second apart and explains the upload flow.
+        # second apart and explains the upload flow. Begin and End take " | ",
+        # not a third " / ", so a typed quote may hold a slash.
         #
         # " / " separates, not " - " as in `Add b`: a book or a quote title often
         # carries a dash ("Dune - Part One"), and the parts are cut at the first
@@ -377,7 +378,7 @@ COMMANDS = [
         handler=cmd_add_quote,
         help=Help("🖋️ *ADD QUOTE*",
                   usage=("Add q [Book] / [Title] / [Full quote]",
-                         "Add q [Book] / [Title] / [Begin text] / [End text]"),
+                         "Add q [Book] / [Title] / [Begin text] | [End text]"),
                   notes=("The second form reads the quote out of a PDF — attach it "
                          "and send the command as the caption",)),
     ),
