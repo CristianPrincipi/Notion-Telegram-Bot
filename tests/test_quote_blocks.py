@@ -114,7 +114,7 @@ def pdf_quote(monkeypatch):
 
     def extracting(text):
         monkeypatch.setattr(books, "extract_quote_from_pdf", lambda *args: (text, None))
-        update = FakeUpdate(caption="Add q Dune / On Fear / Begin / End")
+        update = FakeUpdate(caption="Add q Dune / On Fear / Begin | End")
         run(books.run_quote_from_pdf("Dune", "On Fear", "Begin", "End",
                                      download=_download, **with_update(update)))
         return update, saved

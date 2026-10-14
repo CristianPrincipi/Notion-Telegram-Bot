@@ -268,7 +268,10 @@ async def _report_lookup_failure(book_name, err, notify):
 
 
 async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify_md=None):
-    """`Add q [Book] / [Title] / [Full quote]`, and the refusal for the PDF form."""
+    """`Add q [Book] / [Title] / [Full quote]`, and the refusal for the PDF form.
+
+    Only " | " marks the PDF form; a slash in a typed quote is the quote's own.
+    """
     notify_md = notify_md or notify
 
     await notify(f"🔍 Searching '{book_name}' in library...")
@@ -282,10 +285,10 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
         return
 
     # --- PDF EXTRACTION MODE: attach PDF with this caption instead ---
-    if " / " in quote_content:
+    if " | " in quote_content:
         await notify_md(
             "📎 To extract a quote from a PDF, *attach the PDF file* and use it as the caption:\n\n"
-            "`Add q [Book] / [Title] / [Begin text] / [End text]`",
+            "`Add q [Book] / [Title] / [Begin text] | [End text]`",
         )
         return
 
@@ -302,7 +305,7 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
 
 async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
                              *, download, notify, notify_md=None):
-    """`Add q [Book] / [Title] / [Begin] / [End]` sent as an attachment's caption.
+    """`Add q [Book] / [Title] / [Begin] | [End]` sent as an attachment's caption.
 
     `download` is an awaitable returning (pdf_bytes, error) — the bot layer binds
     it to the attached document. Called only after the book is found, so a

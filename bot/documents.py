@@ -33,7 +33,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     Supported captions:
       Learn pdf                                          → summarise PDF, save to Learn DB
-      Add q [Book] / [Title] / [Begin text] / [End text] → extract quote from attached PDF
+      Add q [Book] / [Title] / [Begin text] | [End text] → extract quote from attached PDF
     """
     # Same correlation tagging as handle_message — a PDF upload is a command too,
     # and it is the one most likely to run detached and interleave with another.
@@ -57,8 +57,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      learn_pdf_upload(update, context, doc, caption), "learn-pdf")
         return
 
-    # ── Add q [Book] / [Title] / [Begin] / [End]  (extract quote from PDF) ────
-    quote_pdf_match = re.match(r"(?i)add q (.+?) / (.+?) / (.+?) / (.+)", caption)
+    # ── Add q [Book] / [Title] / [Begin] | [End]  (extract quote from PDF) ────
+    # " | ", not " / ", cuts Begin from End: a typed quote may hold a slash, and
+    # so may the passage the markers quote.
+    quote_pdf_match = re.match(r"(?i)add q (.+?) / (.+?) / (.+?) \| (.+)", caption)
     if quote_pdf_match:
         # Checked before the Notion lookup so a wrong-format file costs no API call.
         err = validate_pdf_attachment(doc)
@@ -88,5 +90,5 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         "📎 File received. Supported captions:\n\n"
         "`Learn pdf` — summarise and save to Learn DB\n"
-        "`Add q [Book] / [Title] / [Begin] / [End]` — extract quote from this PDF",
+        "`Add q [Book] / [Title] / [Begin] | [End]` — extract quote from this PDF",
     )

@@ -10,9 +10,10 @@ Notable changes to David. The format follows
 
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption
-  `Add q Dune / Fear / I must not fear / it will be gone`. A book or a quote
-  title can now contain a dash. The old form is no longer understood. `Add b`
-  is unchanged.
+  `Add q Dune / Fear / I must not fear | it will be gone` — the first and last
+  words of the passage are separated by ` | `. A book or a quote title can now
+  contain a dash, and a typed quote a slash. The old form is no longer
+  understood. `Add b` is unchanged.
 
 ### Fixed
 

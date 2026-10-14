@@ -365,12 +365,18 @@ ROUTES = [
     Route("Add q Dune - On Fear - Fear is the mind-killer.",
           NO_HANDLER, reply("I didn't get that"),
           "the old ' - ' form of Add q is not understood"),
-    # " / " in the body means "extract from the attached PDF", which only works
+    # " | " in the body means "extract from the attached PDF", which only works
     # on a document upload — as plain text it must explain that, not save the
     # markers as if they were the quote.
-    Route("Add q Dune / Ch 1 / Fear is / the mind-killer",
+    Route("Add q Dune / Ch 1 / Fear is | the mind-killer",
           "find_Book_Page", {"book_name": "Dune"},
-          "begin / end markers without an attachment explain the PDF flow"),
+          "begin | end markers without an attachment explain the PDF flow"),
+    # What the pipe buys: " / " inside a typed quote is the quote's own.
+    Route("Add q Dune / Ch 1 / Fear is / the mind-killer",
+          "find_Book_Page → add_Quote",
+          {"book_name": "Dune", "quote_title": "Ch 1",
+           "quote_text": "Fear is / the mind-killer"},
+          "' / ' inside a typed quote is saved as written"),
 
     # ── LEARN ──────────────────────────────────────────────────────────────────
     Route("Learn video https://youtu.be/abc", "handle_learn",

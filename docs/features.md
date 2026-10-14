@@ -50,7 +50,7 @@ each row — and `Implement … - Diet` updates only the rows a source is about.
 | `Month` | Make sure this month's page exists, and show its ID. Happens by itself on the 1st |
 | `Add b [Name] - [Author] - [Genre]` | Add a book. Genres: `s` `h` `m` `p` `a` `ph` |
 | `Add q [Book] / [Title] / [Quote]` | Add a quote to a book. The parts are separated by ` / `, not ` - ` |
-| `Add q [Book] / [Title] / [Begin] / [End]` | Cut a quote out of an attached PDF — send the command as the file's caption |
+| `Add q [Book] / [Title] / [Begin] \| [End]` | Cut a quote out of an attached PDF — send the command as the file's caption |
 | `Learn video\|article\|podcast\|book\|pdf [source]` | Summarise into Notion. A URL already saved is reported instead of summarised again; end the command with ` !` to re-summarise anyway |
 | `Implement [Page] - [Area]` | Merge a Learn page into that area's Manual |
 | `Get [Topic] - [Area]` | Read a section of that area's Manual. `Get ? - [Area]` lists every topic |
@@ -86,17 +86,20 @@ Add q Dune / Fear / I must not fear. Fear is the mind-killer.
 
 `Add q` separates its parts with a slash, so a book or a title can contain a
 dash: `Add q Dune - Part One / Fear - Litany / I must not fear.` A slash counts
-only with a space on each side, so `and/or` stays part of a title.
+only with a space on each side, so `and/or` stays part of a title. Once the
+title is cut, the rest is the quote, slashes included: a poem written
+`line / line` is saved as written.
 
 However long it is, a quote is saved as one quote in the book. Typed, it can be
 as long as one Telegram message, 4,096 characters: Telegram sends anything
 longer as a second message, which David does not recognise.
 
 For a long quote in a PDF, attach the PDF and write the command as its caption,
-giving the first and last few words: `Add q Dune / Fear / I must not fear / it
-will be gone`. David finds the passage and saves everything between them, up to
-180,000 characters (about a hundred pages). A longer passage is refused, and
-nothing is saved.
+giving the first and last few words, separated by ` | `: `Add q Dune / Fear /
+I must not fear | it will be gone`. David finds the passage and saves everything
+between them, up to 180,000 characters (about a hundred pages). A longer passage
+is refused, and nothing is saved. The same command typed without a file gets a
+reply saying to attach the PDF, so the two markers are never saved as the quote.
 
 ### Learn
 
@@ -298,6 +301,6 @@ again would add a second copy of the part that is already there.
 
 ### Files
 
-PDFs are accepted with the `Learn pdf` and `Add q … / …` captions. Other file
+PDFs are accepted with the `Learn pdf` and `Add q … | …` captions. Other file
 types and files over **15 MB** are refused, and a download that takes over two
 minutes is abandoned rather than left hanging.
