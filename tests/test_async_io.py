@@ -124,7 +124,7 @@ DAVID_COMMANDS = [
     ("Add e Carrefour 2.20",       ("add_Expenses",)),
     ("U e Carrefour 12.50",        ("find_expense_matches", "update_Expense")),
     ("D e Carrefour",              ("find_expense_matches", "delete_Expense")),
-    ("Add q Dune - On Fear - Fear is the mind-killer.",
+    ("Add q Dune / On Fear / Fear is the mind-killer.",
      ("find_Book_Page", "add_Quote")),
 ]
 
@@ -156,7 +156,7 @@ def test_the_pdf_quote_upload_runs_every_step_off_the_loop(offloaded, david_stub
     monkeypatch.setattr(books, "extract_quote_from_pdf",
                         lambda pdf, begin, end: ("the quote", None))
     update = FakeUpdate(
-        caption="Add q Dune - On Fear - Fear is / the mind-killer",
+        caption="Add q Dune / On Fear / Fear is / the mind-killer",
         document=FakeDocument())
 
     run(david.handle_document(update, FakeContext()))

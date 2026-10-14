@@ -339,19 +339,36 @@ ROUTES = [
           "trailing space after the genre code is tolerated"),
 
     # ── ADD QUOTE ──────────────────────────────────────────────────────────────
-    Route("Add q Dune - On Fear - Fear is the mind-killer.",
+    # `Add q` alone separates its parts with " / "; `Add b` keeps " - ".
+    Route("Add q Dune / On Fear / Fear is the mind-killer.",
           "find_Book_Page → add_Quote",
           {"book_name": "Dune", "quote_title": "On Fear", "quote_text": "Fear is the mind-killer."},
           "add quote"),
-    Route("Add q Dune - On Fear - line one\nline two\nline three",
+    Route("Add q Dune / On Fear / line one\nline two\nline three",
           "find_Book_Page → add_Quote",
           {"book_name": "Dune", "quote_title": "On Fear",
            "quote_text": "line one\nline two\nline three"},
           "multi-line quote body is preserved"),
+    # What the slash buys: " - " is free to be part of a book or a title.
+    Route("Add q Dune - Part One / Fear - Litany / Fear is the mind-killer.",
+          "find_Book_Page → add_Quote",
+          {"book_name": "Dune - Part One", "quote_title": "Fear - Litany",
+           "quote_text": "Fear is the mind-killer."},
+          "' - ' inside a book or a title stays in it"),
+    # Only a slash with a space on each side separates.
+    Route("Add q AC/DC / Fear and/or Hope / Fear is the mind-killer.",
+          "find_Book_Page → add_Quote",
+          {"book_name": "AC/DC", "quote_title": "Fear and/or Hope",
+           "quote_text": "Fear is the mind-killer."},
+          "a slash without spaces is part of the name"),
+    # The old separator is no longer `Add q`: refused, never guessed at.
+    Route("Add q Dune - On Fear - Fear is the mind-killer.",
+          NO_HANDLER, reply("I didn't get that"),
+          "the old ' - ' form of Add q is not understood"),
     # " / " in the body means "extract from the attached PDF", which only works
     # on a document upload — as plain text it must explain that, not save the
     # markers as if they were the quote.
-    Route("Add q Dune - Ch 1 - Fear is / the mind-killer",
+    Route("Add q Dune / Ch 1 / Fear is / the mind-killer",
           "find_Book_Page", {"book_name": "Dune"},
           "begin / end markers without an attachment explain the PDF flow"),
 
@@ -458,7 +475,7 @@ ROUTES = [
           {"user_text": "Remind Add e coffee 5 12.06 - 14.30"},
           "precedence: reminder beats expense"),
     # Quote is checked before the expense commands, so a quote may contain one.
-    Route("Add q Dune - Note - Add e coffee 5",
+    Route("Add q Dune / Note / Add e coffee 5",
           "find_Book_Page → add_Quote",
           {"book_name": "Dune", "quote_title": "Note", "quote_text": "Add e coffee 5"},
           "precedence: quote body may contain another command"),
@@ -470,7 +487,7 @@ ROUTES = [
           "'add e' no longer fires mid-sentence"),
     # This row is what tells re.fullmatch apart from re.search for the quote
     # pattern — every other quote row matches the whole string either way.
-    Route("note: Add q Dune - On Fear - Fear is the mind-killer.",
+    Route("note: Add q Dune / On Fear / Fear is the mind-killer.",
           NO_HANDLER, reply("I didn't get that"),
           "'Add q' no longer fires mid-sentence"),
 
@@ -688,6 +705,27 @@ def test_every_complete_example_in_the_help_actually_runs(router):
             )
 
 
+def filled(usage):
+    """A usage line with each `[Placeholder]` replaced by its own name."""
+    return re.sub(r"\[([^\]]+)\]", r"\1", usage)
+
+
+def test_the_quote_help_shows_the_separator_the_pattern_accepts(router):
+    """The help's typed `Add q`, filled in, saves a quote with each part in place.
+
+    The test above skips every usage with a placeholder, so a separator changed
+    in the pattern and not in the help — or the other way round — would pass it.
+    """
+    quote = next(c for c in david.COMMANDS if c.name == "Add q")
+    typed = next(u for u in quote.help.usage if "[Full quote]" in u)
+
+    run(david.handle_message(FakeUpdate(text=filled(typed)), FakeContext()))
+
+    assert router.chain == "find_Book_Page → add_Quote", f"{filled(typed)!r} did not save"
+    assert router.parsed_args == {"book_name": "Book", "quote_title": "Title",
+                                  "quote_text": "Full quote"}
+
+
 def test_help_advertises_exactly_the_learn_types_learn_supports():
     """The drift this registry exists to prevent, asserted directly.
 
@@ -823,7 +861,7 @@ def test_the_docs_list_exactly_the_learn_types_learn_supports():
 
 def test_quote_reports_a_book_that_is_not_in_the_library(router, monkeypatch):
     monkeypatch.setattr(books, "find_Book_Page", lambda book_name: (None, None))
-    update = FakeUpdate(text="Add q Missing - Ch 1 - some text")
+    update = FakeUpdate(text="Add q Missing / Ch 1 / some text")
 
     run(david.handle_message(update, FakeContext()))
 

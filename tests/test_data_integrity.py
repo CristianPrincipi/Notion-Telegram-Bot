@@ -144,7 +144,7 @@ def test_non_positive_amounts_are_rejected(notion_writes, text):
 
 @pytest.mark.parametrize("text", [
     "Please add e coffee 3 for me",
-    "note: Add q Dune - On Fear - Fear is the mind-killer.",
+    "note: Add q Dune / On Fear / Fear is the mind-killer.",
     "I should add b Dune - Herbert - s sometime",
 ])
 def test_commands_do_not_fire_mid_sentence(notion_writes, text):

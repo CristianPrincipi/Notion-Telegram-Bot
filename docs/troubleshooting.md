@@ -82,6 +82,17 @@ Check it against **Settings → your calendar → Integrate calendar → Calenda
 - **No transcript** — the video has no captions Supadata can read. Nothing to
   fix on your side.
 
+## A long quote is refused or cut
+
+- **"That passage is … characters"** — a quote cut out of a PDF holds at most
+  180,000 characters, about a hundred pages. The Begin text most likely matched
+  earlier than you meant, or the End text later; longer markers are less likely
+  to match somewhere else. Nothing was saved.
+- **"I didn't get that" right after pasting a long quote** — Telegram stops a
+  message at 4,096 characters and sends the rest as a second message, which has
+  no `Add q` in front. The first part WAS saved, as a quote of its own: delete it
+  in Notion, then use the PDF form for that passage.
+
 ## A summary or Manual comes back cut short
 
 The reply says the answer was truncated and names `ANTHROPIC_MAX_TOKENS`. Raise

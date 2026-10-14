@@ -119,18 +119,21 @@ def test_written_is_still_a_list():
 
 
 # ─── 2. QUOTES ─────────────────────────────────────────────────────────────────
-# The user-facing case: a long quote is one heading plus one block per 1800
-# characters, so a book-length passage is genuinely several batches.
+# A quote used to be one block per 1800 characters, so a long passage was
+# several batches and could land in part. It is one heading and ONE quote block
+# now (tests/test_quote_blocks.py), so the longest quote allowed is a single
+# request: it lands whole or not at all. The flows keep their partial-write
+# branch, driven below with doubles, because that is the convention for every
+# batched append.
 
 @responses.activate
-def test_add_quote_reports_what_reached_the_page():
-    responses.add(responses.PATCH, CHILDREN_URL, status=200, json=created(100))
+def test_add_quote_is_one_request_so_a_failure_writes_nothing():
     responses.add(responses.PATCH, CHILDREN_URL, status=502, body="bad gateway")
 
-    written, err = books.add_Quote(BLOCK_ID, "On Fear", "x" * (1800 * 150))
+    written, err = books.add_Quote(BLOCK_ID, "On Fear", "x" * books.QUOTE_MAX_CHARS)
 
-    assert err and written.partial
-    assert written.batches_done == 1
+    assert err and not written.partial
+    assert (written.batches_done, written.batches_total) == (0, 1)
 
 
 @pytest.fixture
@@ -140,7 +143,7 @@ def book_found(monkeypatch):
 
 def quote_it(monkeypatch, result):
     monkeypatch.setattr(books, "add_Quote", lambda page_id, title, text: result)
-    update = FakeUpdate(text="Add q Dune - On Fear - Fear is the mind-killer")
+    update = FakeUpdate(text="Add q Dune / On Fear / Fear is the mind-killer")
     run(books.run_add_quote("Dune", "On Fear", "Fear is the mind-killer",
                             **with_update(update)))
     return update

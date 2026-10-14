@@ -334,7 +334,7 @@ NOT_DETACHED = [
     "U e Carrefour 5",
     "D e Carrefour",
     "Add b Dune - Herbert - s",
-    "Add q Dune - On Fear - Fear is the mind-killer.",
+    "Add q Dune / On Fear / Fear is the mind-killer.",
 ]
 
 
