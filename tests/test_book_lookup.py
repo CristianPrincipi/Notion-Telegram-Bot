@@ -2,7 +2,7 @@
 
 It returned a bare page id or `None`, and `None` meant both "no such book" and
 "Notion did not answer" — the collapse CLAUDE.md forbids ("An error is never an
-empty result"). So during an outage `Add q Dune - …` replied "I didn't find
+empty result"). So during an outage `Add q Dune / …` replied "I didn't find
 'Dune' in the library": a confident statement about your library, made when
 David had not been able to read it, sending you to check a title that was fine.
 

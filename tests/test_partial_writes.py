@@ -143,7 +143,7 @@ def book_found(monkeypatch):
 
 def quote_it(monkeypatch, result):
     monkeypatch.setattr(books, "add_Quote", lambda page_id, title, text: result)
-    update = FakeUpdate(text="Add q Dune - On Fear - Fear is the mind-killer")
+    update = FakeUpdate(text="Add q Dune / On Fear / Fear is the mind-killer")
     run(books.run_add_quote("Dune", "On Fear", "Fear is the mind-killer",
                             **with_update(update)))
     return update

@@ -5,6 +5,8 @@ text message. Kept separate because the PDF quote path also has to download the
 file, which needs `responses` rather than a plain spy.
 """
 
+import re
+
 import pytest
 import responses
 
@@ -12,13 +14,15 @@ import bot.learn
 import david
 from clients import telegram_files
 from services import books
-from conftest import FakeContext, FakeDocument, FakeUpdate, run, written_nothing, written_ok
+from conftest import (
+    FakeContext, FakeDocument, FakeUpdate, run, with_update, written_nothing, written_ok,
+)
 
 FILE_URL   = "https://api.telegram.org/file/bot-token/doc.pdf"
 PDF_BYTES  = b"%PDF-1.4 pretend this is a book"
 BOOK_PAGE  = "book-page-id"
 
-QUOTE_CAPTION = "Add q Dune - On Fear - Fear is the mind-killer / I will face my fear"
+QUOTE_CAPTION = "Add q Dune / On Fear / Fear is the mind-killer / I will face my fear"
 
 
 @pytest.fixture
@@ -165,7 +169,8 @@ def test_quote_caption_reports_a_failed_notion_save(spies, monkeypatch):
 @pytest.mark.parametrize("caption", [
     "",
     "here you go",
-    "Add q Dune - On Fear - no slash separator",   # needs " / " to be a PDF quote
+    "Add q Dune / On Fear / no end marker",        # needs a third " / " to be a PDF quote
+    "Add q Dune - On Fear - Fear is / the end",    # the old " - " form
     "Implement Something - Brain",                 # text-only command, not a file one
 ])
 def test_unrecognised_captions_explain_the_supported_ones(spies, caption):
@@ -175,6 +180,50 @@ def test_unrecognised_captions_explain_the_supported_ones(spies, caption):
 
     assert update.message.replied_with("File received. Supported captions")
     assert spies == {}
+
+
+def filled(usage):
+    """A usage line with each `[Placeholder]` replaced by its own name."""
+    return re.sub(r"\[([^\]]+)\]", r"\1", usage)
+
+
+def _advertised_pdf_forms():
+    """Every place a person is shown the PDF caption: `h`, the reply to an
+    unrecognised caption, and the reply to the PDF form typed without a file."""
+    quote = next(c for c in david.COMMANDS if c.name == "Add q")
+    in_help = [u for u in quote.help.usage if "[Begin" in u]
+
+    def shown(update):
+        return [span for text in update.message.reply_texts
+                for span in re.findall(r"`(Add q [^`]+)`", text)]
+
+    unrecognised = upload("here you go")
+    run(david.handle_document(unrecognised, FakeContext()))
+    typed = FakeUpdate(text="Add q Dune / On Fear / Fear is / the mind-killer")
+    run(books.run_add_quote("Dune", "On Fear", "Fear is / the mind-killer",
+                            **with_update(typed)))
+
+    forms = {"h": in_help, "unrecognised caption": shown(unrecognised),
+             "typed without a file": shown(typed)}
+    assert all(forms.values()), f"a place no longer shows the PDF form: {forms}"
+    return [form for found in forms.values() for form in found]
+
+
+@responses.activate
+def test_every_pdf_form_david_shows_is_a_caption_it_accepts(spies):
+    """The PDF form, as `h` and the caption reply print it, filled in, extracts
+    with each part in place — so neither can keep a separator the router dropped."""
+    responses.add(responses.GET, FILE_URL, body=PDF_BYTES, status=200)
+
+    for form in _advertised_pdf_forms():
+        book, title, begin, end = re.findall(r"\[([^\]]+)\]", form)
+        spies.clear()
+        run(david.handle_document(upload(filled(form)), FakeContext()))
+
+        assert spies.get("find_Book_Page") == {"book_name": book}, form
+        assert spies["add_Quote"]["quote_title"] == title, form
+        assert spies["extract"]["begin_text"] == begin, form
+        assert spies["extract"]["end_text"] == end, form
 
 
 # ─── ATTACHMENT LIMITS ─────────────────────────────────────────────────────────

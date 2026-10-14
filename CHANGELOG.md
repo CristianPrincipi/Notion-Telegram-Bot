@@ -6,6 +6,14 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`Add q` separates its parts with ` / ` instead of ` - `:**
+  `Add q Dune / Fear / I must not fear.`, and as a PDF caption
+  `Add q Dune / Fear / I must not fear / it will be gone`. A book or a quote
+  title can now contain a dash. The old form is no longer understood. `Add b`
+  is unchanged.
+
 ### Fixed
 
 - **A long quote is saved as one quote.** `Add q` used to start a new quote block
