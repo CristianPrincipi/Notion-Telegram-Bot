@@ -84,9 +84,15 @@ Add b Dune - Frank Herbert - a
 Add q Dune - Fear - I must not fear. Fear is the mind-killer.
 ```
 
+However long it is, a quote is saved as one quote in the book. Typed, it can be
+as long as one Telegram message, 4,096 characters: Telegram sends anything
+longer as a second message, which David does not recognise.
+
 For a long quote in a PDF, attach the PDF and write the command as its caption,
 giving the first and last few words: `Add q Dune - Fear - I must not fear / it
-will be gone`. David finds the passage and saves everything between them.
+will be gone`. David finds the passage and saves everything between them, up to
+180,000 characters (about a hundred pages). A longer passage is refused, and
+nothing is saved.
 
 ### Learn
 
@@ -281,8 +287,8 @@ with suspicion:
 
 ### Half-written pages
 
-Notion accepts at most 100 blocks per write, so a long summary or quote is saved
-in several batches. If one fails part-way, the reply says how many landed ("2 of
+Notion accepts at most 100 blocks per write, so a long summary is saved in
+several batches. If one fails part-way, the reply says how many landed ("2 of
 5 batches written") instead of a plain failure — because running the command
 again would add a second copy of the part that is already there.
 

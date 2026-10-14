@@ -23,7 +23,7 @@ import PyPDF2
 
 from clients import telegram_files
 from clients.notion_client import (
-    CREATED_DESC, append_children, body_excerpt, notion_request, query_database,
+    CREATED_DESC, Written, append_children, body_excerpt, notion_request, query_database,
 )
 from config import (
     BOOK_AREA_RELATION, BOOK_AUTHOR_PROPERTY, BOOK_GENRE_PROPERTY, BOOK_TITLE_PROPERTY,
@@ -139,25 +139,48 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         return None, f"PDF extraction error: {e}"
 
 
-def chunk_text(text, size=1800):
+# Notion caps one piece of text at 2000 characters (1800 leaves a margin) and
+# one block at 100 pieces, so this is the most one quote block can hold: about
+# 180 KB of Latin text, inside Notion's 500 KB per request.
+QUOTE_PIECE_CHARS = 1800
+QUOTE_MAX_PIECES  = 100
+QUOTE_MAX_CHARS   = QUOTE_PIECE_CHARS * QUOTE_MAX_PIECES
+
+
+def chunk_text(text, size=QUOTE_PIECE_CHARS):
     """Split long text into chunks compatible with Notion limits."""
     return [text[i:i + size] for i in range(0, len(text), size)]
+
+
+def quote_too_long(quote_text):
+    """The refusal for a passage one quote block cannot hold, or None."""
+    if len(quote_text) <= QUOTE_MAX_CHARS:
+        return None
+    return (f"❌ That passage is {len(quote_text):,} characters, and one quote holds "
+            f"at most {QUOTE_MAX_CHARS:,}. Nothing was saved — pick Begin and End "
+            "markers closer together.")
 
 
 def add_Quote(page_id, quote_title, quote_text):
     """Add a quote section to a book page. Returns (written, error).
 
-    A long quote is many blocks and Notion caps an append at 100 of them, so this
-    is several requests with no transaction across them. It used to run its own
-    copy of that batching loop and return a bare `False` the moment one batch
-    failed — while every batch before it was already on the page. You were told
-    the quote had not been saved, two fifths of it had, and re-running appended
-    those two fifths a second time on top.
+    ONE QUOTE, ONE BLOCK. The text is cut into 1800-character pieces for
+    Notion's per-piece cap, and every piece goes into the SAME quote block —
+    Notion joins them seamlessly. Each piece used to get a block of its own, so
+    a pasted quote of 2500 characters showed up in the book as two quotes.
 
-    So it returns notion_client's Written, which says how much landed, and it
-    borrows the batching from `append_children` rather than repeating it — the
-    loop here was that function minus the `after` anchor.
+    A passage one block cannot hold is refused here, before any request: a
+    second block of that size would take a request past Notion's 500 KB,
+    because append_children batches by block count, not bytes.
+
+    It returns notion_client's Written, like every batched append: a heading
+    and one block are a single request, so a quote lands whole or not at all,
+    but the callers keep the partial-write branch the convention asks for.
     """
+    refusal = quote_too_long(quote_text)
+    if refusal:
+        return Written(), refusal
+
     children = [
         {
             "object": "block",
@@ -176,21 +199,21 @@ def add_Quote(page_id, quote_title, quote_text):
         }
     ]
 
-    for chunk in chunk_text(quote_text):
-        children.append({
-            "object": "block",
-            "type": "quote",
-            "quote": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": chunk
-                        }
+    children.append({
+        "object": "block",
+        "type": "quote",
+        "quote": {
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {
+                        "content": piece
                     }
-                ]
-            }
-        })
+                }
+                for piece in chunk_text(quote_text)
+            ]
+        }
+    })
 
     written, err = append_children(page_id, children)
     if err:
@@ -328,6 +351,13 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
 
     if err:
         await notify(f"❌ {err}")
+        return
+
+    # Refused before the preview: add_Quote would refuse it too, but only as a
+    # bare "Error saving quote" after showing you a passage it was not saving.
+    refusal = quote_too_long(quote_content)
+    if refusal:
+        await notify(refusal)
         return
 
     # Preview. This is raw text sliced out of an uploaded PDF at an arbitrary

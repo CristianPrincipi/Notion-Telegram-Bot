@@ -6,6 +6,13 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A long quote is saved as one quote.** `Add q` used to start a new quote block
+  every 1800 characters, so a pasted quote of 2500 characters showed up in Notion
+  as two. One quote block now holds up to 180,000 characters; a passage cut out of
+  a PDF that is longer than that is refused, saying so, and nothing is saved.
+
 ## [1.1.0] - 2026-10-04
 
 ### Added
