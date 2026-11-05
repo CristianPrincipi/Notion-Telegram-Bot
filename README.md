@@ -19,7 +19,7 @@ nobody else.
   title; get a structured summary page in Notion. The same link twice is caught
   before it costs anything.
 - **Implement and Get.** Merge what you learned into a per-area **Manual** —
-  only the sections it touches are rewritten, and every source is logged — then
+  only the sections it touches are edited, line by line, and every source is logged — then
   read any section back with `Get`.
 - **Calendar.** `Remind Dentist tr 10`, `Agenda`, `Cancel` — on your Google
   Calendar, with replies that name the full date so a misread is visible.

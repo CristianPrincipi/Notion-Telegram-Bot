@@ -116,6 +116,19 @@ different source on the same subject, or a shorter excerpt of this one.
 David's estimate of today's Anthropic spend passed `ANTHROPIC_DAILY_BUDGET_USD`
 (default $5). Wait for midnight (Europe/Rome), or raise the variable.
 
+## `Implement`: an edit is "ignored", or a section is "unchanged"
+
+Claude asked to change a line David will not touch, and nothing was done for that
+edit. Lines with other lines nested under them, and blocks that are not plain text
+(callouts, quotes, to-dos), are never rewritten or removed by a merge: David reads
+one level of the page, so it cannot see what is nested there. An edit naming a
+line that is not in the section, or the same line twice, is ignored too. If every
+edit for a section was ignored, the section is listed as unchanged.
+
+Make that change by hand in Notion. To let `Implement` edit a line in future,
+move the lines nested under it out of it, or turn the block into a plain bullet.
+The Railway log has one line per section naming each ignored edit and why.
+
 ## `Implement` says an update is already in progress
 
 Two `Implement` runs into the same area are not allowed at once — the second is

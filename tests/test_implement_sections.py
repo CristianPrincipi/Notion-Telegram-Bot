@@ -56,6 +56,11 @@ def divider(block_id):
     return {"id": block_id, "type": "divider", "divider": {}}
 
 
+def op(kind, line, text="", why=""):
+    """One edit operation, shaped as _MERGE_SCHEMA asks Claude for it."""
+    return {"op": kind, "line": line, "text": text, "why": why}
+
+
 MANUAL_BLOCKS = [
     {"id": "c-1", "type": "callout",
      "callout": {"rich_text": [{"plain_text": "What this Manual covers"}]}},
@@ -87,7 +92,7 @@ def manual(monkeypatch):
         "merge_targets": None,    # what the merge call was shown
         "affected": [{"path": "Perfect Process"}],
         "new_steps": [],
-        "updates": [{"path": "Perfect Process", "lines": ["Prime it", "Recall it cold"]}],
+        "updates": [{"path": "Perfect Process", "ops": [op("replace", 1, "Prime it")]}],
         "appends": [],            # [(after, blocks)]
         "deletes": [],
         "append_error": None,
@@ -208,7 +213,7 @@ def test_untouched_sections_are_never_sent_to_the_model(manual):
     the only guarantee that a section is unchanged is that it was never sent."""
     manual["affected"] = [{"path": "Step-by-Step Breakdown > Active Recall"}]
     manual["updates"] = [{"path": "Step-by-Step Breakdown > Active Recall",
-                          "lines": ["Retrieve before reviewing"]}]
+                          "ops": [op("replace", 1, "Retrieve before reviewing")]}]
 
     implement_it()
 
@@ -234,15 +239,16 @@ def test_the_routing_call_sees_names_but_no_content(manual):
     assert "Spaced repetition" not in str(manual["route_prompt"])
 
 
-def test_only_the_affected_section_is_rewritten(manual):
+def test_only_the_affected_section_is_edited(manual):
     """The write half of the same property: untouched sections keep their blocks,
-    so they stay byte-identical rather than merely similar."""
+    so they stay byte-identical rather than merely similar. Inside the section,
+    only the line the edit named is replaced; p-2 is never written to."""
     implement_it()
 
-    assert manual["deletes"] == ["p-1", "p-2"]
+    assert manual["deletes"] == ["p-1"]
     assert len(manual["appends"]) == 1
     after, _ = manual["appends"][0]
-    assert after == "h-process", "the replacement was not anchored under its heading"
+    assert after == "p-1", "the replacement was not anchored right after the line it replaces"
 
 
 def test_a_source_that_maps_to_nothing_changes_nothing(manual):
@@ -280,7 +286,7 @@ def test_the_replacement_is_appended_before_the_old_is_deleted(manual):
 
     assert order[0] == "append", f"first write was {order[0]}"
     assert set(order[1:]) == {"delete"}
-    assert monkey_deletes == ["p-1", "p-2"]
+    assert monkey_deletes == ["p-1"]
 
 
 def test_a_failed_append_deletes_nothing(manual):
@@ -319,7 +325,7 @@ def test_a_genuinely_new_step_is_appended_not_forced_into_an_existing_one(manual
     manual["affected"] = []
     manual["new_steps"] = [{"name": "Spaced Repetition"}]
     manual["updates"] = [{"path": "Step-by-Step Breakdown > Spaced Repetition",
-                          "lines": ["Review at expanding intervals"]}]
+                          "ops": [op("add", 0, "Review at expanding intervals")]}]
 
     implement_it()
 
@@ -333,7 +339,7 @@ def test_a_genuinely_new_step_is_appended_not_forced_into_an_existing_one(manual
 def test_an_unknown_path_is_skipped_rather_than_guessed_at(manual):
     """Writing a section Claude invented into the nearest match would put content
     somewhere the user never looks."""
-    manual["updates"] = [{"path": "Nonexistent Section", "lines": ["x"]}]
+    manual["updates"] = [{"path": "Nonexistent Section", "ops": [op("add", 0, "x")]}]
 
     update = implement_it()
 
@@ -357,7 +363,7 @@ def test_a_huge_manual_does_not_get_its_tail_dropped(manual):
         leaf("s-1", "THE TAIL SECTION"),
     ]
     manual["affected"] = [{"path": "References"}]
-    manual["updates"] = [{"path": "References", "lines": ["Make It Stick"]}]
+    manual["updates"] = [{"path": "References", "ops": [op("replace", 1, "Make It Stick")]}]
 
     implement_it()
 
@@ -426,7 +432,8 @@ def test_a_merge_naming_sources_is_refused_at_the_write(manual):
     that list is built — still cannot rewrite the ledger.
     """
     manual["affected"] = [{"path": "Sources"}]
-    manual["updates"]  = [{"path": "Sources", "lines": ["Rewritten by the model"]}]
+    manual["updates"]  = [{"path": "Sources",
+                           "ops": [op("replace", 1, "Rewritten by the model")]}]
 
     update = implement_it()
 
@@ -656,7 +663,7 @@ def test_the_unverified_marker_survives_the_cut(manual):
     assert len(manual["merge_source"]) == MANUAL_SOURCE_CHARS
     assert UNVERIFIED_MARKER in manual["merge_source"], "the cut dropped the marker"
     assert manual["merge_unverified"] is True, "the merge was not told the source is unverified"
-    # And the rule it arms still engages: the default updates drop
+    # And the rule it arms still engages: the default updates replace
     # "Prime the material", which an unverified source may not do.
     assert update.message.replied_with("Held back")
     assert manual["deletes"] == []
@@ -668,8 +675,289 @@ def test_the_ledger_only_ever_appends(ledger):
     page holds neither the old content nor the new."""
     implement_it()
 
-    assert ledger["deletes"] == ["p-1", "p-2"], (
+    assert ledger["deletes"] == ["p-1"], (
         "the ledger deleted something, or the section write stopped deleting")
+
+
+# ─── 9. EDITS, NOT REWRITES ────────────────────────────────────────────────────
+# A merge used to return a section's FULL content, and the writer replaced every
+# block in it. So a line Claude kept word for word was still deleted and written
+# back as plain text: its nested lines went with it, and so did its bold label.
+
+def test_a_line_with_nested_lines_survives_a_merge_of_its_section(manual):
+    """THE ONE THAT LOST CONTENT. `get_children` reads one level, so the lines
+    nested under p-1 were never sent to Claude; deleting p-1 deleted them."""
+    manual["blocks"] = [
+        heading("h-process", "⚙️ Perfect Process"),
+        dict(leaf("p-1", "Prime the material", "numbered_list_item"), has_children=True),
+        leaf("p-2", "Recall it cold", "numbered_list_item"),
+    ]
+    manual["updates"] = [{"path": "Perfect Process", "ops": [op("add", 2, "Sleep on it")]}]
+
+    implement_it()
+
+    assert "p-1" not in manual["deletes"], "a line with nested lines was deleted"
+    assert manual["appends"] == [("p-2", manual["appends"][0][1])]
+
+
+def test_a_line_the_merge_kept_keeps_its_formatting(manual):
+    """A bold label is rich text; the old write-back rebuilt every line plain."""
+    labelled = {"id": "i-1", "type": "bulleted_list_item", "bulleted_list_item": {
+        "rich_text": [{"plain_text": "Spacing", "annotations": {"bold": True}},
+                      {"plain_text": " — beats massed practice"}]}}
+    manual["blocks"] = [heading("h-improve", "🚀 Improvements & Optimizations"), labelled]
+    manual["affected"] = [{"path": "Improvements & Optimizations"}]
+    manual["updates"] = [{"path": "Improvements & Optimizations",
+                          "ops": [op("add", 1, "Interleave topics")]}]
+
+    implement_it()
+
+    assert "i-1" not in manual["deletes"], "an unchanged line was deleted and rewritten"
+
+
+def test_claude_is_shown_numbered_lines_and_which_are_fixed(manual):
+    """The numbers are what the ops come back with, so the prompt and the writer
+    must read the same index. A line with nested lines is shown as FIXED, and a
+    blank spacer is not shown at all."""
+    manual["blocks"] = [
+        heading("h-process", "⚙️ Perfect Process"),
+        dict(leaf("p-1", "Prime the material", "numbered_list_item"), has_children=True),
+        leaf("blank", "", "paragraph"),
+        leaf("p-2", "Recall it cold", "numbered_list_item"),
+    ]
+
+    implement_it()
+
+    assert manual["merge_targets"][0]["text"] == (
+        "[1] (fixed) Prime the material\n[2] Recall it cold")
+
+
+def test_a_soft_line_break_does_not_make_an_unnumbered_row(manual):
+    manual["blocks"] = [heading("h-process", "⚙️ Perfect Process"),
+                        leaf("p-1", "Prime the material\nby skimming", "numbered_list_item")]
+
+    implement_it()
+
+    assert manual["merge_targets"][0]["text"] == "[1] Prime the material by skimming"
+
+
+@pytest.mark.parametrize("edit", [op("replace", 1, "Prime it"), op("remove", 1)],
+                         ids=["replace", "remove"])
+def test_a_line_with_nested_lines_is_never_replaced_or_removed(manual, edit):
+    """The model was told the line is fixed; this is what holds if it ignores that.
+    One op per case: a replace AND a remove of the same line would be refused as
+    "named twice" instead, and hide this guard."""
+    manual["blocks"] = [
+        heading("h-process", "⚙️ Perfect Process"),
+        dict(leaf("p-1", "Prime the material", "numbered_list_item"), has_children=True),
+        leaf("p-2", "Recall it cold", "numbered_list_item"),
+    ]
+    manual["updates"] = [{"path": "Perfect Process", "ops": [edit]}]
+
+    update = implement_it()
+
+    assert manual["deletes"] == []
+    assert manual["appends"] == []
+    assert update.message.replied_with("unchanged")
+
+
+def test_only_the_lines_an_edit_names_are_deleted(manual):
+    """Merging two lines into one, as Cristian allowed it: replace one, remove the
+    other. Nothing else in the section is written to."""
+    manual["blocks"] = MANUAL_BLOCKS[:5] + [
+        leaf("p-3", "Sleep on it", "numbered_list_item")] + MANUAL_BLOCKS[5:]
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("replace", 1, "Prime the material with a pre-test", "pre-tests beat re-reading"),
+        op("remove", 2, why="now part of step 1"),
+    ]}]
+
+    implement_it()
+
+    assert manual["deletes"] == ["p-1", "p-2"]
+    assert "p-3" not in manual["deletes"]
+
+
+def test_a_replacement_lands_before_the_lines_added_after_it(manual):
+    """One append per anchor, the replacement first: deleting the old line then
+    leaves the order the model asked for, whatever order the ops came in."""
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("add", 1, "Then test yourself"),
+        op("replace", 1, "Prime it"),
+        op("add", 0, "Read the summary first"),
+    ]}]
+
+    implement_it()
+
+    texts = [(after, [b[b["type"]]["rich_text"][0]["text"]["content"] for b in blocks])
+             for after, blocks in manual["appends"]]
+    assert texts == [("h-process", ["Read the summary first"]),
+                     ("p-1", ["Prime it", "Then test yourself"])]
+    assert manual["deletes"] == ["p-1"]
+
+
+def test_a_replacement_keeps_the_lines_type_and_bold_label(manual):
+    labelled = {"id": "i-1", "type": "bulleted_list_item", "bulleted_list_item": {
+        "rich_text": [{"plain_text": "Spacing", "annotations": {"bold": True}},
+                      {"plain_text": " — beats massed practice"}]}}
+    manual["blocks"] = [heading("h-improve", "🚀 Improvements & Optimizations"), labelled,
+                        leaf("i-2", "Sleep consolidates", "paragraph")]
+    manual["affected"] = [{"path": "Improvements & Optimizations"}]
+    manual["updates"] = [{"path": "Improvements & Optimizations", "ops": [
+        op("replace", 1, "Spacing — beats massed practice, at expanding intervals")]}]
+
+    implement_it()
+
+    (_, [block]), = manual["appends"]
+    assert block["type"] == "bulleted_list_item"
+    runs = block["bulleted_list_item"]["rich_text"]
+    assert runs[0] == {"type": "text", "text": {"content": "Spacing"},
+                       "annotations": {"bold": True}}
+    assert runs[1]["text"]["content"] == " — beats massed practice, at expanding intervals"
+
+
+def test_a_line_named_twice_is_left_alone(manual):
+    """Two edits to one line contradict each other. Keeping it loses nothing."""
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("replace", 2, "Recall it the next day"), op("remove", 2),
+        op("add", 2, "Sleep on it")]}]
+
+    update = implement_it()
+
+    assert manual["deletes"] == []
+    assert [after for after, _ in manual["appends"]] == ["p-2"], "the add still applies"
+    assert update.message.replied_with("+1 added · 2 ignored")
+
+
+def test_an_edit_naming_a_line_that_is_not_there_is_ignored(manual):
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("remove", 7), op("add", 9, "Somewhere"), op("replace", 1, "Prime it")]}]
+
+    update = implement_it()
+
+    assert manual["deletes"] == ["p-1"]
+    assert update.message.replied_with("2 ignored")
+
+
+def test_a_removal_alone_needs_no_append(manual):
+    manual["updates"] = [{"path": "Perfect Process", "ops": [op("remove", 2, why="wrong")]}]
+
+    implement_it()
+
+    assert manual["appends"] == []
+    assert manual["deletes"] == ["p-2"]
+
+
+def test_nothing_is_deleted_until_every_insertion_has_landed(manual, monkeypatch):
+    """Hard Rule 2 across anchors: the second insertion fails, so the line the
+    first one replaced is still there, and the reply says the section is
+    half-written rather than unchanged."""
+    calls = []
+
+    def append_children(block_id, blocks, after=None):
+        calls.append(after)
+        if len(calls) == 2:
+            return written_nothing(), "Notion 502: bad gateway"
+        return written_ok(len(blocks)), None
+
+    monkeypatch.setattr(implement, "append_children", append_children)
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("replace", 1, "Prime it"), op("add", 2, "Sleep on it")]}]
+
+    update = implement_it()
+
+    assert calls == ["p-1", "p-2"]
+    assert manual["deletes"] == []
+    assert update.message.replied_with("Half-written")
+    assert update.message.replied_with("1 of 2 insertions")
+
+
+def test_the_reply_quotes_what_was_replaced_or_removed_and_why(manual):
+    """Cristian's choice: counts per section, and every replaced or removed line
+    quoted with Claude's reason — the page no longer shows them. Additions are
+    counted only: the page shows those."""
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("replace", 1, "Prime it with a pre-test", "pre-tests beat re-reading"),
+        op("remove", 2, why="covered by step 1"),
+        op("add", 2, "Sleep on it", "consolidation"),
+    ]}]
+
+    update = implement_it()
+
+    done = next(t for t in update.message.reply_texts if "Manual updated" in t)
+    assert "+1 added · ~1 sharpened · −1 removed" in done
+    assert "“Prime the material” — _pre-tests beat re-reading_" in done
+    assert "“Recall it cold” — _covered by step 1_" in done
+    assert "Sleep on it" not in done, "an addition was quoted, not counted"
+
+
+def test_the_reply_escapes_what_claude_wrote(manual):
+    manual["blocks"] = [heading("h-process", "⚙️ Perfect Process"),
+                        leaf("p-1", "Use *stars* and_underscores", "numbered_list_item")]
+    manual["updates"] = [{"path": "Perfect Process",
+                          "ops": [op("remove", 1, why="a [bad] `why`")]}]
+
+    update = implement_it()
+
+    done = next(t for t in update.message.reply_texts if "Manual updated" in t)
+    assert r"Use \*stars\* and\_underscores" in done
+    assert r"a \[bad] \`why\`" in done
+
+
+def test_a_long_line_is_shortened_in_the_reply(manual):
+    long_line = "word " * 40
+    manual["blocks"] = [heading("h-process", "⚙️ Perfect Process"),
+                        leaf("p-1", long_line, "numbered_list_item")]
+    manual["updates"] = [{"path": "Perfect Process", "ops": [op("remove", 1)]}]
+
+    update = implement_it()
+
+    done = next(t for t in update.message.reply_texts if "Manual updated" in t)
+    assert long_line.strip() not in done
+    assert "word word…”" in done
+
+
+def test_a_merge_with_nothing_to_apply_is_reported_unchanged(manual):
+    manual["updates"] = [{"path": "Perfect Process", "ops": [op("remove", 9)]}]
+
+    update = implement_it()
+
+    assert manual["appends"] == manual["deletes"] == []
+    assert update.message.replied_with("unchanged")
+
+
+def test_the_merge_answers_with_operations_not_sections():
+    """The schema is the contract: a `lines` field would bring the full rewrite
+    back, and with it the lost formatting and nested lines above."""
+    item = implement._MERGE_SCHEMA["properties"]["updates"]["items"]
+    one_op = item["properties"]["ops"]["items"]
+
+    assert set(item["properties"]) == {"path", "ops"}
+    assert one_op["properties"]["op"]["enum"] == ["add", "replace", "remove"]
+    assert set(one_op["required"]) == {"op", "line", "text", "why"}
+
+
+def test_each_edited_section_is_counted_in_the_log(manual, caplog):
+    """The reply scrolls away; the log is where "how often does Claude remove a
+    line, or name one it cannot edit" can be answered later."""
+    manual["updates"] = [{"path": "Perfect Process",
+                          "ops": [op("replace", 1, "Prime it"), op("remove", 9)]}]
+
+    with caplog.at_level(logging.INFO, logger="services.implement"):
+        implement_it()
+
+    assert any("Perfect Process: +0 ~1 -0, 1 ignored (remove [9]: there is no line [9])"
+               in r.getMessage() for r in caplog.records)
+
+
+def test_a_held_back_edit_is_counted_in_the_log(manual, caplog):
+    """The open question about the additions-only rule is how often it fires."""
+    manual["source_text"] = f"⚠️ {UNVERIFIED_MARKER}. No source text was read."
+
+    with caplog.at_level(logging.INFO, logger="services.implement"):
+        implement_it()
+
+    assert any("Perfect Process: held back 1 edit(s) from an unverified source"
+               in r.getMessage() for r in caplog.records)
 
 
 # ─── THE USAGE MESSAGE ─────────────────────────────────────────────────────────

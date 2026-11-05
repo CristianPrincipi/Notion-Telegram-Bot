@@ -207,10 +207,9 @@ MANUAL = [
 def wired(monkeypatch):
     """The real run_implement, with a source page whose content the test picks."""
     state = {"source": "An ordinary summary of an ordinary article.",
-             # Reproduces the Manual's existing line and adds one, so the
-             # additions-only rule lets it through by default. A test that wants
-             # the rule to bite overwrites this.
-             "merged_lines": ["Prime the material", "Stack a cue onto an old habit"],
+             # One addition, which the additions-only rule lets through. A test
+             # that wants the rule to bite overwrites this.
+             "ops": [op("add", 1, "Stack a cue onto an old habit")],
              "manual": list(MANUAL),
              "ledger": []}
 
@@ -232,9 +231,10 @@ def wired(monkeypatch):
     monkeypatch.setattr(implement, "merge_sections",
                         lambda targets, text, title, unverified=False: (
                             {"updates": [{"path": "Perfect Process",
-                                          "lines": state["merged_lines"]}]}, None))
+                                          "ops": state["ops"]}]}, None))
     monkeypatch.setattr(implement, "apply_section_updates",
-                        lambda page_id, updates, sections, new_paths=None: (1, [], []))
+                        lambda page_id, updates, sections, new_paths=None: (
+                            [implement.SectionEdit("Perfect Process")], [], []))
     monkeypatch.setattr(implement, "delete_block", lambda block_id: None)
     # The Sources ledger write. Stubbed rather than left live, or it would reach
     # the real append_children and, through it, the network.
@@ -243,6 +243,10 @@ def wired(monkeypatch):
                             state["ledger"].append(blocks) or written_ok(len(blocks)), None))
     monkeypatch.setattr(implement, "update_page", lambda page_id, props: (True, None))
     return state
+
+
+def op(kind, line, text="", why=""):
+    return {"op": kind, "line": line, "text": text, "why": why}
 
 
 def implement_it():
@@ -315,9 +319,9 @@ def test_the_first_run_warns_before_building_the_whole_manual(wired, monkeypatch
 
 # ─── 3. THE ADDITIONS-ONLY RULE ────────────────────────────────────────────────
 # WHAT IS ENFORCED HERE, and it is worth being exact because the difference is the
-# whole value of these tests: for an unverified source, a section is written only
-# if every one of its existing lines survives verbatim. No existing line can be
-# deleted or reworded on the authority of a recollection.
+# whole value of these tests: for an unverified source, only `add` operations are
+# written. Every replace and remove is held back and named, so no existing line
+# can be changed or deleted on the authority of a recollection.
 #
 # WHAT IS NOT ENFORCED, by this or by anything: whether an ADDED line is true.
 # Nothing can check that, which is why the Sources ledger exists.
@@ -328,90 +332,68 @@ def test_the_first_run_warns_before_building_the_whole_manual(wired, monkeypatch
 UNVERIFIED_SOURCE = f"⚠️ {UNVERIFIED_MARKER}. No source text was read."
 
 
-def test_a_merge_that_would_reword_an_existing_line_is_held_back(wired):
-    """The line is not gone from the model's answer — it is REWORDED, which is
-    the failure mode a "did it delete anything" check would wave through."""
-    wired["source"] = UNVERIFIED_SOURCE
-    wired["merged_lines"] = ["Prime the material thoroughly first",
-                             "Stack a cue onto an old habit"]
-
-    update = implement_it()
-
-    assert update.message.replied_with("Held back")
-    assert update.message.replied_with("Prime the material")
-
-
-def test_a_held_back_section_is_not_written_at_all(wired, monkeypatch):
+@pytest.fixture
+def writer(wired, monkeypatch):
+    """What reached apply_section_updates, the one function that writes."""
     written = []
     monkeypatch.setattr(implement, "apply_section_updates",
                         lambda page_id, updates, sections, new_paths=None: (
-                            written.extend(updates) or (0, [], [])))
+                            written.extend(updates)
+                            or ([implement.SectionEdit(u["path"]) for u in updates], [], [])))
+    return written
+
+
+@pytest.mark.parametrize("kind", ["replace", "remove"])
+def test_an_unverified_edit_to_an_existing_line_is_held_back(wired, writer, kind):
+    """Named in the reply by the line it would have changed: "an edit was held
+    back" is not something you can act on, "Prime the material" is."""
     wired["source"] = UNVERIFIED_SOURCE
-    wired["merged_lines"] = ["Something else entirely"]
+    wired["ops"] = [op(kind, 1, "Prime the material thoroughly first" if kind == "replace" else "")]
 
-    implement_it()
+    update = implement_it()
 
-    assert written == [], "an unverified rewrite reached the writer"
+    assert writer == [], "an unverified edit reached the writer"
+    assert update.message.replied_with("Held back")
+    assert update.message.replied_with("“Prime the material”")
 
 
-def test_an_addition_that_keeps_every_existing_line_goes_through(wired, monkeypatch):
+def test_the_additions_of_an_unverified_merge_still_go_through(wired, writer):
+    """THE CHANGE FROM THE OLD RULE. It held back the whole section, additions
+    included, the moment one existing line was missing or reworded; the per-op
+    filter keeps what it may and drops only what it must."""
+    wired["source"] = UNVERIFIED_SOURCE
+    wired["ops"] = [op("replace", 1, "Prime it harder"), op("add", 1, "Stack a cue")]
+
+    update = implement_it()
+
+    assert writer == [{"path": "Perfect Process", "ops": [op("add", 1, "Stack a cue")]}]
+    assert update.message.replied_with("Held back")
+
+
+def test_an_unverified_merge_of_additions_only_goes_through(wired, writer):
     """THE MIRROR, and the reason the rule is worth having rather than a blanket
     refusal: without this the check could be "hold back everything" and every
     other test here would still pass."""
-    written = []
-    monkeypatch.setattr(implement, "apply_section_updates",
-                        lambda page_id, updates, sections, new_paths=None: (
-                            written.extend(updates) or (1, [], [])))
     wired["source"] = UNVERIFIED_SOURCE
-    wired["merged_lines"] = ["Prime the material", "Stack a cue onto an old habit"]
 
     update = implement_it()
 
-    assert [u["path"] for u in written] == ["Perfect Process"]
+    assert [u["path"] for u in writer] == ["Perfect Process"]
     assert not update.message.replied_with("Held back")
 
 
-def test_whitespace_alone_does_not_hold_a_section_back(wired):
-    """A model reflowing "Prime  the material" is not rewriting it, and a rule
-    that fires on that would be turned off within a week."""
-    wired["source"] = UNVERIFIED_SOURCE
-    wired["merged_lines"] = ["Prime   the material", "Stack a cue onto an old habit"]
-
-    update = implement_it()
-
-    assert not update.message.replied_with("Held back")
-
-
-def test_reordering_existing_lines_is_a_rewrite(wired):
-    """Order carries meaning in a numbered routine, so a merge that keeps both
-    lines and swaps them has changed the Manual. A membership check would pass it."""
-    wired["source"] = UNVERIFIED_SOURCE
-    wired["merged_lines"] = ["A new first step", "Prime the material"]
-    wired["manual"] = MANUAL + [
-        {"id": "p-2", "type": "numbered_list_item",
-         "numbered_list_item": {"rich_text": [{"plain_text": "A new first step"}]}}]
-
-    update = implement_it()
-
-    assert update.message.replied_with("Held back")
-
-
-def test_a_verified_source_may_rewrite_whatever_it_likes(wired, monkeypatch):
+def test_a_verified_source_may_rewrite_whatever_it_likes(wired, writer):
     """The rule is about UNVERIFIED sources only.
 
     An article you actually read is allowed to correct your Manual — that is what
     Implement is for. Applying the rule to everything would quietly turn every
     merge into an append.
     """
-    written = []
-    monkeypatch.setattr(implement, "apply_section_updates",
-                        lambda page_id, updates, sections, new_paths=None: (
-                            written.extend(updates) or (1, [], [])))
-    wired["merged_lines"] = ["Nothing of the original survives this"]
+    wired["ops"] = [op("replace", 1, "Nothing of the original survives this"), op("remove", 1)]
 
     update = implement_it()
 
-    assert len(written) == 1, "a verified source was held back"
+    assert writer == [{"path": "Perfect Process", "ops": wired["ops"]}]
     assert not update.message.replied_with("Held back")
 
 
@@ -426,13 +408,13 @@ def test_the_merge_prompt_carries_the_additions_only_rule(monkeypatch):
     prompts = []
     monkeypatch.setattr(implement, "complete_json",
                         lambda system, user, schema, **kw: prompts.append(user) or ({}, None))
-    target = [{"path": "Perfect Process", "style": "numbered", "text": "Prime the material"}]
+    target = [{"path": "Perfect Process", "style": "numbered", "text": "[1] Prime the material"}]
 
     implement.merge_sections(target, "source", "T", True)
     implement.merge_sections(target, "source", "T", False)
 
     assert "UNVERIFIED" in prompts[0]
-    assert "EXACTLY as it is given" in prompts[0]
+    assert "Use add only" in prompts[0]
     assert "UNVERIFIED" not in prompts[1], (
         "a verified merge was told it was unverified")
 
@@ -453,23 +435,20 @@ def test_the_merge_call_is_told_when_the_source_is_unverified(wired, monkeypatch
     assert seen["unverified"] is True
 
 
-def test_a_new_section_has_nothing_to_protect(wired, monkeypatch):
-    """A brand-new step has no existing lines, so the rule has nothing to say and
-    must not hold it back — otherwise an unverified source could never add
-    anything at all, and the feature would be a refusal with extra steps."""
-    written = []
-    monkeypatch.setattr(implement, "apply_section_updates",
-                        lambda page_id, updates, sections, new_paths=None: (
-                            written.extend(updates) or (1, [], [])))
+def test_a_new_section_takes_its_additions(wired, writer, monkeypatch):
+    """A brand-new step is nothing but additions, so an unverified source can
+    still add one — otherwise it could never add anything at all, and the
+    feature would be a refusal with extra steps."""
     monkeypatch.setattr(implement, "merge_sections",
                         lambda targets, text, title, unverified=False: (
                             {"updates": [{"path": "Step-by-Step Breakdown > Habit Stacking",
-                                          "lines": ["Attach it to an existing routine"]}]}, None))
+                                          "ops": [op("add", 0, "Attach it to an existing routine")]}]},
+                            None))
     wired["source"] = UNVERIFIED_SOURCE
 
     implement_it()
 
-    assert len(written) == 1
+    assert len(writer) == 1
 
 
 # ─── 4. THE DIET PATH ──────────────────────────────────────────────────────────

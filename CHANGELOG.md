@@ -22,6 +22,13 @@ Notable changes to David. The format follows
 - **`Learn book` pages no longer include quotations.** Nothing is read for a book,
   so any "quote" was Claude's recollection, and could be a sentence the author
   never wrote. Pages built from an article, video, podcast or PDF keep theirs.
+- **`Implement` edits a Manual line by line** instead of rewriting each section it
+  touches. Lines it does not change keep their formatting, and the reply lists
+  what changed in each section: lines added, sharpened or removed, with every
+  sharpened or removed line quoted next to Claude's reason.
+- **A `Learn book` source merged into a Manual keeps its additions** even when it
+  also asked to change an existing line. Only that change is held back, and the
+  reply names the line. Before, the whole section was held back.
 
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption
@@ -32,6 +39,10 @@ Notable changes to David. The format follows
 
 ### Fixed
 
+- **`Implement` no longer deletes lines nested under a Manual line.** Every line
+  of a section it merged into was deleted and written back, so anything nested
+  under one of them was lost, along with bold labels on lines it kept. A line
+  with nested lines is now never rewritten or removed.
 - **A long quote is saved as one quote.** `Add q` used to start a new quote block
   every 1800 characters, so a pasted quote of 2500 characters showed up in Notion
   as two. One quote block now holds up to 180,000 characters; a passage cut out of

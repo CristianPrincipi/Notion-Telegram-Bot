@@ -32,16 +32,25 @@ write scope, not in round trips.
 
 WRITING BACK
 ------------
-Append-then-delete, per section, exactly as in Hard Rule 2: snapshot the
-section's content block IDs, append the replacement immediately after the
-section heading (`append_children(..., after=heading_id)`), return early on
-error with nothing deleted, and only then drop the snapshot.
+Edits, not rewrites. The merge call is shown each section as numbered lines and
+answers with OPERATIONS on them — add after [n], replace [n], remove [n] — so a
+line it does not name keeps its block, its formatting and anything nested under
+it. It used to return a section's full content, which replaced every block in
+the section: a line kept word for word still lost its bold label and its nested
+lines, which `get_children` (one level) had never even read.
+
+The write is still Hard Rule 2, per section: the IDs to delete come from the
+index taken before anything was written; every replacement and addition is
+appended right after its anchor line (`append_children(..., after=…)`); an error
+returns with nothing deleted; only then are the replaced and removed lines
+deleted.
 """
 
 import asyncio
 import logging
 import os
 import re
+from collections import Counter
 
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
@@ -53,7 +62,7 @@ from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
 from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text, append_children,
-    delete_block, create_page, get_page_title, update_page, extract_rich_text,
+    delete_block, create_page, get_page_title, update_page, extract_rich_text, rich,
     paragraph as _paragraph, heading2 as _heading2, heading3 as _heading3,
     callout as _callout, bullet as _bullet, numbered as _numbered, divider as _divider,
 )
@@ -190,6 +199,29 @@ def _normalise_path(path: str) -> str:
     return " > ".join(p.strip().lower() for p in (path or "").split(">") if p.strip())
 
 
+# The block types a merge may replace or remove: each is one run of rich text
+# that David can read whole and write back in the same type. Any other block (a
+# callout, a quote, a to-do, an image) is shown to the model as FIXED — it can be
+# added after, never replaced or removed.
+_EDITABLE_TYPES = ("paragraph", "bulleted_list_item", "numbered_list_item")
+
+
+class Line:
+    """One numbered line of a section, as the merge call is shown it."""
+
+    __slots__ = ("n", "block", "text", "fixed")
+
+    def __init__(self, n, block, text, fixed):
+        self.n     = n
+        self.block = block
+        self.text  = text
+        self.fixed = fixed
+
+    @property
+    def block_id(self):
+        return self.block.get("id")
+
+
 class Section:
     """One addressable part of a Manual."""
 
@@ -204,21 +236,40 @@ class Section:
         self.tail_id        = heading_id   # last block of this section's whole region
 
     @property
-    def text(self) -> str:
-        return blocks_to_text(self.content_blocks)
+    def numbered(self) -> list:
+        """The section's lines as the merge call is shown them: [1], [2], ….
+
+        The numbers index THIS object, the index taken before anything is
+        written, and the ops that come back are resolved against the same object.
+        So [3] always means the block it meant when the prompt was built.
+
+        A blank text block (spacing) is neither numbered nor touched. A block
+        that is not plain text, or that has blocks nested under it, is FIXED:
+        `get_children` reads one level, so its nested lines were never read, and
+        replacing or removing it would delete them unseen.
+        """
+        lines = []
+        for block in self.content_blocks:
+            btype = block.get("type", "")
+            text = extract_rich_text(block.get(btype, {}).get("rich_text", []))
+            editable = btype in _EDITABLE_TYPES and not block.get("has_children")
+            if editable and not text.strip():
+                continue
+            lines.append(Line(len(lines) + 1, block,
+                              text.strip() or f"({btype.replace('_', ' ')})",
+                              fixed=not editable))
+        return lines
 
     @property
-    def lines(self) -> list:
-        """The section's content as RAW lines, one per block.
+    def listing(self) -> str:
+        """The numbered lines as one string, for the merge prompt.
 
-        Deliberately not `self.text.splitlines()`. `blocks_to_text` prefixes each
-        block by type (`- `, `• `, `## `) and the lines a merge returns carry no
-        prefix at all — they get one from `render_lines` on the way back in. So
-        comparing the two forms would compare the markdown and not the content,
-        and `_survives` below would report every line as lost.
+        Whitespace is flattened: a soft line break inside a block would otherwise
+        start an unnumbered row the model could read as a line of its own.
         """
-        return [extract_rich_text(b.get(b.get("type", ""), {}).get("rich_text", []))
-                for b in self.content_blocks]
+        return "\n".join(f"[{line.n}]{' (fixed)' if line.fixed else ''} "
+                         + " ".join(line.text.split())
+                         for line in self.numbered)
 
     @property
     def style(self) -> str:
@@ -380,19 +431,35 @@ def route_sections(section_paths: list, source_text: str, source_title: str):
                          max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS, effort=ANTHROPIC_ROUTE_EFFORT)
 
 
-_MERGE_SYSTEM = """You merge new knowledge into specific sections of a personal Manual.
+_MERGE_SYSTEM = """You edit specific sections of a personal Manual with new knowledge from a SOURCE.
 
-For each section you are given its current content and the new SOURCE. Return the
-FULL merged content for that section — it replaces what is there.
+Each section is given as numbered lines, "[n] text". Answer with EDIT OPERATIONS
+on those lines, not with rewritten sections: every line you do not name stays
+exactly as it is, formatting and all.
+
+Operations:
+- add: a new line after line [n]. Use 0 to put it at the top of the section.
+  Several adds after the same line appear in the order you give them.
+- replace: line [n] becomes your text, when the source corrects it, makes it
+  more specific, or backs it with better evidence.
+- remove: line [n] goes, only when the source shows it is wrong or it now says
+  the same as another line.
+- To merge two lines that say the same thing: replace one with the merged line
+  and remove the other.
+- A line marked (fixed) holds content you cannot see or edit. You may add after
+  it; never replace or remove it.
+- Name each line by the number it was given; never renumber after your own
+  edits. Name a line in at most one replace or remove.
+- Every operation has a why: one short line on what in the source justifies it.
 
 Rules:
-- Merge, never concatenate. Each fact appears exactly once, in its best form.
-- Keep everything in the current content that the source does not supersede.
-  Content you leave out is deleted.
+- Merge, never concatenate. Do not add a line that restates an existing one;
+  sharpen that line instead.
 - Resolve conflicts toward the more specific, evidence-based version.
-- Write each line as a complete, standalone, actionable statement.
-- Match the section's stated style: numbered = ordered steps, bullet = list
-  items, paragraph = prose paragraphs, one per line.
+- Write each new or replaced line as a complete, standalone, actionable
+  statement in the section's style: numbered = ordered steps, bullet = list
+  items, paragraph = prose.
+- A section shown as empty is new: give it add operations at line 0.
 - Return only sections you are actually changing."""
 
 _MERGE_SCHEMA = {
@@ -403,11 +470,29 @@ _MERGE_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "path":  {"type": "string", "description": "Exactly as given."},
-                    "lines": {"type": "array", "items": {"type": "string"},
-                              "description": "The FULL merged content, one line per block."},
+                    "path": {"type": "string", "description": "Exactly as given."},
+                    "ops": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op":   {"type": "string", "enum": ["add", "replace", "remove"]},
+                                "line": {"type": "integer",
+                                         "description": "replace / remove: the line's [n]. "
+                                                        "add: the [n] it goes after; 0 = top."},
+                                "text": {"type": "string",
+                                         "description": "add / replace: the line as it should "
+                                                        "read. remove: empty."},
+                                "why":  {"type": "string",
+                                         "description": "One short line: what in the source "
+                                                        "justifies this."},
+                            },
+                            "required": ["op", "line", "text", "why"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
-                "required": ["path", "lines"],
+                "required": ["path", "ops"],
                 "additionalProperties": False,
             },
         },
@@ -418,34 +503,33 @@ _MERGE_SCHEMA = {
 
 
 # Appended to the merge prompt when the source is a recollection. It is the HINT,
-# not the guard: `_hold_back_rewrites` below checks the same rule mechanically and
-# refuses to write a section that breaks it. Both, because the instruction alone
+# not the guard: `_hold_back_rewrites` below drops every replace and remove from
+# such a source whatever the model answers. Both, because the instruction alone
 # is a request a model can decline silently, and the check alone would hold back
-# far more sections than it needs to.
+# edits the model need never have proposed.
 _UNVERIFIED_MERGE_RULE = """
 
 === THIS SOURCE IS UNVERIFIED ===
 It is a model's recollection of a work, not an extract of any text. Nothing was
 read to produce it, so relative to the Manual it is the WEAKER evidence.
 
-- Reproduce every existing line of each section EXACTLY as it is given to you.
-  Do not reword, reorder, shorten, or combine them.
-- You may ADD new lines from this source. You may not replace or delete an
-  existing one, however much this source appears to contradict it.
-- A section whose existing lines are not all reproduced verbatim will be
-  discarded and left unchanged."""
+- Use add only. Do not replace or remove any existing line, however much this
+  source appears to contradict it.
+- A replace or remove from this source is discarded, not applied."""
 
 
 def merge_sections(targets: list, source_text: str, source_title: str,
                    unverified: bool = False):
-    """Merge the source into the given sections. Returns (result, error).
+    """Edit operations for the given sections. Returns (result, error).
 
     `targets` is a list of {"path", "style", "text"} — only the sections routing
-    selected. Everything else in the Manual is absent from this prompt.
+    selected, `text` being the section's numbered listing (`Section.listing`).
+    Everything else in the Manual is absent from this prompt.
 
     `source_text` arrives already within MANUAL_SOURCE_CHARS — run_implement owns
-    the cap. The section texts in `targets` are NOT capped and must not be: a
-    section is sent whole or not at all, because what comes back replaces it.
+    the cap. The section listings in `targets` are NOT capped and must not be: a
+    section is sent whole or not at all, because the line numbers the ops come
+    back with index into it.
     """
     parts = []
     for target in targets:
@@ -453,7 +537,7 @@ def merge_sections(targets: list, source_text: str, source_title: str,
         parts.append(f"--- SECTION: {target['path']} (style: {target['style']}) ---\n{body}")
 
     user_msg = (
-        "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
+        "=== SECTIONS TO EDIT ===\n" + "\n\n".join(parts) +
         f"\n\n=== SOURCE: {source_title} ===\n{source_text}"
         + (_UNVERIFIED_MERGE_RULE if unverified else "")
     )
@@ -464,74 +548,47 @@ def merge_sections(targets: list, source_text: str, source_title: str,
 # What an unverified source is allowed to do to a Manual, checked rather than
 # asked for.
 #
-# WHAT THIS ENFORCES: no line already in the Manual is deleted or reworded by a
-# merge whose source was a recollection. That is a real, deterministic guarantee —
-# David holds both sides before it writes, so it needs no judgement from anyone.
+# WHAT THIS ENFORCES: no line already in the Manual is replaced or removed by a
+# merge whose source was a recollection. Its adds are written; every other
+# operation is held back and named. That is a real, deterministic guarantee: it
+# reads the KIND of each operation, so it needs no judgement from anyone.
 #
 # WHAT IT DOES NOT ENFORCE, and must never be described as enforcing: anything at
 # all about the lines it ADDS. Nothing can check whether a recollected fact is
 # true. That is why the Sources ledger exists — the trail is what you have when
 # the content itself cannot be verified.
 #
-# THE COST IS REAL. _MERGE_SYSTEM asks for "the FULL merged content", and a model
-# reproducing twenty lines verbatim will eventually reword one. Those sections are
-# held back and named rather than written, which is the safe direction but is not
-# a free one. How often it fires is unmeasured — see docs/design-notes.md's Open
-# questions.
-
-
-def _comparable(line: str) -> str:
-    """A line stripped of differences that are not differences.
-
-    Whitespace only. Case and punctuation stay significant: "do it daily" and "Do
-    it daily." are the same claim to a reader and a REWRITE to this rule, which is
-    exactly the edit an unverified source must not be allowed to make silently.
-    """
-    return " ".join((line or "").split())
-
-
-def _survives(old_lines: list, new_lines: list) -> list:
-    """The old lines that do NOT appear, verbatim and in order, in the new ones.
-
-    A subsequence walk, not a set difference: order carries meaning in a numbered
-    routine, and a merge that reversed two steps while keeping both would pass a
-    membership check.
-    """
-    remaining = [_comparable(line) for line in new_lines]
-    lost = []
-    for line in old_lines:
-        wanted = _comparable(line)
-        if not wanted:
-            continue
-        try:
-            remaining = remaining[remaining.index(wanted) + 1:]
-        except ValueError:
-            lost.append(line)
-    return lost
+# It used to hold back a whole SECTION whenever a line went missing or changed
+# from the model's full rewrite of it — and a model reproducing twenty lines
+# verbatim eventually rewords one. With edit operations nothing has to be
+# reproduced: an add cannot touch an existing line, so what is held back is only
+# ever an edit that asked to change one.
 
 
 def _hold_back_rewrites(updates: list, sections: list) -> tuple[list, list]:
     """Split an unverified merge into (may_be_written, held_back).
 
+    Every `add` may be written. Every other operation is held back, named by the
+    line it would have changed, as (path, [line text, …]).
+
     Runs BEFORE apply_section_updates rather than inside it. What may be written
     is a policy decision about this source; the writer stays a writer, and its
-    three buckets (applied / skipped / partial) keep describing what Notion did
-    rather than what David decided.
+    buckets (edited / skipped / partial) keep describing what Notion did rather
+    than what David decided.
     """
     allowed, held = [], []
     for upd in updates:
-        section = _resolve((upd.get("path") or "").strip(), sections)
-        # No section, or nothing there yet (a new step, an empty section): there
-        # is no existing content to protect, so the rule has nothing to say.
-        if section is None or not section.lines:
-            allowed.append(upd)
-            continue
-
-        lost = _survives(section.lines, upd.get("lines", []))
-        if lost:
-            held.append((section.path, lost))
-        else:
-            allowed.append(upd)
+        path = (upd.get("path") or "").strip()
+        ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
+        adds = [op for op in ops if op.get("op") == "add"]
+        rest = [op for op in ops if op.get("op") != "add"]
+        if adds:
+            allowed.append({**upd, "ops": adds})
+        if rest:
+            section = _resolve(path, sections)
+            texts = {line.n: line.text for line in section.numbered} if section else {}
+            held.append((path, [texts.get(op.get("line"), f"line [{op.get('line')}]")
+                                for op in rest]))
     return allowed, held
 
 
@@ -707,33 +764,130 @@ def build_manual(source_text: str, topic: str, source_title: str = ""):
 
 # ─── 7. SURGICAL WRITE-BACK ────────────────────────────────────────────────────
 
+class SectionEdit:
+    """What one section's operations come to, checked against the pre-write index.
+
+    Also the record the reply is built from, so the diff a person reads is the
+    edit that was written, not the answer Claude gave.
+    """
+
+    __slots__ = ("path", "inserts", "added", "replaced", "removed", "ignored")
+
+    def __init__(self, path):
+        self.path     = path
+        self.inserts  = []     # [(after_id, [blocks])], in page order
+        self.added    = 0
+        self.replaced = []     # [(Line, why)]
+        self.removed  = []     # [(Line, why)]
+        self.ignored  = []     # [reason], one per operation not applied
+
+    @property
+    def doomed_ids(self) -> list:
+        """What is deleted once every insert has landed: the replaced and removed lines."""
+        return [line.block_id for line, _ in self.replaced + self.removed]
+
+
+def _replacement_block(line: Line, text: str) -> dict:
+    """`text` in the old line's own block type, keeping its bold label.
+
+    The type, because a numbered step replaced by a bullet would restyle the
+    routine. The label, because `**Spacing** — beats massed practice` is how the
+    Manual is built, and a replacement that starts with the same label keeps it
+    bold. Any other formatting belonged to the old text and goes with it.
+    """
+    btype = line.block.get("type", "paragraph")
+    runs  = line.block.get(btype, {}).get("rich_text", [])
+    first = runs[0] if runs else {}
+    label = first.get("plain_text", "") if (first.get("annotations") or {}).get("bold") else ""
+    if label.strip() and text.startswith(label):
+        rest = text[len(label):]
+        rich_text = ([{"type": "text", "text": {"content": label[:2000]},
+                       "annotations": {"bold": True}}]
+                     + (rich(rest) if rest else []))
+    else:
+        rich_text = rich(text)
+    return {"object": "block", "type": btype, btype: {"rich_text": rich_text}}
+
+
+def _plan_edits(section: Section, ops: list) -> SectionEdit:
+    """Resolve a section's operations against its numbered lines. No I/O.
+
+    An operation that names a line which is not there, a FIXED line, or a line
+    another replace or remove also names is ignored, and the reason kept. Two
+    edits to one line contradict each other; keeping the line is the direction
+    that loses nothing.
+    """
+    edit  = SectionEdit(section.path)
+    lines = {line.n: line for line in section.numbered}
+    named = Counter(op.get("line") for op in ops if op.get("op") in ("replace", "remove"))
+    first, after = {}, {}       # line n → its replacement block; → blocks added after it
+
+    for op in ops:
+        kind, n = op.get("op"), op.get("line")
+        text, why = (op.get("text") or "").strip(), (op.get("why") or "").strip()
+        line = lines.get(n)
+        if kind == "add":
+            if not text:
+                edit.ignored.append(f"add after [{n}] had no text")
+            elif n != 0 and line is None:
+                edit.ignored.append(f"add after [{n}]: there is no line [{n}]")
+            else:
+                after.setdefault(n, []).append(render_lines([text], section.style)[0])
+                edit.added += 1
+        elif kind in ("replace", "remove"):
+            if line is None:
+                edit.ignored.append(f"{kind} [{n}]: there is no line [{n}]")
+            elif line.fixed:
+                edit.ignored.append(f"{kind} [{n}]: that line is fixed")
+            elif named[n] > 1:
+                edit.ignored.append(f"{kind} [{n}]: the line was named twice")
+            elif kind == "replace" and not text:
+                edit.ignored.append(f"replace [{n}] had no text")
+            elif kind == "replace":
+                first[n] = _replacement_block(line, text)
+                edit.replaced.append((line, why))
+            else:
+                edit.removed.append((line, why))
+        else:
+            edit.ignored.append(f"unknown operation {kind!r}")
+
+    # One append per anchor, in page order: a replacement goes straight after the
+    # line it replaces, ahead of anything added after that line, so deleting the
+    # old line afterwards leaves the order the model asked for.
+    for n in sorted(set(first) | set(after)):
+        anchor = section.heading_id if n == 0 else lines[n].block_id
+        edit.inserts.append((anchor, ([first[n]] if n in first else []) + after.get(n, [])))
+    return edit
+
+
 def apply_section_updates(page_id: str, updates: list, sections: list,
-                          new_paths: set | None = None) -> tuple[int, list, list]:
-    """Rewrite only the named sections. Returns (applied_count, skipped, partial).
+                          new_paths: set | None = None) -> tuple[list, list, list]:
+    """Apply each named section's edit operations. Returns (edited, skipped, partial).
 
-    BLOCKING — several Notion round trips per section touched. Run via
-    asyncio.to_thread.
+    `edited` is the SectionEdit of every section written in full.
 
-    APPEND FIRST, DELETE AFTER, per section (Hard Rule 2). The stale IDs come
+    BLOCKING — one Notion round trip per insertion point and per deleted line.
+    Run via asyncio.to_thread.
+
+    APPEND FIRST, DELETE AFTER, per section (Hard Rule 2). The IDs to delete come
     from the index built BEFORE anything was written, never from a re-read — a
-    re-read after appending would list the new blocks too and delete them.
+    re-read after appending would list the new blocks too. A line no operation
+    names is never written to at all, which is what keeps its formatting and its
+    nested lines.
 
-    Sections absent from `updates` are never touched, which is what keeps them
-    byte-identical run over run.
-
-    THREE buckets, not two. A failed append used to go in `skipped`, which the
-    reply prints under "these are unchanged" — true when the append failed on its
-    first batch and FALSE when it failed on a later one, because those earlier
-    batches are on the page and the stale content is still there underneath them.
-    A section in `partial` is the one state a re-run cannot fix by itself.
+    THREE buckets, not two. A section in `skipped` is genuinely unchanged: its
+    first append failed, so nothing landed and nothing was deleted. A section in
+    `partial` had some insertions land before one failed — they are on the page,
+    nothing was deleted, and a line being replaced is there twice. That is the
+    one state a re-run cannot fix by itself.
     """
     new_paths = new_paths or set()
-    applied, skipped, partial = 0, [], []
+    edited, skipped, partial = [], [], []
 
     for upd in updates:
-        path  = (upd.get("path") or "").strip()
-        lines = [ln for ln in upd.get("lines", []) if ln and ln.strip()]
-        if not path or not lines:
+        path = (upd.get("path") or "").strip()
+        ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
+        if not path or not ops:
             continue
 
         # THE LEDGER IS NOT WRITEABLE, and this is checked here rather than only
@@ -756,8 +910,20 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
             if anchor is None:
                 skipped.append(f"{path} (no '{STEPS_SECTION}' section to add it to)")
                 continue
+            edit  = SectionEdit(path)
+            texts = []
+            for op in ops:
+                text = (op.get("text") or "").strip()
+                if op.get("op") == "add" and text:
+                    texts.append(text)
+                else:
+                    edit.ignored.append(f"{op.get('op')} [{op.get('line')}]: a new step "
+                                        "has no lines to change")
+            if not texts:
+                skipped.append(f"{path} (no lines to add)")
+                continue
             name = path.split(">")[-1].strip()
-            blocks = [_heading3(f"→ {name}")] + render_lines(lines, "bullet")
+            blocks = [_heading3(f"→ {name}")] + render_lines(texts, "bullet")
             written, err = append_children(page_id, blocks, after=anchor.tail_id)
             if err:
                 # A new step has no stale content to lose, so a half-written one
@@ -765,31 +931,46 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
                 # it is still not "unchanged".
                 (partial if written.partial else skipped).append(f"{path} ({err})")
                 continue
-            applied += 1
+            edit.added = len(texts)
+            edited.append(edit)
+            _log_edit(edit)
             continue
 
-        # ── An existing section: replace its content in place ────────────────────
-        stale_ids = list(section.content_ids)
-        written, err = append_children(
-            page_id, render_lines(lines, section.style), after=section.heading_id)
+        # ── An existing section: its operations, and nothing else ────────────────
+        edit = _plan_edits(section, ops)
+        if not edit.inserts and not edit.removed:
+            skipped.append(f"{path} (no edit named a line that can be changed)")
+            _log_edit(edit)
+            continue
+
+        landed, err = 0, None
+        for after, blocks in edit.inserts:
+            written, err = append_children(page_id, blocks, after=after)
+            if err:
+                break
+            landed += 1
         if err:
-            if written.partial:
-                # The old content is intact — the delete never ran — and part of
-                # the replacement is now sitting next to it. Both copies are on
-                # the page, which is the accepted cost of never showing neither
-                # (Hard Rule 2), but it has to be SAID or the next run merges
-                # against a section that reads as duplicated.
-                partial.append(f"{path} ({written.summary} written, "
-                               f"old content still there: {err})")
+            if landed or written.partial:
+                done = (f"{landed} of {len(edit.inserts)} insertions" if landed
+                        else written.summary)
+                partial.append(f"{path} ({done} written, nothing removed: {err})")
             else:
-                # Nothing deleted, nothing appended — genuinely unchanged.
+                # Nothing appended, nothing deleted — genuinely unchanged.
                 skipped.append(f"{path} ({err})")
             continue
 
-        clear_page_blocks_by_id(stale_ids)
-        applied += 1
+        clear_page_blocks_by_id(edit.doomed_ids)
+        edited.append(edit)
+        _log_edit(edit)
 
-    return applied, skipped, partial
+    return edited, skipped, partial
+
+
+def _log_edit(edit: SectionEdit) -> None:
+    """One line per section: the counts, and why any operation was not applied."""
+    logger.info("Implement %s: +%d ~%d -%d, %d ignored%s", edit.path, edit.added,
+                len(edit.replaced), len(edit.removed), len(edit.ignored),
+                f" ({'; '.join(edit.ignored)})" if edit.ignored else "")
 
 
 # ─── 7b. THE SOURCES LEDGER ────────────────────────────────────────────────────
@@ -1107,7 +1288,8 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
     for item in affected:
         section = _resolve(item["path"], sections)
         if section is not None:
-            targets.append({"path": section.path, "style": section.style, "text": section.text})
+            targets.append({"path": section.path, "style": section.style,
+                            "text": section.listing})
     targets += [{"path": p, "style": "bullet", "text": ""} for p in new_paths]
 
     if not targets:
@@ -1137,23 +1319,29 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
 
     # ── The additions-only rule, for an unverified source only ─────────────────
     # Checked here rather than trusted to the prompt above. What this catches is
-    # narrow and real: a merge that would delete or reword something already in
+    # narrow and real: an edit that would replace or remove something already in
     # the Manual on the authority of a recollection. It says nothing about whether
-    # what it lets through is TRUE — see the note above _comparable.
+    # what it lets through is TRUE — see the note above _hold_back_rewrites.
     updates = merged.get("updates", [])
     held = []
     if unverified:
         updates, held = _hold_back_rewrites(updates, sections)
+        for path, lines in held:
+            # The count the open question about this rule asks for (design-notes).
+            logger.info("Implement %s: held back %d edit(s) from an unverified source",
+                        path, len(lines))
 
-    await notify("📝 Writing the updated sections to Notion…")
-    applied, skipped, partial = await asyncio.to_thread(
+    await notify("📝 Writing the edits to Notion…")
+    edited, skipped, partial = await asyncio.to_thread(
         apply_section_updates, manual_page_id, updates, sections, new_paths)
 
     msg = (f"✅ Manual updated 🔄\n\n"
            f"📍 Area: {escape_md(area_name)}\n"
-           f"✏️ *{applied}* of {len(sections)} section(s) rewritten — the rest were never "
+           f"✏️ *{len(edited)}* of {len(sections)} section(s) edited — the rest were never "
            f"sent to Claude, so they are untouched.\n\n"
-           f"_Source used: {escape_md(source_title)}_")
+           + "".join(f"{line}\n" for line in _format_edits(edited))
+           + ("\n" if edited else "")
+           + f"_Source used: {escape_md(source_title)}_")
     if unverified:
         msg += f"\n\n{_UNVERIFIED_LINE}"
     if skipped:
@@ -1166,20 +1354,20 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         # Its own heading, deliberately not folded into "skipped": these sections
         # hold their old content AND part of a replacement, and only a person
         # looking at the page can sort that out.
-        msg += ("\n\n🚨 Half-written — open these in Notion, the old and new "
-                "content are both there:\n"
+        msg += ("\n\n🚨 Half-written — open these in Notion: part of the edit is "
+                "there and nothing was removed, so a line being replaced is there twice:\n"
                 + "\n".join(f"• {escape_md(s)}" for s in partial[:8]))
     if held:
         # A THIRD kind of unchanged, and its own heading for the same reason the
         # other two have theirs: this one is not Notion failing, it is David
-        # refusing. The lines that would have gone are named, because "a section
-        # was held back" is not something you can act on and "these two lines
-        # would have been replaced by a recollection" is.
-        msg += ("\n\n🛡️ Held back — an unverified source cannot rewrite what is "
-                "already there. These are unchanged:\n"
-                + "\n".join(f"• {escape_md(path)} — would have lost: "
-                            + "; ".join(escape_md(line[:60]) for line in lost[:3])
-                            for path, lost in held[:5]))
+        # refusing. The lines are named, because "an edit was held back" is not
+        # something you can act on and "these two lines would have been replaced
+        # by a recollection" is. Its additions, if any, were written above.
+        msg += ("\n\n🛡️ Held back — an unverified source can add lines but not "
+                "change or remove one. These lines are unchanged:\n"
+                + "\n".join(f"• {escape_md(path)} — "
+                            + "; ".join(f"“{escape_md(_short(line))}”" for line in lines)
+                            for path, lines in held))
     await notify_md(msg)
 
     # The ledger, after the writes and only on a run that got this far. `sections`
@@ -1187,6 +1375,41 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
     # one section apply_section_updates is not allowed to touch.
     await _record(manual_page_id, sections, source_title, unverified, notify=notify)
     return True
+
+
+def _short(text: str, limit: int = 60) -> str:
+    """A line cut to `limit` characters for a reply, marked when it was cut."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _format_edits(edited: list) -> list:
+    """The diff, one line per section plus one per replaced or removed line.
+
+    Additions are counted, not quoted: they are new, and the page shows them. A
+    replaced or removed line is quoted with Claude's reason, because the page no
+    longer shows it — this reply is the only place it is still visible.
+
+    Escaped here: the paths, the old lines and the reasons are all Claude's or
+    yours. bot/implement.py splits the message if it outgrows Telegram's limit.
+    """
+    out = []
+    for edit in edited:
+        counts = [label for count, label in (
+            (edit.added,         f"+{edit.added} added"),
+            (len(edit.replaced), f"~{len(edit.replaced)} sharpened"),
+            (len(edit.removed),  f"−{len(edit.removed)} removed"),
+            (len(edit.ignored),  f"{len(edit.ignored)} ignored")) if count]
+        out.append(f"*{escape_md(edit.path)}* — " + " · ".join(counts))
+        for mark, changed in (("~", edit.replaced), ("−", edit.removed)):
+            for line, why in changed:
+                out.append(f"  {mark} “{escape_md(_short(line.text))}”"
+                           + (f" — _{escape_md(_short(why, 100))}_" if why else ""))
+    if any(edit.ignored for edit in edited):
+        out.append("_ignored — an edit that named a missing line, a line David never "
+                   "rewrites (lines nested under it, or not plain text), the same line "
+                   "twice, or had no text. Nothing was done for it._")
+    return out
 
 
 def _format_plan(affected: list, new_steps: list, total: int,
