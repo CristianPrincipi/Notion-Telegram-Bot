@@ -57,6 +57,9 @@ before changing what a rule protects. The overview and the full module map are i
   marker as their FIRST block; `_hold_back_rewrites` refuses a section that loses or
   rewords any existing line, and a held-back section is its own outcome. Only that check
   is a guarantee — the prompt rule is a hint; never describe it as one.
+- **A recollection carries no quotes.** Two independent guards: `_RECALL_SUMMARY_SCHEMA`
+  has no `quotes` field (structured output enforces it), and `build_notion_blocks`
+  renders none on a `KNOWLEDGE_RECALL_TYPES` page. Keep both.
 - **`📚 Sources` is David's ledger.** Appended on every Implement; kept unwritable by
   two independent guards (`routable_sections`, `apply_section_updates`). Keep both.
 - **Learn de-duplicates by URL, before the fetch.** Normalisation folds only what cannot

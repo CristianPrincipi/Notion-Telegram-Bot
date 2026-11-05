@@ -19,6 +19,9 @@ Notable changes to David. The format follows
   raise it to at least 16000 or delete it.
 - **When Claude declines a request, the reply says which kind of check stopped
   it** (for example `general_harms`), where the API gives one.
+- **`Learn book` pages no longer include quotations.** Nothing is read for a book,
+  so any "quote" was Claude's recollection, and could be a sentence the author
+  never wrote. Pages built from an article, video, podcast or PDF keep theirs.
 
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption

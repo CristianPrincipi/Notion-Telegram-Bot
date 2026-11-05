@@ -118,6 +118,68 @@ def test_one_predicate_answers_for_both_sides():
     assert not is_unverified_source(None)
 
 
+QUOTED = {**SUMMARY, "sections": [{"heading": "Cues", "content": "Make it obvious.",
+                                   "quotes": ["You do not rise to the level of your goals."]}]}
+
+
+def quote_blocks(blocks):
+    return [b for b in blocks if b["type"] == "quote"]
+
+
+def _section_properties(schema: dict) -> dict:
+    return schema["properties"]["sections"]["items"]["properties"]
+
+
+def _schema_sent(monkeypatch, content_type: str) -> dict:
+    """The schema `summarize_with_claude` actually sends for this type."""
+    sent = {}
+
+    def spy(system, user, schema, **kwargs):
+        sent["schema"] = schema
+        return SUMMARY, None
+
+    monkeypatch.setattr(learn, "complete_json", spy)
+    learn.summarize_with_claude(content_type, "text", title="T", source="s")
+    return sent["schema"]
+
+
+def test_a_recollection_is_not_asked_for_quotes(monkeypatch):
+    """RED before the fix. The summary schema asked every type for "Verbatim
+    quotes worth preserving" — including `Learn book`, where nothing was read and
+    a "verbatim" quote can only come from memory. A plausible sentence the author
+    never wrote, set in a quote block, is the most convincing kind of invention.
+
+    Structured output makes this a guarantee rather than a request: the schema
+    for a recollection has no `quotes` field and every object is closed, so the
+    API cannot return one."""
+    schema = _schema_sent(monkeypatch, "book")
+
+    assert "quotes" not in _section_properties(schema)
+    assert schema["properties"]["sections"]["items"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("content_type", ["article", "video", "podcast", "pdf"])
+def test_a_source_that_was_read_is_still_asked_for_quotes(monkeypatch, content_type):
+    """A quote lifted from a transcript that arrived is worth keeping."""
+    assert "quotes" in _section_properties(_schema_sent(monkeypatch, content_type))
+
+
+def test_a_recollection_page_never_shows_a_quote_block():
+    """RED before the fix. The second, independent guard: whatever a summary
+    holds, a recollection's page renders no quote blocks. It does not depend on
+    the schema above, so loosening that one alone does not bring quotes back."""
+    blocks = learn.build_notion_blocks(QUOTED, "", "book")
+
+    assert quote_blocks(blocks) == []
+    assert any(b["type"] == "paragraph" for b in blocks), "dropped the section too"
+
+
+def test_a_page_built_from_real_text_keeps_its_quotes():
+    blocks = learn.build_notion_blocks(QUOTED, "https://example.com/post", "article")
+
+    assert len(quote_blocks(blocks)) == 1
+
+
 def test_the_reply_says_it_too(monkeypatch):
     """Notion is where it is stored; Telegram is where it is read first."""
     monkeypatch.setattr(learn, "summarize_with_claude",

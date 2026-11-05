@@ -195,6 +195,23 @@ sends to the merge call. Detecting it costs no extra read. One predicate
 checks in two modules is how a marker gets reworded in one of them and silently
 stops being detected in the other.
 
+### A recollection carries no quotes
+
+The summary schema asked every type for "verbatim quotes worth preserving" — including
+`Learn book`, where nothing was read, so a verbatim quote could only come from
+memory. A sentence the author never wrote, set in a quote block, is the most
+convincing kind of invention on the page: it looks like the one thing that was
+checked. Since the move to structured output (see "One model name, one client") the
+schema is a guarantee, so the fix is a schema, not a prompt rule:
+`_RECALL_SUMMARY_SCHEMA` is the summary schema without `quotes`, and the API cannot
+return a field a closed object does not declare. `build_notion_blocks` also renders no
+quote block on a recollection's page, whatever the summary holds. **Two guards**, for
+the same reason as the Sources ledger's below: each one alone is undone by a change
+that looks reasonable by itself — one summary schema for every type again, or a
+builder that renders whatever it is handed. Both are asserted in
+`tests/test_unverified_sources.py`. Pages written before this keep their quotes, and
+still carry the red warning that says they may be fabricated.
+
 ### The Manual keeps a ledger, and it is the one section a merge cannot touch
 
 `📚 Sources` used to be written on the first run and never again, so a Manual
