@@ -172,93 +172,113 @@ def test_clear_by_id_ignores_missing_ids(manual_spy):
     assert manual_spy.deletes == ["a", "b"]
 
 
-# ─── 2. DIET: MERGE REPLACES, IT DOES NOT COMPOUND ─────────────────────────────
+# ─── 2. DIET: EDITS, APPLIED ONCE ──────────────────────────────────────────────
+# The Diet merge returns edit operations on the numbered lines read_section_contents
+# produced; apply_updates writes them, append first. It used to append each
+# section's FULL merged bullets and delete the old ones — and before that, in
+# "merge" mode, to append them on top of the old ones, which doubled the section on
+# every run. These drive the real read and the real writer against a spy.
+
+def diet_leaf(block_id, text, btype="bulleted_list_item"):
+    return {"id": block_id, "type": btype, btype: {"rich_text": [{"plain_text": text}]}}
+
 
 @pytest.fixture
 def diet_spy(monkeypatch):
-    spy = NotionSpy()
+    spy = NotionSpy(existing=[diet_leaf("old-1", "old line one", "paragraph"),
+                              diet_leaf("old-2", "old line two")])
     monkeypatch.setattr(implement_diet, "get_children", spy.get_children)
     monkeypatch.setattr(implement_diet, "append_children", spy.append_children)
     monkeypatch.setattr(implement_diet, "delete_block", spy.delete_block)
     return spy
 
 
-BLOCK_MAP = {"Goals>Fat Loss>Strategies": "section-1"}
+PATH = "Goals>Fat Loss>Strategies"
+TARGETS = {PATH: "section-1"}
 
 
-def update(mode="merge", bullets=("new bullet",)):
-    return [{"path": "Goals > Fat Loss > Strategies", "mode": mode,
-             "bullets": list(bullets)}]
+def diet_op(kind, line, text=""):
+    return {"op": kind, "line": line, "text": text, "why": ""}
 
 
-@pytest.mark.parametrize("mode", ["merge", "replace"])
-def test_both_modes_clear_the_old_bullets(diet_spy, mode):
-    """_DIET_SYSTEM makes Claude return the FULL merged content in BOTH modes.
-
-    "merge" meant Claude merged against the existing bullets itself — not that
-    Notion should append to them. Treating it as append-only wrote the merged
-    superset on top of what was already there, so every run duplicated the
-    section and the bloat was fed back into the next prompt.
-    """
-    applied, skipped = implement_diet.apply_updates(update(mode=mode), BLOCK_MAP)
-
-    assert applied == 1
-    assert skipped == []
-    assert diet_spy.deletes == ["old-1", "old-2"], (
-        f"mode {mode!r} left the old bullets in place — content will compound")
+def apply_diet(*ops, path="Goals > Fat Loss > Strategies"):
+    """read_section_contents, then apply_updates, as run_implement_diet does."""
+    contents, err = implement_diet.read_section_contents(TARGETS)
+    assert err is None
+    return implement_diet.apply_updates([{"path": path, "ops": list(ops)}], TARGETS, contents)
 
 
-@pytest.mark.parametrize("mode", ["merge", "replace"])
-def test_diet_deletes_nothing_when_the_append_fails(diet_spy, mode):
+REWRITE_BOTH = (diet_op("replace", 1, "new line one"), diet_op("replace", 2, "new line two"))
+
+
+def test_diet_deletes_exactly_the_lines_it_replaced(diet_spy):
+    edited, skipped, partial = apply_diet(*REWRITE_BOTH)
+
+    assert [e.path for e in edited] == [PATH]
+    assert (skipped, partial) == ([], [])
+    assert diet_spy.deletes == ["old-1", "old-2"]
+
+
+def test_diet_deletes_nothing_when_the_append_fails(diet_spy):
     diet_spy.append_error = "Notion 502: bad gateway"
 
-    applied, skipped = implement_diet.apply_updates(update(mode=mode), BLOCK_MAP)
+    edited, skipped, partial = apply_diet(*REWRITE_BOTH)
 
-    assert applied == 0
-    assert diet_spy.deletes == [], "old bullets deleted despite a failed append"
+    assert edited == []
+    assert diet_spy.deletes == [], "old lines deleted despite a failed append"
     assert "502" in skipped[0]
 
 
-@pytest.mark.parametrize("mode", ["merge", "replace"])
-def test_diet_appends_strictly_before_it_deletes(diet_spy, mode):
-    implement_diet.apply_updates(update(mode=mode), BLOCK_MAP)
+def test_diet_appends_strictly_before_it_deletes(diet_spy):
+    apply_diet(*REWRITE_BOTH)
 
     kinds = [kind for kind, _ in diet_spy.calls]
-    assert kinds[0] == "append", f"first write was {kinds[0]}, expected append"
+    assert kinds[:2] == ["append", "append"], f"the writes began {kinds}"
+    assert set(kinds[2:]) == {"delete"}
+
+
+def test_diet_writes_without_reading_the_section_again(diet_spy, monkeypatch):
+    """The lines Claude's numbers refer to are the ones read before the merge. A
+    second read at write time would be a second numbering, and a wasted request."""
+    contents, _ = implement_diet.read_section_contents(TARGETS)
+    reads = []
+    monkeypatch.setattr(implement_diet, "get_children",
+                        lambda block_id: reads.append(block_id) or ([], None))
+
+    implement_diet.apply_updates([{"path": PATH, "ops": list(REWRITE_BOTH)}], TARGETS, contents)
+
+    assert reads == []
+    assert diet_spy.deletes == ["old-1", "old-2"]
 
 
 def test_diet_never_deletes_nested_toggle_headings(diet_spy):
-    """Headings are structure, not content — deleting them destroys the skeleton."""
-    diet_spy.existing = [
-        {"id": "leaf-1", "type": "bulleted_list_item"},
-        {"id": "toggle-1", "type": "heading_3"},
-        {"id": "leaf-2", "type": "paragraph"},
-    ]
+    """Headings are structure, not content — deleting them destroys the skeleton.
+    They are never numbered, so no operation can name one."""
+    diet_spy.existing = [diet_leaf("leaf-1", "one"), {"id": "toggle-1", "type": "heading_3"},
+                         diet_leaf("leaf-2", "two", "paragraph")]
 
-    implement_diet.apply_updates(update(), BLOCK_MAP)
+    apply_diet(diet_op("remove", 1), diet_op("remove", 2), diet_op("remove", 3))
 
     assert "toggle-1" not in diet_spy.deletes
     assert diet_spy.deletes == ["leaf-1", "leaf-2"]
 
 
 def test_diet_running_twice_does_not_double_the_section(diet_spy):
-    """The compounding regression, end to end.
-
-    Second run starts from what the first left behind; the section must hold one
-    copy of the bullets, not two.
-    """
+    """The compounding regression, end to end, now for edits: each run reads what
+    the last one left, and the section holds one copy of its lines, not two."""
     live = list(diet_spy.existing)
     counter = iter(range(1000))
 
     def get_children(block_id):
         return list(live), None
 
-    def append_children(block_id, blocks):
+    def append_children(block_id, blocks, after=None):
         # Unique IDs per append: reusing them across runs would make the second
         # run's delete pass remove the blocks it had just written.
-        live.extend({"id": f"new-{next(counter)}", "type": "bulleted_list_item"}
-                    for _ in blocks)
-        return blocks, None
+        made = [dict(b, id=f"new-{next(counter)}") for b in blocks]
+        at = next(i for i, b in enumerate(live) if b["id"] == after) + 1 if after else len(live)
+        live[at:at] = made
+        return made, None
 
     def delete_block(block_id):
         live[:] = [b for b in live if b["id"] != block_id]
@@ -268,34 +288,23 @@ def test_diet_running_twice_does_not_double_the_section(diet_spy):
         mp.setattr(implement_diet, "append_children", append_children)
         mp.setattr(implement_diet, "delete_block", delete_block)
 
-        implement_diet.apply_updates(update(bullets=["a", "b"]), BLOCK_MAP)
-        after_first = len(live)
-        implement_diet.apply_updates(update(bullets=["a", "b"]), BLOCK_MAP)
+        apply_diet(*REWRITE_BOTH)
+        after_first = [b["id"] for b in live]
+        apply_diet(*REWRITE_BOTH)
 
-    assert after_first == 2, f"first run left {after_first} blocks, expected 2"
+    assert len(after_first) == 2, f"first run left {after_first}, expected 2 lines"
     assert len(live) == 2, f"second run left {len(live)} blocks — content compounded"
 
 
-def test_diet_skips_a_section_whose_read_fails(diet_spy, monkeypatch):
-    monkeypatch.setattr(implement_diet, "get_children",
-                        lambda block_id: ([], "Notion 404: not found"))
-
-    applied, skipped = implement_diet.apply_updates(update(), BLOCK_MAP)
-
-    assert applied == 0
-    assert diet_spy.deletes == []
-    assert "404" in skipped[0]
-
-
 def test_diet_leaves_unlisted_sections_alone(diet_spy):
-    """Sections Claude did not mention must never be touched."""
-    applied, skipped = implement_diet.apply_updates(
-        [{"path": "Goals > Nonexistent > Section", "mode": "merge",
-          "bullets": ["x"]}], BLOCK_MAP)
+    """Sections Claude was not shown must never be touched."""
+    edited, skipped, partial = apply_diet(diet_op("add", 0, "x"),
+                                          path="Goals > Nonexistent > Section")
 
-    assert applied == 0
-    assert diet_spy.calls == []
-    assert skipped == ["Goals > Nonexistent > Section"]
+    assert edited == []
+    assert [kind for kind, _ in diet_spy.calls] == []
+    assert skipped == ["Goals > Nonexistent > Section "
+                       "(not one of the sections Claude was shown)"]
 
 
 # ─── 3. PER-PAGE LOCKS ─────────────────────────────────────────────────────────

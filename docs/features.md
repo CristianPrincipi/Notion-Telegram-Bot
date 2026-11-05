@@ -36,7 +36,8 @@ page, so the inbox does not quietly become an archive.
 
 **Diet** is the one area that works differently: instead of a flat Manual it
 keeps a structured page — categories, rows inside them, and the evidence behind
-each row — and `Implement … - Diet` updates only the rows a source is about.
+each row — and `Implement … - Diet` updates only the rows a source is about,
+line by line, with the same reply as a Manual (below).
 
 ## Commands
 
@@ -302,9 +303,9 @@ and saves without checking.
 A `Learn book` summary is a recollection, not a reading, so `Implement` treats it
 with suspicion:
 
-- **It can add to a Manual, but not rewrite it.** David writes the lines it
-  adds and holds back every change or removal it asks for; the reply names the
-  lines that would have changed. They stay as they are.
+- **It can add to a Manual or the Diet page, but not rewrite it.** David writes
+  the lines it adds and holds back every change or removal it asks for; the
+  reply names the lines that would have changed. They stay as they are.
 - **Nothing can check that what it adds is true.** That is why every merge is
   logged in the Manual's `📚 Sources` section, marked as read or recalled — the
   trail, so you can find what came from where.

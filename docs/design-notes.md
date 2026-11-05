@@ -176,7 +176,8 @@ different call site — carrying `batches_done` / `batches_total`, and every cal
 prints the tally plus the warning that a re-run duplicates. `implement`'s
 `apply_section_updates` gained a third bucket for the same reason: a half-written
 section is neither applied nor "unchanged", and it was being filed under the
-latter, next to a heading that said so.
+latter, next to a heading that said so. The Diet path gained it with edit
+operations, when one section became several appends that can fail part-way.
 
 ### A source with no source says so, in the page body
 
@@ -229,7 +230,7 @@ each one alone is undoable by a change that looks reasonable on its own:
 can name a section it was never offered). Both are asserted in
 `tests/test_implement_sections.py`.
 
-### A Manual merge edits lines; it never rewrites a section
+### A merge edits lines; it never rewrites a section
 
 The merge used to return each affected section's FULL content, and the writer
 replaced every block in it. A line Claude kept word for word was still deleted and
@@ -237,15 +238,15 @@ written back as plain text, so it lost its bold label, its links, and every line
 nested under it — and `get_children` reads one level, so those nested lines had never
 been sent to Claude at all. Content disappeared that the model never saw.
 
-Now Claude is shown each section as numbered lines (`Section.numbered`, from the index
-taken before anything is written) and answers with operations: `add` after `[n]` (0 =
-the top), `replace [n]`, `remove [n]`, each with a short `why`. Merging two lines that
+Now Claude is shown each section as numbered lines (`edit_ops.number_lines`, from the
+read taken before anything is written) and answers with operations: `add` after `[n]`
+(0 = the top), `replace [n]`, `remove [n]`, each with a short `why`. Merging two lines that
 say the same thing is a pair, `replace` one and `remove` the other, so every operation
 still touches exactly one line. A line no operation names is never written to.
 
 - **FIXED lines.** A block with children, or one that is not a paragraph, bullet or
   numbered item, is shown as `(fixed)` and can only be added after. Replacing it would
-  delete what is nested under it, unseen. The prompt says so; `_plan_edits` refuses it
+  delete what is nested under it, unseen. The prompt says so; `plan_edits` refuses it
   anyway.
 - **Bad operations are ignored, out loud.** A missing line, a fixed line, or a line
   named by two replace/remove operations (they contradict each other; keeping the
@@ -262,12 +263,31 @@ still touches exactly one line. A line no operation names is never written to.
   shows them. Additions are counted only, because the page shows them. Nothing bounds
   how many lines that is, so `bot/implement.py` splits the Markdown channel.
 
-The Diet merge (`implement_diet.py`) still returns whole sections; giving it the same
-operations is a separate change.
+**One home, two callers.** `services/edit_ops.py` numbers, checks, writes and reports;
+the flat Manual and the Diet page each keep their prompt, schema, and where a section's
+lines live. The writer is handed the caller's `append_children` and delete function, so
+the writes still go through the caller's module. The Diet page differs in three ways:
+
+- **Line 0 is the END of a Diet section.** Its lines are a toggle heading's CHILDREN, and
+  Notion (API `2022-06-28`) can insert a child only after another child or at the end,
+  never above the first. A flat-page section's lines are siblings of its heading, so 0
+  anchors on the heading there. Each prompt says which.
+- **One read.** `read_section_contents` returns the routed sections' numbered lines, and
+  the writer uses them. `apply_updates` used to read each section again at write time —
+  a wasted request inside the lock, and with numbers it would have been a second
+  numbering.
+- **Only a section Claude was shown can be written.** `apply_updates` used to resolve
+  Claude's paths against the whole page, so a merge that named a section it had never
+  been sent replaced that section's content with lines written against nothing (Hard
+  Rule 3). It is now limited to the routed sections, whose lines were read.
+
+The Diet merge also returned a `conflicts` list, printed as ⚖️ lines. It was dropped
+(2026-11-05): every replace or remove now carries its own why, quoted in the reply
+next to the line it changed.
 
 ### An unverified source may add to a Manual; it may not rewrite one
 
-`_hold_back_rewrites` passes an unverified merge's `add` operations and holds back
+`edit_ops.hold_back_rewrites` passes an unverified merge's `add` operations and holds back
 every other one, named in the reply by the line it would have changed. Held back is a
 fourth outcome in the reply, next to edited / skipped / partial, because "David
 refused" and "Notion failed" need different next steps.
@@ -284,6 +304,9 @@ Be precise about what this buys, in the code and in any PR describing it:
   of a recollection. Deterministic — it reads the kind of each operation.
 - **Prompt-only:** `_UNVERIFIED_MERGE_RULE` asks the model to use `add` only. It keeps
   the held-back list short; it is not what makes the rule true.
+- **The Diet page too, since 2026-11-05.** It used to warn in the plan and then let a
+  recollection rewrite anything on the page. With edit operations the same filter cost
+  nothing to apply, so it does; its prompt carries its own add-only hint.
 - **Not checked by anything:** whether an ADDED line is true. That is the ledger's
   job, and the ledger is a trail, not a verdict. An addition can also sit next to a
   line it contradicts: the rule keeps the old line, not the page consistent.
@@ -998,10 +1021,10 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   the bug's home. The live copy was in `briefing.py`. `david.headers` — a second
   Notion header dict, superseded by `clients/notion_client.py` and read by nothing — has been
   deleted along with the `NOTION_KEY` that existed only to build it.)
-- **What an unverified source may do to a Manual is now bounded, and the bound is
-  narrower than it looks.** `_hold_back_rewrites` writes only its `add` operations,
-  so a recollection can ADD but cannot replace or remove. That is deterministic and
-  it is the only part that is enforced. Nothing checks whether an added line is
+- **What an unverified source may do to a Manual or the Diet page is now bounded, and
+  the bound is narrower than it looks.** `edit_ops.hold_back_rewrites` writes only
+  its `add` operations, so a recollection can ADD but cannot replace or remove. That
+  is deterministic and it is the only part that is enforced. Nothing checks whether an added line is
   TRUE — nothing can — which is what the Sources ledger is for.
   `_UNVERIFIED_MERGE_RULE` in the prompt is a hint that helps the model comply,
   never the guarantee; do not describe it as one. How often it holds an edit back

@@ -36,6 +36,7 @@ before changing what a rule protects. The overview and the full module map are i
 | Sending scheduled messages | `proactive/scheduler.py`; builders return `(text, error)` and never send |
 | The unverified-source marker | `config.UNVERIFIED_MARKER` + `is_unverified_source` |
 | Rendering calendar events | `services/agenda.format_events_inline` |
+| Edit operations on a section's numbered lines: numbering, checking, writing, the additions-only filter, the diff in the reply | `services/edit_ops.py`, for the Manual and the Diet page alike. Each caller keeps its prompt, schema, what line 0 means and the sections it refuses |
 
 ## Conventions
 
@@ -53,16 +54,19 @@ before changing what a rule protects. The overview and the full module map are i
 - **A partial write is a third outcome.** `append_children` returns `Written` (a list
   with `batches_done` / `batches_total`); callers print the tally and warn that a
   re-run duplicates. A test double returns `Written` too (`conftest.written_*`).
-- **A Manual merge edits lines; it never rewrites a section.** Claude answers with `add` /
-  `replace` / `remove` on the numbered lines of `Section.numbered`; a line no operation
-  names is never written to. A block with children, or that is not plain text, is FIXED:
-  added after, never replaced or removed. An operation naming a missing, fixed or
-  twice-named line is ignored and counted in the reply. (The Diet merge still returns
-  whole sections.)
-- **A recollection may add to a Manual, never rewrite it.** `Learn book` pages carry the
-  marker as their FIRST block; `_hold_back_rewrites` passes only its `add` operations and
-  holds back every replace and remove, named in the reply as their own outcome. Only that
-  check is a guarantee — the prompt rule is a hint; never describe it as one.
+- **A merge edits lines; it never rewrites a section** — on a Manual and on the Diet page.
+  Claude answers with `add` / `replace` / `remove` on numbered lines
+  (`edit_ops.number_lines`, from the one read taken before anything is written); a line no
+  operation names is never written to. A block with children, or that is not plain text,
+  is FIXED: added after, never replaced or removed. An operation naming a missing, fixed or
+  twice-named line is ignored and counted in the reply. Only a section Claude was shown
+  can be written. Line 0 is a section's top on a Manual and its END on Diet (Notion
+  cannot insert above a block's first child).
+- **A recollection may add to a Manual or the Diet page, never rewrite it.** `Learn book`
+  pages carry the marker as their FIRST block; `edit_ops.hold_back_rewrites` passes only
+  its `add` operations and holds back every replace and remove, named in the reply as
+  their own outcome. Only that check is a guarantee — the prompt rule is a hint; never
+  describe it as one.
 - **A recollection carries no quotes.** Two independent guards: `_RECALL_SUMMARY_SCHEMA`
   has no `quotes` field (structured output enforces it), and `build_notion_blocks`
   renders none on a `KNOWLEDGE_RECALL_TYPES` page. Keep both.
