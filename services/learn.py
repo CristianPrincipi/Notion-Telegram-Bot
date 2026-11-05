@@ -443,6 +443,7 @@ _SUMMARY_SCHEMA = {
                                 "description": "Verbatim quotes worth preserving."},
                 },
                 "required": ["heading", "content"],
+                "additionalProperties": False,
             },
         },
         "key_takeaways": {"type": "array", "items": {"type": "string"},
@@ -450,6 +451,7 @@ _SUMMARY_SCHEMA = {
         "tags": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["title", "tldr"],
+    "additionalProperties": False,
 }
 
 
