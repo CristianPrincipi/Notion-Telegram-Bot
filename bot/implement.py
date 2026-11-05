@@ -8,6 +8,9 @@ the two copies disagreeing is exactly the class of bug the registry work removed
 from the router.
 """
 
+from functools import partial
+
+from bot.long_messages import send_long
 from bot.notify import for_update
 from bot.tasks import run_detached
 from services.implement import run_implement
@@ -19,6 +22,10 @@ async def cmd_implement(update, context, args):
 
 
 async def handle_implement(update, user_text: str):
-    """Bind this message's reply channels and run the command."""
+    """Bind this message's reply channels and run the command.
+
+    The Markdown channel splits: the closing reply quotes every line a merge
+    replaced or removed, and nothing bounds how many that is.
+    """
     notify, notify_md = for_update(update)
-    await run_implement(user_text, notify=notify, notify_md=notify_md)
+    await run_implement(user_text, notify=notify, notify_md=partial(send_long, notify_md))

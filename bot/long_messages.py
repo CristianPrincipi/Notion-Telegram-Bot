@@ -11,8 +11,9 @@ the notify pair itself is bound, in the adapter:
 The service still calls its channel once with the whole text. Which channel
 splits is the adapter's decision, and the two callers make it differently on
 purpose: `Get` renders a Notion section as PLAIN text (arbitrary user content,
-which Markdown cannot be trusted to survive), while the ID diagnostics build
-David's own Markdown and split that.
+which Markdown cannot be trusted to survive), while the ID diagnostics and
+`Implement` (whose closing reply quotes every line a merge replaced or removed)
+build David's own Markdown and split that.
 
 THERE USED TO BE TWO OF THIS, one private to pkm.py and one to notion_ids.py,
 differing in which sender they called and in one character of whitespace

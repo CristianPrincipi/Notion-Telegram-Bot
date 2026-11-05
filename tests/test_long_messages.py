@@ -16,6 +16,8 @@ That choice is not cosmetic, and it is the thing this file pins:
                 trusted to survive it.
   `Diag`/`DBs`  split the MARKDOWN channel. Those reports are David's own
                 markup, with every interpolated value escaped at the call site.
+  `Implement`   splits the MARKDOWN channel too: its closing reply quotes every
+                line a merge replaced or removed, and nothing bounds how many.
 
 Nothing asserted either before the merge. The copies were only ever reached
 through a fake Update, and no test built a message long enough to split — so
@@ -25,6 +27,7 @@ channel, with the whole suite green.
 
 from functools import partial
 
+import bot.implement
 import bot.notion_ids
 import bot.pkm
 from bot.long_messages import LIMIT, send_long, split_for_telegram
@@ -151,3 +154,24 @@ def test_the_id_diagnostics_split_the_markdown_channel(monkeypatch):
     listing = [kwargs for text, kwargs in update.message.replies if "Database 199" in text]
     assert all(kwargs.get("parse_mode") == "Markdown" for kwargs in listing), (
         f"the ID report lost its Markdown: {listing}")
+
+
+def test_implement_splits_the_markdown_channel(monkeypatch):
+    """The diff in Implement's closing reply has one line per replaced or removed
+    line, so a big merge can outgrow one message. Unsplit, Telegram rejects it,
+    and the reply that says what changed in your Manual never arrives."""
+    diff = "\n".join(f"  − “line {i} of the old section”" + " — _because_" * 4
+                     for i in range(200))
+
+    async def run_implement(user_text, *, notify, notify_md):
+        await notify_md(f"✅ Manual updated 🔄\n\n{diff}")
+
+    monkeypatch.setattr(bot.implement, "run_implement", run_implement)
+    update = FakeUpdate(text="Implement Memory Techniques - Brain")
+
+    run(bot.implement.handle_implement(update, update.message.text))
+
+    assert update.message.replied_with("line 199"), "the tail of the diff never arrived"
+    assert len(update.message.replies) > 3, "the diff went out in one message"
+    assert all(len(text) <= LIMIT for text, _ in update.message.replies)
+    assert all(kwargs.get("parse_mode") == "Markdown" for _, kwargs in update.message.replies)

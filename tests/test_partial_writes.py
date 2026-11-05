@@ -290,7 +290,8 @@ def manual(monkeypatch):
 def apply_it():
     sections, _ = implement.read_manual_sections("manual-1")
     return implement.apply_section_updates(
-        "manual-1", [{"path": "Perfect Process", "lines": ["merged"]}], sections)
+        "manual-1", [{"path": "Perfect Process", "ops": [
+            {"op": "replace", "line": 1, "text": "merged", "why": ""}]}], sections)
 
 
 def test_a_half_written_section_is_not_reported_as_unchanged(manual):
@@ -300,9 +301,9 @@ def test_a_half_written_section_is_not_reported_as_unchanged(manual):
     part of the replacement is now sitting next to it. Both copies are on the
     page. "Unchanged" is the one thing that section is not.
     """
-    applied, skipped, partial = apply_it()
+    edited, skipped, partial = apply_it()
 
-    assert applied == 0
+    assert edited == []
     assert skipped == [], "a half-written section was filed as unchanged"
     assert len(partial) == 1
     assert "2 of 5" in partial[0]
@@ -319,9 +320,9 @@ def test_a_section_whose_first_batch_failed_is_genuinely_unchanged(manual):
 
     manual["append"] = (written_nothing(), "Notion 400: bad block")
 
-    applied, skipped, partial = apply_it()
+    edited, skipped, partial = apply_it()
 
-    assert (applied, partial) == (0, [])
+    assert (edited, partial) == ([], [])
     assert len(skipped) == 1
 
 

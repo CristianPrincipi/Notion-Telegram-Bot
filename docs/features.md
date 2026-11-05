@@ -26,8 +26,8 @@ is a small knowledge system built from three commands:
    **Manual** of an **Area** — Brain, Finance, or any area you add. A Manual is
    one living page per area: a `⚙️ Perfect Process`, its improvements, a
    step-by-step breakdown, and a `📚 Sources` log of everything merged into it.
-   Only the sections the new source touches are rewritten; the rest of the page
-   is left exactly as it was.
+   Only the sections the new source touches are edited, line by line; the rest
+   of the page is left exactly as it was.
 3. **`Get`** reads a section back out of a Manual into the chat, when you need it.
 
 Every Saturday David lists the Learn pages you saved over a week ago and never
@@ -139,6 +139,23 @@ Get Perfect Process - Brain
 `Implement` finds the Learn page by its title — any distinctive part of it is
 enough — and the area by its name. The first run in an area builds the Manual from scratch; later
 runs show you which sections they are changing, then change only those.
+
+Inside a section, Claude adds, sharpens or removes individual lines; every line
+it does not name stays exactly as it is, with its formatting. A line with other
+lines nested under it is never rewritten or removed (David cannot see what is
+nested there), and neither is anything that is not plain text. The reply says
+what changed in each section:
+
+```
+Perfect Process — +1 added · ~1 sharpened · −1 removed
+  ~ “Prime the material” — pre-tests beat re-reading
+  − “Recall it cold” — now part of step 1
+```
+
+Every line that was replaced or removed is quoted with Claude's reason, because
+the page no longer shows it. Additions are only counted: you can see them on the
+page. An edit David could not apply (a line that is not there, or one it never
+rewrites) is counted as **ignored**, and nothing is done for it.
 
 `Get` matches the topic loosely — `Get perfect - Brain` finds `⚙️ Perfect
 Process`.
@@ -285,10 +302,9 @@ and saves without checking.
 A `Learn book` summary is a recollection, not a reading, so `Implement` treats it
 with suspicion:
 
-- **It can add to a Manual, but not rewrite it.** David compares the merged
-  section with what was there; if any existing line was removed or reworded, the
-  whole section is held back and the reply names the lines that would have
-  changed.
+- **It can add to a Manual, but not rewrite it.** David writes the lines it
+  adds and holds back every change or removal it asks for; the reply names the
+  lines that would have changed. They stay as they are.
 - **Nothing can check that what it adds is true.** That is why every merge is
   logged in the Manual's `📚 Sources` section, marked as read or recalled — the
   trail, so you can find what came from where.

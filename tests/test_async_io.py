@@ -232,7 +232,7 @@ def fresh_locks():
 
 
 def _fake_section(path="Perfect Process"):
-    """A real implement.Section, so _sectioned_run can read .path/.style/.text."""
+    """A real implement.Section, so _sectioned_run can read .path/.style/.listing."""
     section = implement.Section(path, 2, "heading-1")
     section.content_ids = ["old-1"]
     section.content_blocks = [{"id": "old-1", "type": "numbered_list_item",
@@ -251,8 +251,10 @@ def implement_stubs(monkeypatch):
         "route_sections":        lambda paths, text, title: (
             {"affected": [{"path": "Perfect Process"}], "new_steps": []}, None),
         "merge_sections":        lambda targets, text, title, unverified=False: (
-            {"updates": [{"path": "Perfect Process", "lines": ["merged"]}]}, None),
-        "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (1, [], []),
+            {"updates": [{"path": "Perfect Process", "ops": [
+                {"op": "replace", "line": 1, "text": "merged", "why": ""}]}]}, None),
+        "apply_section_updates": lambda page_id, updates, sections, new_paths=None: (
+            [implement.SectionEdit("Perfect Process")], [], []),
         # The Sources ledger — one more Notion write, and one more chance to
         # freeze the bot if it is ever called straight from the loop.
         "record_source":         lambda page_id, sections, title, unverified: (True, None),

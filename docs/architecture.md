@@ -65,7 +65,7 @@ What each file owns — and, as important, what it must not.
 | `services/expenses.py` | The expense writes, `find_expense_matches`, the `EXPENSES_ID` lock, and the find-choose-write cycle | Telegram, argument parsing |
 | `services/books.py` | Book + quote writes, `extract_quote_from_pdf`, the quote-from-PDF flow (its download is INJECTED) | Fetching from Telegram |
 | `services/learn.py` | `Learn [type] [source]` — extract, Claude-summarise, write to Notion. Owns the trafilatura→BS4 parser ladder, the one place source text is cut to fit, and URL identity (`normalise_source_url`, the duplicate check on the `Source URL` column and its ` !` override) | Manual merging; the unverified marker's TEXT and any column NAME (those are `config.py`) |
-| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, merge and rewrite **only** the affected sections. Owns `get_area_db_id`, the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge) and the additions-only rule for unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`) |
+| `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, and edit **only** the affected sections, line by line (`add` / `replace` / `remove`). Owns `get_area_db_id`, the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge) and the additions-only rule for unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, surgical updates | Generic Manual merging |
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
 | `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
@@ -107,9 +107,9 @@ Each one exists because its absence shipped a bug; the history is in
    copy treated as authoritative — Railway's disk is wiped on every deploy. A
    cache is allowed only if deleting it is harmless.
 2. **Never delete before the replacement is committed.** Notion has no
-   transactions, so rewriting a section is: snapshot the old blocks, append the
-   new ones, and only if that worked, delete the snapshot. A failure in between
-   leaves old *and* new on the page — never neither.
+   transactions, so editing a section is: snapshot the lines to replace or
+   remove, append the new ones, and only if that worked, delete the snapshot. A
+   failure in between leaves old *and* new on the page — never neither.
 3. **Never send a section the source did not touch.** Anything sent to the model
    can come back reworded, so `Implement` routes first (a cheap call over section
    *names*) and then merges only the affected sections.

@@ -218,8 +218,8 @@ still carry the red warning that says they may be fabricated.
 recorded nothing about what had been merged into it since. It is now appended to
 on every run — title, whether the source was unverified, and the date — and it is
 the only place an unverified source's provenance survives, because a marker inside
-a section does NOT: the merge returns a section's full content, so anything inline
-goes back through the model next run and is reworded or dropped at its discretion.
+a section does NOT: every line of a section a source touches goes back through the
+model on the next run, which may replace or remove it at its discretion.
 
 Kept unwritable by **two independent guards**, and they are independent because
 each one alone is undoable by a change that looks reasonable on its own:
@@ -229,25 +229,64 @@ each one alone is undoable by a change that looks reasonable on its own:
 can name a section it was never offered). Both are asserted in
 `tests/test_implement_sections.py`.
 
+### A Manual merge edits lines; it never rewrites a section
+
+The merge used to return each affected section's FULL content, and the writer
+replaced every block in it. A line Claude kept word for word was still deleted and
+written back as plain text, so it lost its bold label, its links, and every line
+nested under it — and `get_children` reads one level, so those nested lines had never
+been sent to Claude at all. Content disappeared that the model never saw.
+
+Now Claude is shown each section as numbered lines (`Section.numbered`, from the index
+taken before anything is written) and answers with operations: `add` after `[n]` (0 =
+the top), `replace [n]`, `remove [n]`, each with a short `why`. Merging two lines that
+say the same thing is a pair, `replace` one and `remove` the other, so every operation
+still touches exactly one line. A line no operation names is never written to.
+
+- **FIXED lines.** A block with children, or one that is not a paragraph, bullet or
+  numbered item, is shown as `(fixed)` and can only be added after. Replacing it would
+  delete what is nested under it, unseen. The prompt says so; `_plan_edits` refuses it
+  anyway.
+- **Bad operations are ignored, out loud.** A missing line, a fixed line, or a line
+  named by two replace/remove operations (they contradict each other; keeping the
+  line loses nothing). The reply counts them and the log names each one.
+- **Hard Rule 2 per section.** One append per anchor line, the replacement first so the
+  order survives the delete; deletes only after every append in the section landed,
+  from the pre-write index. A failure after the first append is `partial`: nothing was
+  removed, so a line being replaced is there twice.
+- **A replacement keeps its line's type** (a numbered step stays numbered) **and a
+  leading bold label** when the new text starts with it. Other formatting belonged to
+  the old text and goes with it.
+- **The reply is the diff:** per section `+N added · ~N sharpened · −N removed`, and
+  every replaced or removed line quoted with Claude's reason, because the page no longer
+  shows them. Additions are counted only, because the page shows them. Nothing bounds
+  how many lines that is, so `bot/implement.py` splits the Markdown channel.
+
+The Diet merge (`implement_diet.py`) still returns whole sections; giving it the same
+operations is a separate change.
+
 ### An unverified source may add to a Manual; it may not rewrite one
 
-`_hold_back_rewrites` compares the merge's output against the section's existing
-lines and refuses the whole section unless every one of them survives verbatim
-(whitespace-normalised, order significant — a numbered routine with two steps
-swapped has been changed). A held-back section is a fourth outcome in the reply,
-next to applied / skipped / partial, because "David refused" and "Notion failed"
-need different next steps.
+`_hold_back_rewrites` passes an unverified merge's `add` operations and holds back
+every other one, named in the reply by the line it would have changed. Held back is a
+fourth outcome in the reply, next to edited / skipped / partial, because "David
+refused" and "Notion failed" need different next steps.
+
+It used to compare the merge's full rewrite of a section with the lines already there,
+and refuse the WHOLE section, additions included, unless every line survived verbatim.
+A model copying twenty lines word for word eventually rewords one, so the safe
+direction cost real content. With edit operations nothing has to be copied: an add
+cannot touch an existing line, so only an edit that asked to change one is held back.
 
 Be precise about what this buys, in the code and in any PR describing it:
 
-- **Enforced:** no line already in the Manual is deleted or reworded on the
-  authority of a recollection. Deterministic — David holds both sides before it
-  writes.
-- **Prompt-only:** `_UNVERIFIED_MERGE_RULE` asks the model to reproduce existing
-  lines exactly. It is what makes the check pass often enough to be usable; it is
-  not what makes it true.
+- **Enforced:** no line already in the Manual is replaced or removed on the authority
+  of a recollection. Deterministic — it reads the kind of each operation.
+- **Prompt-only:** `_UNVERIFIED_MERGE_RULE` asks the model to use `add` only. It keeps
+  the held-back list short; it is not what makes the rule true.
 - **Not checked by anything:** whether an ADDED line is true. That is the ledger's
-  job, and the ledger is a trail, not a verdict.
+  job, and the ledger is a trail, not a verdict. An addition can also sit next to a
+  line it contradicts: the rule keeps the old line, not the page consistent.
 
 ### Learn asks whether it has seen this URL before, and asks Notion, not itself
 
@@ -960,14 +999,15 @@ Found in the code, not resolved here — do not "fix" these by guessing intent:
   Notion header dict, superseded by `clients/notion_client.py` and read by nothing — has been
   deleted along with the `NOTION_KEY` that existed only to build it.)
 - **What an unverified source may do to a Manual is now bounded, and the bound is
-  narrower than it looks.** `_hold_back_rewrites` refuses to write a section unless
-  every existing line survives verbatim, so a recollection can ADD but cannot
-  delete or reword. That is deterministic and it is the only part that is
-  enforced. Nothing checks whether an added line is TRUE — nothing can — which is
-  what the Sources ledger is for. `_UNVERIFIED_MERGE_RULE` in the prompt is a hint
-  that helps the model comply, never the guarantee; do not describe it as one.
-  How often the rule holds a section back is still unmeasured: `_MERGE_SYSTEM`
-  asks for "the FULL merged content" and models reword while reproducing.
+  narrower than it looks.** `_hold_back_rewrites` writes only its `add` operations,
+  so a recollection can ADD but cannot replace or remove. That is deterministic and
+  it is the only part that is enforced. Nothing checks whether an added line is
+  TRUE — nothing can — which is what the Sources ledger is for.
+  `_UNVERIFIED_MERGE_RULE` in the prompt is a hint that helps the model comply,
+  never the guarantee; do not describe it as one. How often it holds an edit back
+  is now in the Railway log (`Implement <section>: held back N edit(s) from an
+  unverified source`), since the merge stopped asking for whole sections; whether
+  those held-back edits are usually corrections worth having is still open.
 - **The force gate on `Implement` was considered and declined.** A prompt-level
   refusal (`Implement … - Brain !`) was the obvious symmetry with Learn's token
   and was rejected deliberately: a gate that fires on every book page is a gate
