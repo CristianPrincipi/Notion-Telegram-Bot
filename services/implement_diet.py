@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,6 +15,10 @@ from telegram_text import escape_md
 # reaches this module through a lazy import inside run_implement, never at
 # module scope.
 from services.implement import fit_to_budget
+from services.edit_ops import (
+    format_edits, format_held, hold_back_rewrites, listing, number_lines, op_schema,
+    plan_edits, write_edit,
+)
 from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text,
     append_children, delete_block, create_page, extract_rich_text, rich,
@@ -24,6 +29,8 @@ from clients.notion_client import (
 # ─── ENV ───────────────────────────────────────────────────────────────────────
 LEARN_ID      = os.environ.get("LEARN_ID")
 DIET_ID       = os.environ.get("DIET_ID")
+
+logger = logging.getLogger(__name__)
 
 # ─── DIET PAGE BLUEPRINT (translated from the handwritten diagram) ─────────────
 # H1 → list of H2 rows. Each H2 row carries the same set of H3 attributes.
@@ -264,9 +271,16 @@ def read_section_contents(sections: dict):
 
     BLOCKING — one Notion request per section, four at a time.
 
-    `sections` is {path: block_id}; the result is {path: "text content"}. This is
-    the level-4 read that read_diet_structure no longer does up front, and it now
-    runs only for the sections routing selected — a handful rather than ~45.
+    `sections` is {path: block_id}; the result is {path: numbered lines}
+    (`edit_ops.number_lines`). This is the level-4 read that read_diet_structure
+    no longer does up front, and it runs only for the sections routing selected —
+    a handful rather than ~45.
+
+    THE ONE READ. The same lines are what the merge is shown and what the writer
+    resolves Claude's operations against, so [3] means the same block to both.
+    apply_updates used to read each section a second time at write time; inside
+    the lock that was only a wasted request, and with numbered lines it would be
+    a second numbering.
 
     Any failed read fails the WHOLE fetch, for the reason in _children_of_many:
     a section that failed to read is indistinguishable from an empty one once the
@@ -283,11 +297,10 @@ def read_section_contents(sections: dict):
     contents = {}
     for path in paths:
         blocks = children.get(sections[path], [])
-        # Nested toggle headings are structure, not this section's content — the
-        # same filter apply_updates uses to decide what is replaceable, so what
-        # the model is shown is exactly what a rewrite would replace.
+        # Nested toggle headings are structure, not this section's content: never
+        # numbered, so never shown to the model and never edited.
         leaf = [b for b in blocks if not b.get("type", "").startswith("heading_")]
-        contents[path] = blocks_to_text(leaf, style="plain")
+        contents[path] = number_lines(leaf)
     return contents, None
 
 
@@ -313,8 +326,9 @@ def read_section_contents(sections: dict):
 #
 #   ROUTE — the section paths, names ONLY, plus the summary. "Which of these does
 #           this inform?" A few hundred tokens of taxonomy.
-#   MERGE — the current content of ONLY the routed sections, plus the summary.
-#           "Here is what those sections say now; return their full merged text."
+#   MERGE — the current content of ONLY the routed sections, as numbered lines,
+#           plus the summary. "Here is what those sections say now; what do you
+#           add, replace or remove?"
 #
 # Measured on a populated page: ~5,800 input tokens down to ~2,500, and ~45
 # Notion reads deferred to the sections that turn out to matter. The summary is
@@ -383,27 +397,39 @@ def route_sections(paths: list, summary_text: str, summary_title: str):
                          max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS, effort=ANTHROPIC_ROUTE_EFFORT)
 
 
-_MERGE_SYSTEM = """You merge newly learned content into specific sections of a personal DIET page.
+_MERGE_SYSTEM = """You edit specific sections of a personal DIET page with newly learned content from a SUMMARY.
 
-For each section you are given its current content and the new SUMMARY. Return the FULL
-merged content for that section — it replaces what is there.
+Each section is given as numbered lines, "[n] text". Answer with EDIT OPERATIONS
+on those lines, not with rewritten sections: every line you do not name stays
+exactly as it is, formatting and all.
+
+Operations:
+- add: a new line after line [n]. Use 0 to put it at the END of the section
+  (the page cannot insert above a section's first line). Several adds after the
+  same line appear in the order you give them.
+- replace: line [n] becomes your text, when the summary corrects it, makes it
+  more specific, or backs it with better evidence.
+- remove: line [n] goes, only when the summary shows it is wrong or it now says
+  the same as another line.
+- To merge two lines that say the same thing: replace one with the merged line
+  and remove the other.
+- A line marked (fixed) holds content you cannot see or edit. You may add after
+  it; never replace or remove it.
+- Name each line by the number it was given; never renumber after your own
+  edits. Name a line in at most one replace or remove.
+- Every operation has a why: one short line on what in the summary justifies it.
 
 Rules:
-- Merge, never concatenate. Each fact appears exactly once, in its best form.
-- Keep everything in the current content that the summary does not supersede.
-  Content you leave out is deleted.
-- Store ACTIONABLE information, not raw notes. Each bullet is a concrete, standalone statement.
-- mode "merge": you combined your bullets with the existing content, removing duplicates
-  and keeping the stronger version.
-- mode "replace": the existing content is outdated or wrong and the summary supersedes it.
-- For Evidence sections, structure bullets as "Question: …", "Result: …", "Limits: …",
+- Merge, never concatenate. Do not add a line that restates an existing one;
+  sharpen that line instead.
+- Store ACTIONABLE information, not raw notes. Each line is a concrete,
+  standalone statement.
+- For Evidence sections, write lines as "Question: …", "Result: …", "Limits: …",
   "Practical Conclusion: …" when the summary provides them.
 - Do NOT invent content. Do NOT infer beyond the summary.
-- "path" MUST be copied EXACTLY from the section headers given to you."""
+- "path" MUST be copied EXACTLY from the section headers given to you.
+- Return only sections you are actually changing."""
 
-# `updates` is byte-for-byte the shape apply_updates already consumes, so the
-# write path — append-then-delete, and both modes replacing the section's leaf
-# content — is untouched by this split.
 _MERGE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -412,35 +438,47 @@ _MERGE_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "path":    {"type": "string",
-                                "description": "Exactly matching a section header given to you."},
-                    "mode":    {"type": "string", "enum": ["merge", "replace"]},
-                    "bullets": {"type": "array", "items": {"type": "string"},
-                                "description": "The FULL merged content for this section."},
+                    "path": {"type": "string",
+                             "description": "Exactly matching a section header given to you."},
+                    "ops":  {"type": "array", "items": op_schema("the end of the section")},
                 },
-                "required": ["path", "mode", "bullets"],
+                "required": ["path", "ops"],
                 "additionalProperties": False,
             },
         },
-        "conflicts": {"type": "array", "items": {"type": "string"},
-                      "description": "Contradictions found between the summary and the "
-                                     "existing content, and how you resolved them."},
     },
     "required": ["updates"],
     "additionalProperties": False,
 }
 
 
-def merge_sections(contents: dict, summary_text: str, summary_title: str):
-    """Merge the summary into the given sections. Returns (result, error).
+# Appended to the merge prompt when the summary is a recollection. The HINT, not
+# the guard: edit_ops.hold_back_rewrites drops every replace and remove from such
+# a summary whatever the model answers — the same rule as the flat Manual.
+_UNVERIFIED_MERGE_RULE = """
 
-    `contents` is {path: current text} for the routed sections ONLY. Everything
-    else on the page is absent from this prompt, which is the only guarantee that
-    it comes back unchanged — because it never went.
+=== THIS SUMMARY IS UNVERIFIED ===
+It is a model's recollection of a work, not an extract of any text. Nothing was
+read to produce it, so relative to the Diet page it is the WEAKER evidence.
+
+- Use add only. Do not replace or remove any existing line, however much this
+  summary appears to contradict it.
+- A replace or remove from this summary is discarded, not applied."""
+
+
+def merge_sections(contents: dict, summary_text: str, summary_title: str,
+                   unverified: bool = False):
+    """Edit operations for the given sections. Returns (result, error).
+
+    `contents` is {path: numbered listing} for the routed sections ONLY
+    (`edit_ops.listing`). Everything else on the page is absent from this prompt,
+    which is the only guarantee that it comes back unchanged — because it never
+    went.
 
     `summary_text` arrives already within DIET_SUMMARY_CHARS — run_implement_diet
-    owns the cap. The section texts in `contents` are NOT capped and must not be:
-    a section is sent whole or not at all, because what comes back replaces it.
+    owns the cap. The section listings in `contents` are NOT capped and must not
+    be: a section is sent whole or not at all, because the line numbers the ops
+    come back with index into it.
     """
     parts = []
     for path, text in contents.items():
@@ -448,74 +486,68 @@ def merge_sections(contents: dict, summary_text: str, summary_title: str):
         parts.append(f"--- SECTION: {path} ---\n{body}")
 
     user_msg = (
-        "=== SECTIONS TO MERGE ===\n" + "\n\n".join(parts) +
+        "=== SECTIONS TO EDIT ===\n" + "\n\n".join(parts) +
         f"\n\n=== SUMMARY: {summary_title} ===\n{summary_text}"
+        + (_UNVERIFIED_MERGE_RULE if unverified else "")
     )
     return complete_json(_MERGE_SYSTEM, user_msg, _MERGE_SCHEMA)
 
 
 # ─── 4. APPLY UPDATES SURGICALLY ───────────────────────────────────────────────
 
-def apply_updates(updates: list, block_map: dict):
-    """For each update, locate the target section block and refresh its content.
+def apply_updates(updates: list, targets: dict, contents: dict):
+    """Apply each routed section's edit operations. Returns (edited, skipped, partial).
 
-    BLOCKING — several Notion round trips per section touched. Run via
-    asyncio.to_thread, never directly from the event loop.
+    BLOCKING — one Notion round trip per insertion point and per deleted line.
+    Run via asyncio.to_thread, never directly from the event loop.
 
-    BOTH modes replace the section's leaf content. _DIET_SYSTEM instructs Claude
-    to return the FULL merged content of every section it touches — "merge" means
-    it merged against the existing bullets itself and removed duplicates, not
-    that Notion should append to what is already there.
+    `targets` is {path: section block id} and `contents` {path: numbered lines},
+    both for the ROUTED sections only — the ones Claude was shown. An update for
+    any other path is skipped: it used to be resolved against the whole page, so
+    a merge naming a section it had never seen replaced that section's content
+    with lines written against nothing.
 
-    Treating "merge" as append-only (the previous behaviour) wrote that full
-    merged superset ON TOP of the bullets it already contained. Every run
-    therefore duplicated the section, and because the next run reads that content
-    straight back out (read_section_contents) and feeds it to the merge, the bloat
-    compounded run over run and degraded every subsequent merge. Nothing errored —
-    the page just grew.
+    Each section goes through `edit_ops.write_edit`: append first, delete after,
+    from the lines numbered before anything was written (Hard Rule 2). A line's
+    content lives INSIDE its toggle heading, so an add at line 0 goes to the end
+    of the heading's children: Notion cannot insert above a block's first child.
 
-    Sections not in `updates` are never touched.
-    Returns (applied_count, skipped_paths).
+    It used to append each section's FULL merged bullets and delete the old ones,
+    and before that to append them on top of the old ones in "merge" mode — which
+    duplicated the section on every run, compounding as the bloat was fed back
+    into the next merge. With operations, an add is an append because that is
+    what it means, and nothing else is written.
     """
-    applied, skipped = 0, []
+    edited, skipped, partial = [], [], []
 
     for upd in updates:
-        path    = upd.get("path", "").strip()
-        bullets = [b for b in upd.get("bullets", []) if b and b.strip()]
-        if not path or not bullets:
+        path = (upd.get("path") or "").strip()
+        ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
+        if not path or not ops:
             continue
 
-        # Match the path to a known block id (tolerate spacing around '>')
-        block_id = _resolve_path(path, block_map)
-        if not block_id:
-            skipped.append(path)
+        known = _known_path(path, targets)
+        if known is None:
+            skipped.append(f"{path} (not one of the sections Claude was shown)")
             continue
 
-        # APPEND FIRST, DELETE AFTER — see page_lock.py. Notion has no
-        # transactions, so clearing before the append means a failed append
-        # leaves the section permanently empty with nothing to restore from.
-        # Snapshot what to remove, write the replacement, and only delete once
-        # the replacement is committed.
-        existing, err = get_children(block_id)
-        if err:
-            skipped.append(f"{path} ({err})")
-            continue
+        edit = plan_edits(known, contents.get(known, []), ops, render=_bullet, top=None)
+        bucket, note = write_edit(targets[known], edit, append_children=append_children,
+                                  delete_ids=_delete_ids)
+        if bucket == "edited":
+            edited.append(edit)
+        else:
+            (partial if bucket == "partial" else skipped).append(f"{known} ({note})")
 
-        # Only leaf content is replaceable — nested toggle headings are structure.
-        stale_ids = [b["id"] for b in existing
-                     if not b.get("type", "").startswith("heading_") and b.get("id")]
+    return edited, skipped, partial
 
-        _, err = append_children(block_id, [_bullet(b) for b in bullets])
-        if err:
-            # Nothing deleted — the section still holds its previous content.
-            skipped.append(f"{path} ({err})")
-            continue
 
-        for block_id_to_drop in stale_ids:
-            delete_block(block_id_to_drop)
-        applied += 1
-
-    return applied, skipped
+def _delete_ids(block_ids: list) -> None:
+    """Delete blocks taken from the pre-write read. Looked up at call time, so a
+    test that replaces delete_block sees every delete."""
+    for block_id in block_ids:
+        if block_id:
+            delete_block(block_id)
 
 
 def _path_key(path: str) -> str:
@@ -532,11 +564,14 @@ def _path_key(path: str) -> str:
 
 def _resolve_path(path: str, block_map: dict):
     """Find a block id for a path, tolerant to spacing and case differences."""
+    known = _known_path(path, block_map)
+    return block_map[known] if known is not None else None
+
+
+def _known_path(path: str, mapping: dict):
+    """The key of `mapping` that `path` names, tolerant to spacing and case, or None."""
     key = _path_key(path)
-    for known, block_id in block_map.items():
-        if _path_key(known) == key:
-            return block_id
-    return None
+    return next((known for known in mapping if _path_key(known) == key), None)
 
 
 # ─── 5. NOTION PAGE / SKELETON SETUP ───────────────────────────────────────────
@@ -755,8 +790,11 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
                 else:
                     unresolved.append(path)
 
+            # Read from the text the merge is about to be given; the marker is the
+            # first block Learn writes, so the cut above always keeps it.
+            unverified = is_unverified_source(summary_text)
             await notify_md(_format_plan(affected, unresolved, len(paths), summary_title,
-                                         is_unverified_source(summary_text)))
+                                         unverified))
 
             if not targets:
                 await notify(
@@ -777,7 +815,9 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
             await notify("🧠 Claude is merging the summary in…")
             try:
                 result, err = await asyncio.wait_for(
-                    asyncio.to_thread(merge_sections, contents, summary_text, summary_title),
+                    asyncio.to_thread(merge_sections,
+                                      {path: listing(lines) for path, lines in contents.items()},
+                                      summary_text, summary_title, unverified),
                     timeout=ANTHROPIC_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -790,7 +830,19 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
                 await notify(f"❌ Merge failed: {err}")
                 return
 
-            updates = result.get("updates", [])
+            returned_updates = result.get("updates", [])
+
+            # ── The additions-only rule, for an unverified summary only ──────────
+            # The same check as the flat Manual, checked rather than trusted to the
+            # prompt: its adds are written, every replace and remove is held back
+            # and named. Nothing checks whether what it adds is TRUE.
+            updates, held = returned_updates, []
+            if unverified:
+                updates, held = hold_back_rewrites(
+                    returned_updates, lambda path: contents.get(_known_path(path, contents)))
+                for path, held_lines in held:
+                    logger.info("Implement %s: held back %d edit(s) from an unverified "
+                                "source", path, len(held_lines))
 
             # ── Step H: Mark the source Learn page as implemented (best-effort) ────────
             # The act of running Implement marks it processed, so the Learn-nudge job
@@ -799,25 +851,33 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
 
             # ── Step G: apply surgically ───────────────────────────────────────────────
             await notify("📝 Applying updates to Notion…")
-            applied, skipped = await asyncio.to_thread(apply_updates, updates, block_map)
+            edited, skipped, partial = await asyncio.to_thread(
+                apply_updates, updates, targets, contents)
 
             # THE ACCOUNTING. Every path routing named ends in exactly one bucket,
             # and each bucket is printed. A routed section that merged into
             # nothing, failed to resolve, or failed to write must not read the
             # same as a section the summary never mentioned.
-            returned  = {_path_key(u.get("path", "")) for u in updates}
+            # From the merge's whole answer, held-back edits included: a section
+            # whose only edits were held back is reported as held, not as one the
+            # merge left alone.
+            returned  = {_path_key(u.get("path", "")) for u in returned_updates}
             unchanged = [p for p in targets if _path_key(p) not in returned]
 
-            lines = [f"✅ Diet page updated — *{applied}* of {len(targets)} "
-                     f"routed section(s) modified."]
-            # skipped entries are "path" or "path (notion error)" — Claude's text
-            # either way, so both halves need escaping.
+            lines = [f"✅ Diet page updated — *{len(edited)}* of {len(targets)} "
+                     f"routed section(s) edited."]
+            diff = format_edits(edited)
+            if diff:
+                lines += [""] + diff
+            # skipped / partial entries are "path (note)" — Claude's path either
+            # way, so both halves need escaping.
             lines += _report_lines("Skipped — unchanged", skipped, "⚠️")
+            lines += _report_lines("Half-written — open these in Notion: part of the edit "
+                                   "is there and nothing was removed, so a line being "
+                                   "replaced is there twice", partial, "🚨")
             lines += _report_lines("Routed but left unchanged by the merge", unchanged, "➖")
             lines += _report_lines("Not found on the page", unresolved, "❓")
-            for conflict in result.get("conflicts", [])[:_REPORT_LIMIT]:
-                lines.append(f"\n⚖️ {escape_md(conflict)}")
-            await notify_md("\n".join(lines))
+            await notify_md("\n".join(lines) + format_held(held))
     except PageBusy:
         await notify(
             "⏳ An update to the Diet Manual is already in progress.\n"

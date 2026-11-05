@@ -312,13 +312,21 @@ def test_content_paths_excludes_categories_and_parent_rows(notion):
 
 
 # ─── READING CONTENT FOR THE ROUTED SECTIONS ───────────────────────────────────
+# The result is numbered lines (edit_ops.number_lines): what the merge is shown
+# and what the writer resolves Claude's operations against, from this one read.
+
+def texts(contents):
+    return {path: [line.text for line in lines] for path, lines in contents.items()}
+
 
 def test_content_is_read_for_exactly_the_sections_asked_for(notion):
     contents, err = implement_diet.read_section_contents(
         {"Goals>Fat Loss>Strategies": "h3-strategies"})
 
     assert err is None
-    assert contents == {"Goals>Fat Loss>Strategies": "eat at a deficit\nkeep protein high"}
+    assert texts(contents) == {"Goals>Fat Loss>Strategies": ["eat at a deficit",
+                                                             "keep protein high"]}
+    assert [line.n for line in contents["Goals>Fat Loss>Strategies"]] == [1, 2]
     assert notion.reads == ["h3-strategies"], "read something it was not asked for"
 
 
@@ -326,23 +334,22 @@ def test_a_leaf_row_reads_its_content_directly(notion):
     """An H2 that holds content rather than H3 toggles resolves the same way."""
     contents, err = implement_diet.read_section_contents({"Seasonality>Fruit": "h2-fruit"})
 
-    assert (contents, err) == ({"Seasonality>Fruit": "berries in summer"}, None)
+    assert (texts(contents), err) == ({"Seasonality>Fruit": ["berries in summer"]}, None)
 
 
 def test_an_empty_section_reads_as_empty_not_as_an_error(notion):
     contents, err = implement_diet.read_section_contents({"Goals>Muscle Mass": "h2-muscle"})
 
-    assert (contents, err) == ({"Goals>Muscle Mass": ""}, None)
+    assert (texts(contents), err) == ({"Goals>Muscle Mass": []}, None)
 
 
 def test_nested_headings_are_not_read_as_content(notion):
-    """apply_updates replaces a section's leaf blocks and leaves nested headings
-    alone, so the content shown to the model has to be filtered the same way —
-    otherwise the merge is computed over text a rewrite would never replace."""
+    """Nested toggle headings are structure: never numbered, so never shown to
+    the model and never something an edit can name."""
     contents, err = implement_diet.read_section_contents({"Goals>Fat Loss": "h2-fatloss"})
 
     assert err is None
-    assert contents == {"Goals>Fat Loss": ""}, "H3 toggle headings leaked in as content"
+    assert texts(contents) == {"Goals>Fat Loss": []}, "H3 toggle headings leaked in as content"
 
 
 def test_a_failed_content_read_fails_the_whole_fetch(monkeypatch):

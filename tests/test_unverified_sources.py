@@ -476,11 +476,11 @@ def test_the_diet_path_warns_too(monkeypatch):
                         lambda paths, text, title: (
                             {"affected": [{"path": "Goals>Fat Loss"}]}, None))
     monkeypatch.setattr(implement_diet, "read_section_contents",
-                        lambda sections: ({"Goals>Fat Loss": "current"}, None))
+                        lambda sections: ({"Goals>Fat Loss": []}, None))
     monkeypatch.setattr(implement_diet, "merge_sections",
-                        lambda contents, text, title: ({"updates": []}, None))
+                        lambda contents, text, title, unverified=False: ({"updates": []}, None))
     monkeypatch.setattr(implement_diet, "apply_updates",
-                        lambda updates, block_map: (0, []))
+                        lambda updates, targets, contents: ([], [], []))
     monkeypatch.setattr(implement_diet, "update_page", lambda page_id, props: (True, None))
 
     run(implement.run_implement(update.message.text, **with_update(update)))

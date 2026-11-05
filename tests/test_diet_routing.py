@@ -28,6 +28,7 @@ import pytest
 
 from config import DIET_SUMMARY_CHARS, UNVERIFIED_MARKER, UNVERIFIED_NOTE
 from services import implement_diet
+from services.edit_ops import SectionEdit
 from conftest import FakeUpdate, run, with_update
 
 # ─── A POPULATED DIET PAGE ─────────────────────────────────────────────────────
@@ -81,12 +82,11 @@ class Claude:
     one of the two calls still gets a sensible answer.
     """
 
-    def __init__(self, affected=None, updates=None, conflicts=None):
+    def __init__(self, affected=None, updates=None):
         self.route_prompt = None
         self.merge_prompt = None
         self._affected = affected
         self._updates = updates
-        self._conflicts = conflicts or []
 
     def __call__(self, system, user, schema=None, **kwargs):
         properties = (schema or {}).get("properties", {})
@@ -100,10 +100,14 @@ class Claude:
         if self._updates is not None:
             updates = self._updates
         else:
-            # Default: the merge returns every section it was given.
-            updates = [{"path": p, "mode": "merge", "bullets": [f"merged {p}"]}
-                       for p in _sections_in(user)]
-        return {"updates": updates, "conflicts": self._conflicts}, None
+            # Default: the merge adds one line to every section it was given.
+            updates = [{"path": p, "ops": [add(f"merged {p}")]} for p in _sections_in(user)]
+        return {"updates": updates}, None
+
+
+def add(text):
+    """An add at line 0 — the end of a Diet section."""
+    return {"op": "add", "line": 0, "text": text, "why": ""}
 
 
 def _sections_in(merge_prompt: str) -> list:
@@ -133,9 +137,9 @@ def writes(monkeypatch):
     """Captures what reached apply_updates — the actual write scope."""
     captured = []
 
-    def apply_updates(updates, block_map):
+    def apply_updates(updates, targets, contents):
         captured.extend(updates)
-        return len(updates), []
+        return [SectionEdit(u["path"]) for u in updates], [], []
 
     monkeypatch.setattr(implement_diet, "apply_updates", apply_updates)
     return captured
@@ -211,7 +215,7 @@ def test_every_routed_section_survives_into_the_merge_and_the_write(diet, writes
     assert [u["path"] for u in writes] == MULTI, (
         f"routed {MULTI} but wrote {[u['path'] for u in writes]}")
     # "*3*" — the count is bold in the Markdown David actually sends.
-    assert update.message.replied_with("*3* of 3 routed section(s) modified")
+    assert update.message.replied_with("*3* of 3 routed section(s) edited")
 
 
 # ─── ONE INPUT BUDGET, APPLIED ONCE, OUT LOUD ──────────────────────────────────
@@ -386,8 +390,8 @@ def test_a_routed_section_the_merge_declines_is_reported_not_dropped(diet, write
     """
     claude = Claude(
         affected=MULTI,
-        updates=[{"path": MULTI[0], "mode": "merge", "bullets": ["merged"]},
-                 {"path": MULTI[1], "mode": "merge", "bullets": ["merged"]}],
+        updates=[{"path": MULTI[0], "ops": [add("merged")]},
+                 {"path": MULTI[1], "ops": [add("merged")]}],
     )
     update = drive(claude, diet)
 
@@ -418,7 +422,7 @@ def test_a_long_skipped_list_reports_its_total(diet, monkeypatch):
     """
     many = [f"Goals>Fat Loss>Section {i}" for i in range(12)]
     monkeypatch.setattr(implement_diet, "apply_updates",
-                        lambda updates, block_map: (0, many))
+                        lambda updates, targets, contents: ([], many, []))
     claude = Claude(affected=["Goals>Fat Loss>Strategies"])
 
     update = drive(claude, diet)

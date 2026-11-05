@@ -302,11 +302,12 @@ def diet_stubs(monkeypatch):
                                                    {"Goals>Fat Loss": "block-1"}, None),
         "route_sections":          lambda paths, text, title: (
             {"affected": [{"path": "Goals>Fat Loss"}]}, None),
-        "read_section_contents":   lambda sections: ({"Goals>Fat Loss": "current"}, None),
-        "merge_sections":          lambda contents, text, title: (
-            {"updates": [{"path": "Goals>Fat Loss", "mode": "merge", "bullets": ["x"]}]}, None),
+        "read_section_contents":   lambda sections: ({"Goals>Fat Loss": []}, None),
+        "merge_sections":          lambda contents, text, title, unverified=False: (
+            {"updates": [{"path": "Goals>Fat Loss", "ops": [
+                {"op": "add", "line": 0, "text": "x", "why": ""}]}]}, None),
         "update_page":             lambda page_id, props: (True, None),
-        "apply_updates":           lambda updates, block_map: (1, []),
+        "apply_updates":           lambda updates, targets, contents: ([], [], []),
     })
 
 
@@ -327,7 +328,7 @@ def test_implement_diet_runs_every_call_off_the_loop(offloaded, diet_stubs):
         "update_page",              # tick 'Implemented'
         "apply_updates",            # the surgical writes
     )
-    assert update.message.replied_with("section(s) modified")
+    assert update.message.replied_with("section(s) edited")
 
 
 # ─── 4b. THE CALENDAR PATHS ────────────────────────────────────────────────────
@@ -531,7 +532,7 @@ def test_a_slow_diet_analysis_times_out_and_says_nothing_was_written(diet_stubs,
     monkeypatch.setattr(implement_diet, "merge_sections", stalls)
     applied = []
     monkeypatch.setattr(implement_diet, "apply_updates",
-                        lambda updates, block_map: applied.append(updates) or (0, []))
+                        lambda updates, targets, contents: applied.append(updates) or ([], [], []))
     update = FakeUpdate(text="Implement Protein Basics - Diet")
 
     run(implement_diet.run_implement_diet("Protein Basics", **with_update(update)))

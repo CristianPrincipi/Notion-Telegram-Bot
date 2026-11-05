@@ -942,7 +942,8 @@ def test_each_edited_section_is_counted_in_the_log(manual, caplog):
     manual["updates"] = [{"path": "Perfect Process",
                           "ops": [op("replace", 1, "Prime it"), op("remove", 9)]}]
 
-    with caplog.at_level(logging.INFO, logger="services.implement"):
+    # services.edit_ops writes this line, for the Diet page too.
+    with caplog.at_level(logging.INFO, logger="services.edit_ops"):
         implement_it()
 
     assert any("Perfect Process: +0 ~1 -0, 1 ignored (remove [9]: there is no line [9])"

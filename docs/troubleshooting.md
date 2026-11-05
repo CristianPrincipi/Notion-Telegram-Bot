@@ -123,7 +123,13 @@ edit. Lines with other lines nested under them, and blocks that are not plain te
 (callouts, quotes, to-dos), are never rewritten or removed by a merge: David reads
 one level of the page, so it cannot see what is nested there. An edit naming a
 line that is not in the section, or the same line twice, is ignored too. If every
-edit for a section was ignored, the section is listed as unchanged.
+edit for a section was ignored, the section is listed as unchanged. This is the
+same on a Manual and on the Diet page.
+
+On the Diet page, a section listed as unchanged with "not one of the sections
+Claude was shown" means Claude named a section it was never given. David only
+writes to the sections it showed Claude; run the command again if that section
+should have changed too.
 
 Make that change by hand in Notion. To let `Implement` edit a line in future,
 move the lines nested under it out of it, or turn the block into a plain bullet.
