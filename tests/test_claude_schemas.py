@@ -177,6 +177,18 @@ def test_every_schema_is_one_structured_output_accepts(where, schema):
         f"{MAX_OPTIONAL} per request")
 
 
+def test_the_learn_summary_asks_for_nothing_the_page_does_not_use():
+    """Every field in the schema is output the model is paid to write, and output
+    is the expensive half. `tags` was asked for on every Learn and read by
+    nothing: not the page builder, not the page properties. RED before it went.
+
+    Each name here is read somewhere: `title` and `author` by `run_learn` (the
+    page's properties), the other three by `build_notion_blocks`. Adding a field
+    means adding it here, which is the moment to check that something reads it."""
+    assert set(learn._SUMMARY_SCHEMA["properties"]) == {
+        "title", "author", "tldr", "sections", "key_takeaways"}
+
+
 # ─── 2. THE CHECK CAN FAIL ─────────────────────────────────────────────────────
 
 GOOD = {"type": "object", "properties": {"a": {"type": "string"}},

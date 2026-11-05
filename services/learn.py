@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -448,11 +449,30 @@ _SUMMARY_SCHEMA = {
         },
         "key_takeaways": {"type": "array", "items": {"type": "string"},
                           "description": "Specific, actionable insights."},
-        "tags": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["title", "tldr"],
     "additionalProperties": False,
 }
+# No `tags`: it was asked for on every summary and read by nothing, and output is
+# the expensive half. Every field above is read by run_learn or
+# build_notion_blocks (tests/test_claude_schemas.py lists them).
+
+
+def _without_quotes(schema: dict) -> dict:
+    """The summary schema for a source that was never read: no `quotes` field."""
+    recall = copy.deepcopy(schema)
+    del recall["properties"]["sections"]["items"]["properties"]["quotes"]
+    return recall
+
+
+# For KNOWLEDGE_RECALL_TYPES. Nothing was read, so a "verbatim" quote could only
+# come from memory: a plausible sentence the author never wrote, set in a quote
+# block, which is the most convincing kind of invention. Every object in the
+# schema is closed (`additionalProperties: false`) and structured output
+# enforces it, so the API cannot return a quote at all — a guarantee, not a
+# prompt rule. build_notion_blocks drops quotes on these pages too,
+# independently.
+_RECALL_SUMMARY_SCHEMA = _without_quotes(_SUMMARY_SCHEMA)
 
 
 def summarize_with_claude(content_type: str, text: str, title: str = "", source: str = "") -> tuple[dict | None, str | None]:
@@ -472,6 +492,11 @@ def summarize_with_claude(content_type: str, text: str, title: str = "", source:
     # plausibly hit an output cap — a long podcast against a schema asking for
     # 5-7 sections. So the summary was cut off mid-object, nothing was saved,
     # and the error told you to raise a constant this line ignored.
+    #
+    # Two calls rather than one with a chosen schema: tests/test_claude_schemas.py
+    # reads each schema from its call site, and a local variable is one it cannot.
+    if content_type in KNOWLEDGE_RECALL_TYPES:
+        return complete_json(_SYSTEM, user_msg, _RECALL_SUMMARY_SCHEMA)
     return complete_json(_SYSTEM, user_msg, _SUMMARY_SCHEMA)
 
 
@@ -517,13 +542,16 @@ def build_notion_blocks(summary: dict, source: str, content_type: str = "") -> l
 
     blocks.append(_divider())
 
-    # Sections
+    # Sections. A recollection's page gets no quote blocks, whatever the summary
+    # holds: its schema already asks for none (_RECALL_SUMMARY_SCHEMA), and this
+    # does not depend on that, so loosening either alone brings nothing back.
+    recalled = content_type in KNOWLEDGE_RECALL_TYPES
     for section in summary.get("sections", []):
         if section.get("heading"):
             blocks.append(_heading2(section["heading"]))
         if section.get("content"):
             blocks.append(_paragraph(section["content"]))
-        for q in section.get("quotes", []):
+        for q in ([] if recalled else section.get("quotes", [])):
             if q:
                 blocks.append(_quote(q))
 

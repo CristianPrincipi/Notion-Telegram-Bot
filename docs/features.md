@@ -119,8 +119,9 @@ Learn pdf                         ← as the caption of an attached PDF
   (show notes, or a transcript if the page has one). It does not listen to
   audio.
 - **book** — just a title. Nothing is read: the summary is Claude's recollection
-  of the book, so the page opens with a red **UNVERIFIED** warning and is saved
-  in **Books**, not Learn.
+  of the book, so the page opens with a red **UNVERIFIED** warning, has no
+  quotations (there was no text to quote from), and is saved in **Books**, not
+  Learn.
 - **pdf** — attach the file (up to 15 MB) with `Learn pdf` as the caption.
 
 Very long sources are summarised from their first ~100,000 characters, and the
