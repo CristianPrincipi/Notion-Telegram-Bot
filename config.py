@@ -250,7 +250,30 @@ PDF_PARSE_TIMEOUT      = 120   # PyPDF2 text extraction: CPU-bound and unbounded
 # ─── ANTHROPIC ─────────────────────────────────────────────────────────────────
 # One model name for the whole bot. It was hard-coded three times — in learn.py,
 # implement.py and implement_diet.py — so an upgrade meant finding all three.
-ANTHROPIC_MODEL = "claude-sonnet-4-5"
+#
+# Claude Sonnet 4.5 retires on 2026-11-30. Sonnet 5.5 is not a drop-in swap, and
+# clients/anthropic_client.py's docstring says why: it rejects a forced tool call
+# (so the answer comes back as structured output) and thinks by default (so
+# every call names an effort level, below). The cost rates further down move
+# with this name; tests/test_anthropic_client.py checks they do.
+ANTHROPIC_MODEL = "claude-sonnet-5-5"
+
+# How hard the model thinks before it answers. Thinking bills as OUTPUT — the
+# expensive half — and counts toward the output cap, and Sonnet 5.5 thinks at
+# "high" unless told otherwise, so leaving this unset would have made the move
+# to a cheaper model more expensive. Levels: low, medium, high, xhigh, max.
+#
+#   ANTHROPIC_EFFORT        summaries, merges and first-run Manual builds: they
+#                           write what ends up in Notion.
+#   ANTHROPIC_ROUTE_EFFORT  the routing calls: they pick section NAMES from a
+#                           list, which is classification, not writing.
+#
+# Starting points from Anthropic's guidance for this model, not a measurement of
+# David's own traffic (none was run). Retune from the `Anthropic … in= out=`
+# lines in the Railway log. Like the output caps, a call site names one of
+# these, never a literal (tests/test_claude_schemas.py).
+ANTHROPIC_EFFORT       = "medium"
+ANTHROPIC_ROUTE_EFFORT = "low"
 
 # OUTPUT cap: the default ceiling on one answer, and the ONE number describing
 # it. Overridable from the environment because it is the lever the truncation
@@ -274,14 +297,23 @@ ANTHROPIC_MODEL = "claude-sonnet-4-5"
 # reaches it when the client timeout is the SDK default, and _client() always
 # sets one. So it has never applied to David, and reasoning from it would have
 # capped this at a limit nothing was enforcing.
-ANTHROPIC_MAX_TOKENS = int(env_or("ANTHROPIC_MAX_TOKENS", "8192"))
+#
+# 16000, up from 8192, because on Sonnet 5.5 the model's THINKING counts toward
+# this cap too, even though its text is never returned: 8192 was sized for the
+# answer alone. It is a ceiling, not a charge — a call pays for what it uses.
+ANTHROPIC_MAX_TOKENS = int(env_or("ANTHROPIC_MAX_TOKENS", "16000"))
 
 # The routing calls answer with a LIST OF SECTION NAMES, not prose, so they are
 # a genuinely smaller budget and capping them separately is real money on the
 # Implement path. It is named here because it was the same anonymous 2048 in
 # services/implement.py and services/implement_diet.py, which is one edit away
 # from being two different numbers for one decision.
-ANTHROPIC_ROUTE_MAX_TOKENS = 2048
+#
+# 4096, up from 2048, for the same reason as the cap above: thinking now counts
+# toward it. At ANTHROPIC_ROUTE_EFFORT the model mostly skips thinking, but a
+# long source can still draw some, and a routing call cut off at the cap fails
+# the whole Implement.
+ANTHROPIC_ROUTE_MAX_TOKENS = 4096
 
 # INPUT cap: how much source text one summarisation may be given. ~100k chars
 # covers a 2-hour video transcript in a single call.
@@ -347,10 +379,11 @@ ANTHROPIC_MAX_RETRIES = 3
 # someone at the keyboard to read it.
 #
 # Rates are per MILLION tokens and MUST be updated alongside ANTHROPIC_MODEL —
-# they are the published Sonnet-tier rates, not a per-model lookup. The guard
-# fails toward refusing, so a stale rate over-counts rather than under-counts.
-ANTHROPIC_INPUT_COST_PER_MTOK  = 3.00
-ANTHROPIC_OUTPUT_COST_PER_MTOK = 15.00
+# they are the published rates of that one model, not a per-model lookup, and
+# tests/test_anthropic_client.py (PUBLISHED_RATES) goes red when the two drift.
+# Output tokens include the model's thinking, which is billed as output.
+ANTHROPIC_INPUT_COST_PER_MTOK  = 2.00
+ANTHROPIC_OUTPUT_COST_PER_MTOK = 10.00
 
 ANTHROPIC_DAILY_BUDGET_USD = float(env_or("ANTHROPIC_DAILY_BUDGET_USD", "5"))
 
@@ -509,9 +542,10 @@ OPTIONAL_ENV = {
     "BUDGET_CEILING":          "Monthly budget ceiling in euros. Defaults to 300.",
     "MONTHS_DB_ID":            ("Notion database the month pages live in. Discovered from the "
                                 f"Expenses '{EXPENSE_MONTH_RELATION}' relation when unset."),
-    "ANTHROPIC_MAX_TOKENS":       ("Output-token ceiling for one Claude answer. Defaults to "
-                                   "8192. Raise it if a long source is summarised to a "
-                                   "truncated page — that error names this variable."),
+    "ANTHROPIC_MAX_TOKENS":       ("Output-token ceiling for one Claude answer, thinking "
+                                   "included. Defaults to 16000. Raise it if a long source "
+                                   "is summarised to a truncated page — that error names "
+                                   "this variable."),
     "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn and "
                                    "Implement are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "

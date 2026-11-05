@@ -22,6 +22,14 @@ httpx2, not httpx: anthropic 1.x is built on the httpx2 fork and refuses an
 httpx client at construction, so the fixture has to speak the SDK's own
 transport. A transport from the wrong package is a TypeError in every test's
 setup, not a silent pass-through.
+
+THE ANSWER'S SHAPE (since the move to Claude Sonnet 5.5)
+--------------------------------------------------------
+The answer used to arrive as a forced tool call. Sonnet 5.5 rejects a forced
+`tool_choice` with a 400, so it now arrives as structured output: a `text` block
+holding JSON that the API has checked against the schema, possibly AFTER a
+`thinking` block (thinking is on by default and cannot be turned off with
+`disabled`). The fake below speaks that shape; section 3 locks down the request.
 """
 
 import json
@@ -34,26 +42,38 @@ import pytest
 import pytz
 
 from clients import anthropic_client
-from clients.anthropic_client import ANSWER_TOOL, complete_json
+from clients.anthropic_client import complete_json
+from config import ANTHROPIC_EFFORT, ANTHROPIC_ROUTE_EFFORT
 
 SCHEMA = {
     "type": "object",
     "properties": {"title": {"type": "string"}, "tldr": {"type": "string"}},
     "required": ["title"],
+    "additionalProperties": False,
 }
 
 
 # ─── A FAKE ANTHROPIC ENDPOINT ─────────────────────────────────────────────────
 
-def message(content=None, stop_reason="tool_use", input_tokens=120, output_tokens=45):
+def answer(obj) -> dict:
+    """The text block structured output answers with: the object, as JSON."""
+    return {"type": "text", "text": json.dumps(obj)}
+
+
+# What adaptive thinking puts before the answer under the default
+# `display: "omitted"`: a thinking block whose text is empty.
+THINKING = {"type": "thinking", "thinking": "", "signature": "sig_1"}
+
+
+def message(content=None, stop_reason="end_turn", input_tokens=120, output_tokens=45,
+            stop_details=None):
     """One /v1/messages response body."""
     if content is None:
-        content = [{"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-                    "input": {"title": "Summary", "tldr": "the gist"}}]
+        content = [answer({"title": "Summary", "tldr": "the gist"})]
     return {
         "id": "msg_1", "type": "message", "role": "assistant",
-        "model": "claude-sonnet-4-5", "content": content,
-        "stop_reason": stop_reason, "stop_sequence": None,
+        "model": "claude-sonnet-5-5", "content": content,
+        "stop_reason": stop_reason, "stop_sequence": None, "stop_details": stop_details,
         "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     }
 
@@ -150,8 +170,7 @@ def test_hitting_max_tokens_is_an_actionable_error_not_a_parse_crash(anthropic_a
     which says nothing about the cap being the cause or raising it being the fix.
     """
     anthropic_api["queue"] = [(200, message(
-        content=[{"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-                  "input": {"title": "Half a summ"}}],
+        content=[{"type": "text", "text": '{"title": "Half a summ'}],
         stop_reason="max_tokens"))]
 
     result, err = complete_json("system", "user", SCHEMA, max_tokens=8192)
@@ -165,8 +184,7 @@ def test_hitting_max_tokens_is_an_actionable_error_not_a_parse_crash(anthropic_a
 def _truncated():
     """A response that stopped at the cap, holding half an object."""
     return [(200, message(
-        content=[{"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-                  "input": {"title": "Half a summ"}}],
+        content=[THINKING, {"type": "text", "text": '{"title": "Half a summ'}],
         stop_reason="max_tokens"))]
 
 
@@ -213,8 +231,9 @@ def test_a_truncated_answer_is_never_partially_used(anthropic_api):
     """The half-written object is present in the response and must be discarded —
     a Manual merged from half a merge is worse than no merge."""
     anthropic_api["queue"] = [(200, message(
-        content=[{"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-                  "input": {"title": "Half"}}],
+        # Half an object that HAPPENS to be valid JSON: the stop_reason, not the
+        # parse, is what must reject it.
+        content=[answer({"title": "Half"})],
         stop_reason="max_tokens"))]
 
     result, _ = complete_json("system", "user", SCHEMA)
@@ -231,6 +250,33 @@ def test_a_refusal_is_reported_plainly(anthropic_api):
     assert "declined" in err
 
 
+def test_a_refusal_names_its_category_when_the_api_gives_one(anthropic_api):
+    """Sonnet 5.5's classifiers decline in five categories, and `general_harms`
+    can fire on benign text. The category is the only clue to which one fired,
+    and there is no other place the owner could read it."""
+    anthropic_api["queue"] = [(200, message(
+        content=[], stop_reason="refusal",
+        stop_details={"type": "refusal", "category": "general_harms",
+                      "explanation": "Declined by a safety classifier."}))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert result is None
+    assert "declined" in err and "general_harms" in err
+
+
+def test_a_refusal_is_checked_before_any_partial_answer_is_read(anthropic_api):
+    """A mid-answer refusal can leave partial output that need not match the
+    schema. It must be reported as a refusal, never parsed."""
+    anthropic_api["queue"] = [(200, message(
+        content=[answer({"title": "Partial"})], stop_reason="refusal"))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert result is None
+    assert "declined" in err
+
+
 # ─── 3. STRUCTURED OUTPUT — NO BRACE HUNTING ───────────────────────────────────
 
 def test_the_answer_comes_back_as_a_parsed_object(anthropic_api):
@@ -240,39 +286,104 @@ def test_the_answer_comes_back_as_a_parsed_object(anthropic_api):
     assert result == {"title": "Summary", "tldr": "the gist"}
 
 
-def test_the_model_is_forced_to_answer_through_the_tool(anthropic_api):
-    """This is what replaces the regex: there is no branch where the model
-    replies in prose, so there is no text to hunt for braces in."""
+def test_the_schema_is_enforced_by_the_api_not_by_a_forced_tool(anthropic_api):
+    """RED on the Sonnet 4.5 client. Sonnet 5.5 answers a forced `tool_choice`
+    with a 400 (`tool_choice: type "tool" and "any" are not supported for this
+    model.`), so every Learn and Implement would fail on the first call.
+
+    Structured output replaces it: the schema goes in `output_config.format`, the
+    API constrains the answer to it, and there is still no branch where the model
+    replies in prose."""
     complete_json("system", "user", SCHEMA)
 
     body = anthropic_api["requests"][0]
-    assert body["tool_choice"] == {"type": "tool", "name": ANSWER_TOOL}
-    assert body["tools"][0]["input_schema"] == SCHEMA
+    assert "tool_choice" not in body, "a forced tool_choice is a 400 on Sonnet 5.5"
+    assert "tools" not in body
+    assert body["output_config"]["format"] == {"type": "json_schema", "schema": SCHEMA}
 
 
-def test_trailing_prose_with_braces_cannot_corrupt_the_answer(anthropic_api):
-    """The old extraction was `re.search(r"\\{.*\\}", raw, re.DOTALL)` — greedy,
-    so it ran from the first brace to the last one ANYWHERE in the response and
-    a closing brace in trailing prose broke the parse. Text blocks alongside the
-    tool call are now simply ignored."""
+def test_thinking_is_left_at_the_models_default(anthropic_api):
+    """`thinking: {"type": "disabled"}` is a 400 on Sonnet 5.5. How much it thinks
+    is set with `effort` instead, so the request carries no `thinking` field."""
+    complete_json("system", "user", SCHEMA)
+
+    assert "thinking" not in anthropic_api["requests"][0]
+
+
+def test_effort_is_sent_and_defaults_to_the_configured_level(anthropic_api):
+    """Sonnet 5.5 defaults to `high`, and thinking bills as output — the costly
+    half. Leaving effort unset would make the migration MORE expensive, so the
+    level is always sent, and named in config."""
+    complete_json("system", "user", SCHEMA)
+    complete_json("system", "user", SCHEMA, effort=ANTHROPIC_ROUTE_EFFORT)
+
+    first, second = anthropic_api["requests"]
+    assert first["output_config"]["effort"] == ANTHROPIC_EFFORT
+    assert second["output_config"]["effort"] == ANTHROPIC_ROUTE_EFFORT
+
+
+def test_a_thinking_block_before_the_answer_is_skipped(anthropic_api):
+    """With thinking on, the answer is not the first block. Reading
+    `content[0]` would find an empty thinking block instead of the JSON."""
     anthropic_api["queue"] = [(200, message(content=[
-        {"type": "text", "text": "Here you go! (note: use {braces} carefully.)"},
-        {"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-         "input": {"title": "Summary", "tldr": "the gist"}},
-    ]))]
+        THINKING, answer({"title": "Summary", "tldr": "the gist"})]))]
 
     result, err = complete_json("system", "user", SCHEMA)
 
     assert err is None
-    assert result["title"] == "Summary"
+    assert result == {"title": "Summary", "tldr": "the gist"}
+
+
+def test_braces_inside_the_answer_cannot_corrupt_it(anthropic_api):
+    """The old extraction was `re.search(r"\\{.*\\}", raw, re.DOTALL)` — greedy,
+    so a closing brace in the text broke the parse. The answer is now parsed as
+    one JSON document, so a brace inside a value is just a character."""
+    anthropic_api["queue"] = [(200, message(content=[
+        answer({"title": "Use {braces} carefully }", "tldr": "the gist"})]))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert err is None
+    assert result["title"] == "Use {braces} carefully }"
+
+
+def test_an_answer_that_is_not_json_is_an_error_not_a_crash(anthropic_api):
+    """Structured output makes this all but impossible; if it ever happens, it
+    is reported as a sentence, not raised out of the client."""
+    anthropic_api["queue"] = [(200, message(content=[
+        {"type": "text", "text": "Here is the summary you asked for."}]))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert result is None
+    assert "not valid JSON" in err and "Nothing was saved" in err
+
+
+def test_an_answer_that_is_not_an_object_is_named(anthropic_api):
+    anthropic_api["queue"] = [(200, message(content=[answer(["a", "list"])]))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert result is None
+    assert "list" in err and "object" in err
+
+
+def test_a_response_with_no_answer_block_is_reported(anthropic_api):
+    """Thinking and nothing else: there is no answer to read, and an empty dict
+    would read as "nothing to change"."""
+    anthropic_api["queue"] = [(200, message(content=[THINKING]))]
+
+    result, err = complete_json("system", "user", SCHEMA)
+
+    assert result is None
+    assert "did not return a structured answer" in err
 
 
 def test_a_missing_required_key_is_named(anthropic_api):
-    """The schema is advisory on the tool-use path, so the required keys are
-    checked here — otherwise the caller meets a KeyError three frames later."""
-    anthropic_api["queue"] = [(200, message(content=[
-        {"type": "tool_use", "id": "toolu_1", "name": ANSWER_TOOL,
-         "input": {"tldr": "no title"}}]))]
+    """The API enforces the schema now, so this is the second line, kept because
+    it is free: a caller that names its required keys gets a clear error instead
+    of a KeyError three frames later, whatever reaches it."""
+    anthropic_api["queue"] = [(200, message(content=[answer({"tldr": "no title"})]))]
 
     result, err = complete_json("system", "user", SCHEMA)
 
@@ -284,6 +395,12 @@ def test_the_model_name_comes_from_config(anthropic_api):
     complete_json("system", "user", SCHEMA)
 
     assert anthropic_api["requests"][0]["model"] == anthropic_client.ANTHROPIC_MODEL
+
+
+def test_the_configured_model_is_not_the_retiring_one():
+    """Claude Sonnet 4.5 retires on 2026-11-30; after that every Learn and
+    Implement call fails. RED until the model moves."""
+    assert anthropic_client.ANTHROPIC_MODEL != "claude-sonnet-4-5"
 
 
 # ─── 4. TOKEN ACCOUNTING ───────────────────────────────────────────────────────
@@ -317,6 +434,26 @@ def test_output_tokens_are_priced_higher_than_input():
             > anthropic_client.estimated_cost(1000, 0))
 
 
+# Published per-million rates (input, output) of each model David has run on.
+# The rates in config.py were a COMMENT's promise to move with the model; this
+# makes it a test. Changing ANTHROPIC_MODEL turns this red until its rates are
+# added here AND set in config. A stale rate is wrong in both directions: after
+# a move to a dearer model it under-counts, and the daily guard lets the day
+# spend past its budget.
+PUBLISHED_RATES = {
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+}
+
+
+def test_the_cost_rates_are_the_configured_models():
+    assert anthropic_client.ANTHROPIC_MODEL in PUBLISHED_RATES, (
+        f"no published rates recorded for {anthropic_client.ANTHROPIC_MODEL}")
+    assert (anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK,
+            anthropic_client.ANTHROPIC_OUTPUT_COST_PER_MTOK) == \
+        PUBLISHED_RATES[anthropic_client.ANTHROPIC_MODEL]
+
+
 # ─── 5. THE DAILY SPEND GUARD ──────────────────────────────────────────────────
 
 def test_calls_are_refused_once_the_budget_is_spent(anthropic_api, monkeypatch):
@@ -343,7 +480,8 @@ def test_the_refusal_says_what_was_spent_and_how_to_lift_it(anthropic_api, monke
 
     _, err = complete_json("system", "user", SCHEMA)
 
-    assert "$3.00" in err and "$0.01" in err
+    assert f"${anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK:.2f}" in err
+    assert "$0.01" in err
     assert "ANTHROPIC_DAILY_BUDGET_USD" in err
     assert "Nothing was sent" in err
 

@@ -24,7 +24,7 @@ before changing what a rule protects. The overview and the full module map are i
 | Thing | Lives only in |
 | --- | --- |
 | HTTP to Notion | `clients/notion_client.py` |
-| Anthropic calls; the model name | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`. Each feature owns its prompt and schema, not retry or token accounting |
+| Anthropic calls; the model name and effort levels | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` / `ANTHROPIC_ROUTE_EFFORT`. Each feature owns its prompt and schema (structured output's subset, scanned), not retry or token accounting |
 | Google Calendar | `clients/calendar_client.py` |
 | The clock | `calendar_client.now_local()`. Never a clock read without a timezone (scanned) |
 | Markdown to Telegram | `telegram_text` — `escape_md` at every interpolation site; `reply` / `send` are the only `parse_mode` senders |

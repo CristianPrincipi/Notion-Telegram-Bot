@@ -46,8 +46,8 @@ import re
 from clients.anthropic_client import complete_json
 from clients.calendar_client import now_local
 from config import (
-    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, IMPLEMENTED_PROPERTY, MANUAL_PAGE_TITLE,
-    MANUAL_SOURCE_CHARS, MANUAL_TITLE_PROPERTY, is_unverified_source,
+    ANTHROPIC_ROUTE_EFFORT, ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, IMPLEMENTED_PROPERTY,
+    MANUAL_PAGE_TITLE, MANUAL_SOURCE_CHARS, MANUAL_TITLE_PROPERTY, is_unverified_source,
 )
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
@@ -340,6 +340,7 @@ _ROUTE_SCHEMA = {
                     "why":  {"type": "string", "description": "One short line."},
                 },
                 "required": ["path"],
+                "additionalProperties": False,
             },
         },
         "new_steps": {
@@ -352,10 +353,12 @@ _ROUTE_SCHEMA = {
                     "why":  {"type": "string"},
                 },
                 "required": ["name"],
+                "additionalProperties": False,
             },
         },
     },
     "required": ["affected"],
+    "additionalProperties": False,
 }
 
 
@@ -373,7 +376,8 @@ def route_sections(section_paths: list, source_text: str, source_title: str):
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
         f"=== SOURCE: {source_title} ===\n{source_text}"
     )
-    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS)
+    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA,
+                         max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS, effort=ANTHROPIC_ROUTE_EFFORT)
 
 
 _MERGE_SYSTEM = """You merge new knowledge into specific sections of a personal Manual.
@@ -404,10 +408,12 @@ _MERGE_SCHEMA = {
                               "description": "The FULL merged content, one line per block."},
                 },
                 "required": ["path", "lines"],
+                "additionalProperties": False,
             },
         },
     },
     "required": ["updates"],
+    "additionalProperties": False,
 }
 
 
@@ -648,6 +654,7 @@ _BUILD_SCHEMA = {
                     "action": {"type": "string"},
                 },
                 "required": ["name", "action"],
+                "additionalProperties": False,
             },
         },
         "improvements": {
@@ -659,6 +666,7 @@ _BUILD_SCHEMA = {
                     "description": {"type": "string"},
                 },
                 "required": ["title", "description"],
+                "additionalProperties": False,
             },
         },
         "step_explanations": {
@@ -674,11 +682,13 @@ _BUILD_SCHEMA = {
                     "mistakes":       {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["step"],
+                "additionalProperties": False,
             },
         },
         "sources": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["title", "routine"],
+    "additionalProperties": False,
 }
 
 

@@ -44,7 +44,7 @@ line were not there.
 | `BUDGET_CEILING` | `300` | Your monthly budget in euros. Drives `B`, the morning pace line and the overspend warning. |
 | `MONTHS_DB_ID` | discovered | The database the month pages live in. Unset, David finds it by following the Expenses `Account` relation, which is what you want. |
 | `MONTH_ID` | — | **Outage fallback only.** If Notion cannot be reached the first time David looks up this month's page, it uses this page ID rather than nothing. David finds the real page itself; you never need to update this. |
-| `ANTHROPIC_MAX_TOKENS` | `8192` | The longest answer one Claude call may return. Raise it if a long source comes back as a truncated page — that error message names this variable. |
+| `ANTHROPIC_MAX_TOKENS` | `16000` | The longest answer one Claude call may return, counting the thinking Claude does before it answers. Raise it if a long source comes back as a truncated page — that error message names this variable. |
 | `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused until midnight, Europe/Rome. |
 | `ANTHROPIC_SPEND_FILE` | `.anthropic_spend.json` | Where the day's running spend is kept. On Railway the disk is wiped on every deploy, so a redeploy resets the day's count — a bounded over-spend, not a broken bot. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. An unrecognised value logs a warning and falls back to `INFO`. |

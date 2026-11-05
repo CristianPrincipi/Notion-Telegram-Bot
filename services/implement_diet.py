@@ -4,8 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from clients.anthropic_client import complete_json
 from config import (
-    ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, DIET_PAGE_TITLE, DIET_SUMMARY_CHARS,
-    DIET_TITLE_PROPERTY, IMPLEMENTED_PROPERTY, is_unverified_source,
+    ANTHROPIC_ROUTE_EFFORT, ANTHROPIC_ROUTE_MAX_TOKENS, ANTHROPIC_TIMEOUT, DIET_PAGE_TITLE,
+    DIET_SUMMARY_CHARS, DIET_TITLE_PROPERTY, IMPLEMENTED_PROPERTY, is_unverified_source,
 )
 from page_lock import PageBusy, page_lock
 from telegram_text import escape_md
@@ -356,10 +356,12 @@ _ROUTE_SCHEMA = {
                     "why":  {"type": "string", "description": "One short line."},
                 },
                 "required": ["path"],
+                "additionalProperties": False,
             },
         },
     },
     "required": ["affected"],
+    "additionalProperties": False,
 }
 
 
@@ -377,7 +379,8 @@ def route_sections(paths: list, summary_text: str, summary_title: str):
         f"=== SECTIONS (names only) ===\n{listing}\n\n"
         f"=== SUMMARY: {summary_title} ===\n{summary_text}"
     )
-    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA, max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS)
+    return complete_json(_ROUTE_SYSTEM, user_msg, _ROUTE_SCHEMA,
+                         max_tokens=ANTHROPIC_ROUTE_MAX_TOKENS, effort=ANTHROPIC_ROUTE_EFFORT)
 
 
 _MERGE_SYSTEM = """You merge newly learned content into specific sections of a personal DIET page.
@@ -416,6 +419,7 @@ _MERGE_SCHEMA = {
                                 "description": "The FULL merged content for this section."},
                 },
                 "required": ["path", "mode", "bullets"],
+                "additionalProperties": False,
             },
         },
         "conflicts": {"type": "array", "items": {"type": "string"},
@@ -423,6 +427,7 @@ _MERGE_SCHEMA = {
                                      "existing content, and how you resolved them."},
     },
     "required": ["updates"],
+    "additionalProperties": False,
 }
 
 

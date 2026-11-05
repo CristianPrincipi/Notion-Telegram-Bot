@@ -333,6 +333,36 @@ is named, and `clients.anthropic_client.complete_json` is the only way to reach 
 feature module owns its system prompt and its JSON Schema; it does not own retry,
 truncation handling, or token accounting.
 
+The move from Claude Sonnet 4.5 (retiring 2026-11-30) to Sonnet 5.5 showed why the
+one client matters: the new model broke the call itself, twice, and both fixes
+landed in one function.
+
+- **The answer is structured output, not a forced tool call.** Sonnet 4.5 had no
+  structured output, so the schema went in as a tool the model was forced to call.
+  Sonnet 5.5 answers a forced `tool_choice` with a 400. The schema now goes in
+  `output_config.format`, and the API enforces it — which also means the API
+  checks the schema, and refuses one it cannot enforce: an object without
+  `additionalProperties: false`, a `maxLength`, a `minimum`. Not one of the six
+  schemas David had met that, because the tool path accepted anything. That is a
+  400 on every call, invisible offline, so `tests/test_claude_schemas.py` finds
+  every schema from its `complete_json` call site and checks it.
+- **Effort is named, always.** Sonnet 5.5 thinks before it answers, `disabled` is a
+  400, and its default effort is `high`. Thinking is billed as output, the
+  expensive half, so swapping the model alone would have made a cheaper model cost
+  more. `ANTHROPIC_EFFORT` (`medium`) and `ANTHROPIC_ROUTE_EFFORT` (`low`) are
+  starting points from Anthropic's guidance, not a measurement of David's traffic;
+  a call site names one of them, never a literal (scanned, like the output cap).
+  Thinking also counts toward `max_tokens`, so the caps doubled: 16000 and 4096.
+- **The answer is read by block type.** With thinking on, the first block can be
+  an empty `thinking` block. Reading `content[0]` would find nothing.
+- **No refusal fallback.** The `fallbacks` beta retries a declined request on
+  another model, but on Sonnet 5.5 only for two categories (`cyber`,
+  `frontier_llm`), neither likely for a summary. Declined (2026-11-05) to keep the
+  client off a beta API; a refusal is reported with its category instead.
+- **The cost rates move with the model, tested.** They were a comment's promise;
+  `PUBLISHED_RATES` in `tests/test_anthropic_client.py` now fails until the rates
+  in `config.py` match the configured model.
+
 ### Async discipline
 
 Every synchronous call — `requests`, Notion, Anthropic, PyPDF2,

@@ -8,6 +8,18 @@ Notable changes to David. The format follows
 
 ### Changed
 
+- **`Learn` and `Implement` run on Claude Sonnet 5.5.** Claude Sonnet 4.5 retires
+  on 30 November 2026, and after that both commands would have failed on every
+  call. Per token the new model costs a third less. It thinks briefly before it
+  answers, and that thinking is billed. David keeps it moderate, and lowest for
+  picking which Manual sections a source touches. Each call's token use is in the
+  Railway log, as before.
+- **`ANTHROPIC_MAX_TOKENS` now defaults to 16000** (it was 8192), because the cap
+  now counts Claude's thinking as well as its answer. If you set it on Railway,
+  raise it to at least 16000 or delete it.
+- **When Claude declines a request, the reply says which kind of check stopped
+  it** (for example `general_harms`), where the API gives one.
+
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption
   `Add q Dune / Fear / I must not fear | it will be gone` — the first and last

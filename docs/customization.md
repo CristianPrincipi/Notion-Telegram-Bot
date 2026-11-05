@@ -63,10 +63,16 @@ No code at all.
 
 ## Claude model and prompts
 
-- **Model:** `config.ANTHROPIC_MODEL` is the only place it is named. If the new
-  model is priced differently, update `ANTHROPIC_INPUT_COST_PER_MTOK` and
-  `ANTHROPIC_OUTPUT_COST_PER_MTOK` next to it, or the daily budget guard will
-  count wrong. Test: `tests/test_anthropic_client.py`.
+- **Model:** `config.ANTHROPIC_MODEL` is the only place it is named. Update
+  `ANTHROPIC_INPUT_COST_PER_MTOK` and `ANTHROPIC_OUTPUT_COST_PER_MTOK` next to it,
+  and add the model's rates to `PUBLISHED_RATES` in
+  `tests/test_anthropic_client.py`, which fails until the two agree; otherwise the
+  daily budget guard counts wrong.
+- **Effort:** `config.ANTHROPIC_EFFORT` (summaries, merges, first builds) and
+  `ANTHROPIC_ROUTE_EFFORT` (routing) set how much Claude thinks before it
+  answers: `low`, `medium`, `high`, `xhigh` or `max`. Thinking is billed as
+  output and counts toward `ANTHROPIC_MAX_TOKENS`, so a higher level costs more
+  per command. The Railway log shows `in=… out=… effort=…` for every call.
 - **Prompts:** each feature owns its own.
 
   | Prompt | Where |
@@ -76,7 +82,10 @@ No code at all.
   | `Implement … - Diet` | `_ROUTE_SYSTEM`, `_MERGE_SYSTEM` in `services/implement_diet.py` |
 
   Each prompt is paired with a JSON Schema the answer must match; change both
-  together.
+  together. The API enforces the schema, and refuses one it cannot: every object
+  needs `"additionalProperties": False`, and length or range limits (`maxLength`,
+  `minimum`) are not allowed. `tests/test_claude_schemas.py` checks every schema
+  passed to Claude against those rules.
 
 ## Budget limits
 

@@ -96,11 +96,20 @@ Check it against **Settings → your calendar → Integrate calendar → Calenda
 ## A summary or Manual comes back cut short
 
 The reply says the answer was truncated and names `ANTHROPIC_MAX_TOKENS`. Raise
-it (try `16000`) and run the command again.
+it (the default is `16000`; try `24000`) and run the command again. The cap
+counts the thinking Claude does before it answers, not just the answer.
 
 If the reply instead warns that the *source* is too long — "Source is … characters;
 summarising the first …" — the source was longer than David reads in one go. That is a
 deliberate limit, and the reply is telling you the summary is partial.
+
+## `Learn` or `Implement`: "Claude declined to answer this one"
+
+Claude's safety checks stopped the request. Nothing was saved. The reply names
+the category when the API gives one — `cyber`, `bio`, `frontier_llm`,
+`reasoning_extraction` or `general_harms` — and `general_harms` can fire on
+ordinary material. If running the command again gets the same reply, try a
+different source on the same subject, or a shorter excerpt of this one.
 
 ## `Learn` or `Implement` is refused: daily budget reached
 

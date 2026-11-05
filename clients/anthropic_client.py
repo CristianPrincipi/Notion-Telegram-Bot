@@ -22,21 +22,42 @@ three gaps:
      the parse.
 
 All three are gone here, and the fix for (3) is structural rather than a better
-regex: the model returns its answer as a TOOL CALL, so the SDK hands back a
-parsed dict and there is no text to extract from at all.
+regex: the answer is constrained to a JSON Schema by the API, so what comes back
+is one JSON document, parsed whole, with no prose around it to search.
 
-WHY FORCED TOOL USE AND NOT `output_config.format`
---------------------------------------------------
-The API has a dedicated structured-output mode, and it is the obvious choice —
-but it is not available on every model, and `config.ANTHROPIC_MODEL` is one of
-the ones it does not cover. Forced tool use (`tool_choice={"type": "tool"}`)
-works everywhere, and for our purposes it buys the same thing: the model fills
-in a declared JSON Schema and the SDK returns `block.input` already parsed.
+STRUCTURED OUTPUT, AND WHY IT USED TO BE A FORCED TOOL CALL
+-----------------------------------------------------------
+The schema goes in `output_config.format`, and the API constrains the answer to
+it: the reply is a `text` block holding JSON that matches the schema. That is a
+guarantee, not a request — which also means the API checks the SCHEMA, and
+answers a 400 for one it cannot enforce (every object needs
+`additionalProperties: false`; no `minLength`, `maximum` and the like). Every
+schema passed here is checked offline against those rules by
+tests/test_claude_schemas.py.
 
-The schema is advisory on this path — the model is told the shape but the API
-does not hard-validate it, so `complete_json` checks the required keys itself.
-On a model that supports it, adding `"strict": True` to the tool definition
-upgrades that to an API-enforced guarantee.
+Until 2026-11 this was a forced tool call (`tool_choice={"type": "tool"}`),
+because Claude Sonnet 4.5 had no structured output. Sonnet 5.5 is the other way
+round: it answers a forced `tool_choice` with a 400, so the old path would have
+failed on every call. The required-keys check below survives the move, as a free
+second line behind the API's.
+
+THINKING AND EFFORT
+-------------------
+Sonnet 5.5 thinks before it answers, and `thinking={"type": "disabled"}` is a
+400, so no `thinking` field is sent. How much it thinks is `effort`, always sent
+and always named in config (ANTHROPIC_EFFORT, ANTHROPIC_ROUTE_EFFORT): its
+default is "high", thinking is billed as output, and it counts toward
+`max_tokens`. Two consequences shape the code below:
+
+  - the answer is not necessarily the first block: a `thinking` block (empty
+    text, by default) can come before it, so blocks are read by TYPE;
+  - the output cap must leave room for thinking, which is why
+    ANTHROPIC_MAX_TOKENS defaults to 16000.
+
+No refusal fallback (the `fallbacks` beta, which retries a declined request on
+another model): on Sonnet 5.5 it retries only two refusal categories, neither of
+them likely for a summary, and it would make this module depend on a beta API.
+Decided 2026-11-05; a refusal is reported, with its category.
 
 BLOCKING, LIKE EVERYTHING ELSE
 ------------------------------
@@ -54,6 +75,7 @@ import anthropic
 
 from config import (
     ANTHROPIC_DAILY_BUDGET_USD,
+    ANTHROPIC_EFFORT,
     ANTHROPIC_INPUT_COST_PER_MTOK,
     ANTHROPIC_MAX_RETRIES,
     ANTHROPIC_MAX_TOKENS,
@@ -69,14 +91,6 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 SPEND_FILE = env_or("ANTHROPIC_SPEND_FILE", ".anthropic_spend.json")
-
-# The tool the model is forced to call. The name is arbitrary but it is what the
-# model sees, so it reads as an instruction: emit the answer, structured.
-ANSWER_TOOL = "emit_answer"
-
-# Used when a caller passes no schema. Permissive on purpose — it still routes
-# the answer through a tool call, which is what removes the regex.
-_ANY_OBJECT = {"type": "object", "properties": {}}
 
 
 # ─── CLIENT ────────────────────────────────────────────────────────────────────
@@ -205,14 +219,20 @@ def _budget_error() -> str | None:
 
 # ─── THE ONE ENTRY POINT ───────────────────────────────────────────────────────
 
-def complete_json(system: str, user: str, schema: dict | None = None,
+def complete_json(system: str, user: str, schema: dict,
                   max_tokens: int = ANTHROPIC_MAX_TOKENS,
+                  effort: str = ANTHROPIC_EFFORT,
                   model: str | None = None) -> tuple[dict | None, str | None]:
     """Ask Claude for a JSON object. Returns (result, error) — never raises.
 
-    `schema` is a JSON Schema for the object wanted. Its top-level `required`
-    list is enforced here after the call, so a caller that names its required
-    keys gets a clear error instead of a KeyError three frames later.
+    `schema` is the JSON Schema of the object wanted, in the subset structured
+    output accepts (tests/test_claude_schemas.py checks every caller's). Its
+    top-level `required` list is checked again here after the call, so a caller
+    that names its required keys gets a clear error instead of a KeyError three
+    frames later.
+
+    `effort` is how hard the model thinks first; a caller passes one of config's
+    named levels, never a literal.
 
     Every failure mode comes back as a sentence the owner can act on, because
     all three call sites forward it straight to Telegram.
@@ -224,22 +244,18 @@ def complete_json(system: str, user: str, schema: dict | None = None,
     if err:
         return None, err
 
-    tool = {
-        "name": ANSWER_TOOL,
-        "description": "Return the answer as a structured object.",
-        "input_schema": schema or _ANY_OBJECT,
-    }
-
     try:
         response = _client().messages.create(
             model=model or ANTHROPIC_MODEL,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
-            tools=[tool],
-            # Forced: the model has exactly one way to answer, so there is no
-            # branch where it replies in prose and we are back to regexing.
-            tool_choice={"type": "tool", "name": ANSWER_TOOL},
+            # The API constrains the answer to the schema: there is no branch
+            # where the model replies in prose and we are back to regexing.
+            output_config={
+                "format": {"type": "json_schema", "schema": schema},
+                "effort": effort,
+            },
         )
     except anthropic.APIStatusError as e:
         # Retries are already exhausted by the time this escapes the SDK.
@@ -251,14 +267,14 @@ def complete_json(system: str, user: str, schema: dict | None = None,
 
     usage = response.usage
     cost = _record(usage.input_tokens, usage.output_tokens)
-    logger.info("Anthropic %s: in=%d out=%d ≈$%.4f (day ≈$%.2f) stop=%s",
+    logger.info("Anthropic %s: in=%d out=%d ≈$%.4f (day ≈$%.2f) stop=%s effort=%s",
                 response.model, usage.input_tokens, usage.output_tokens,
-                cost, spend_today()["usd"], response.stop_reason)
+                cost, spend_today()["usd"], response.stop_reason, effort)
 
     # ── Truncated at the cap ───────────────────────────────────────────────────
-    # Checked before reading the content: a tool call cut off mid-object is not
-    # partially usable, and the old code's "JSON parse error" for this named
-    # neither the cause nor the fix.
+    # Checked before reading the content: an answer cut off mid-object is not
+    # partially usable, even when what arrived happens to parse, and the old
+    # code's "JSON parse error" for this named neither the cause nor the fix.
     #
     # The message names the cap that was ACTUALLY USED, and says where to raise
     # it, because for a while it did neither usefully: it advised raising
@@ -277,19 +293,31 @@ def complete_json(system: str, user: str, schema: dict | None = None,
                       f"raise ANTHROPIC_MAX_TOKENS on Railway — it is {ANTHROPIC_MAX_TOKENS} "
                       f"now.")
 
+    # ── Declined ───────────────────────────────────────────────────────────────
+    # Also before the content: a refusal can arrive after part of the answer,
+    # and that part need not match the schema. The category is the only clue to
+    # which of the model's safety classifiers fired.
     if response.stop_reason == "refusal":
-        return None, "Claude declined to answer this one. Nothing was saved."
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None)
+        why = f" (category: {category})" if category else ""
+        return None, f"Claude declined to answer this one{why}. Nothing was saved."
 
-    for block in response.content:
-        if block.type == "tool_use" and block.name == ANSWER_TOOL:
-            result = block.input
-            if not isinstance(result, dict):
-                return None, f"Claude returned a {type(result).__name__}, expected an object."
-            missing = [k for k in (schema or {}).get("required", []) if k not in result]
-            if missing:
-                return None, f"Claude's answer is missing: {', '.join(missing)}."
-            return result, None
-
-    # Forced tool_choice makes this all but unreachable; if the contract ever
-    # changes, say so plainly rather than returning an empty dict.
-    return None, f"Claude did not return a structured answer (stop_reason: {response.stop_reason})."
+    # ── The answer ─────────────────────────────────────────────────────────────
+    # By TYPE, never by position: with thinking on, the first block can be an
+    # empty `thinking` block.
+    text = "".join(block.text for block in response.content if block.type == "text")
+    if not text.strip():
+        return None, (f"Claude did not return a structured answer "
+                      f"(stop_reason: {response.stop_reason}).")
+    try:
+        result = json.loads(text)
+    except ValueError as e:
+        logger.error("Unparseable structured answer (%s): %.200r", e, text)
+        return None, f"Claude's answer was not valid JSON ({e}). Nothing was saved."
+    if not isinstance(result, dict):
+        return None, f"Claude returned a {type(result).__name__}, expected an object."
+    missing = [k for k in schema.get("required", []) if k not in result]
+    if missing:
+        return None, f"Claude's answer is missing: {', '.join(missing)}."
+    return result, None
