@@ -36,3 +36,17 @@ def for_update(update):
     kwargs to drift from what the handlers used to pass.
     """
     return update.message.reply_text, partial(reply, update)
+
+
+def for_chat(bot, chat_id):
+    """`notify` for work that no message started — a Kindle highlight arriving
+    over HTTP has no update to reply to, so it is sent to CHAT_ID, the chat that
+    already receives the briefings and error reports.
+
+    Plain text only, like `notify`: the strings carry Notion's raw errors and
+    book titles, which are not Markdown-safe.
+    """
+    async def notify(text):
+        await bot.send_message(chat_id=chat_id, text=text)
+
+    return notify

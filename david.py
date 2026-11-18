@@ -22,6 +22,7 @@ from bot.expenses import (
     AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_update_expense,
     handle_selection,
 )
+from bot import kindle_http
 from bot.implement import cmd_implement
 from bot.learn import cmd_learn
 from bot.month import cmd_month
@@ -685,7 +686,18 @@ if __name__ == '__main__':
     #
     # The locks are in place either way — expenses, calendar, and both Implement
     # flows — because run_detached does let two long commands overlap.
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    # The Kindle quote endpoint shares this event loop: started once PTB has
+    # one, stopped with it. Off (one warning) when KINDLE_TOKEN is unset.
+    async def start_kindle_endpoint(app):
+        app.bot_data["kindle_runner"] = await kindle_http.start(app.bot, CHAT_ID)
+
+    async def stop_kindle_endpoint(app):
+        await kindle_http.stop(app.bot_data.get("kindle_runner"))
+
+    application = (ApplicationBuilder().token(TELEGRAM_TOKEN)
+                   .post_init(start_kindle_endpoint)
+                   .post_shutdown(stop_kindle_endpoint)
+                   .build())
 
     # --- SCHEDULED JOBS ---
     register_jobs(application, CHAT_ID)

@@ -422,12 +422,12 @@ def test_a_long_command_no_longer_holds_up_the_next_one(monkeypatch):
 # page_lock keys must be DATABASE ids: page ids are not known until the lookup
 # the lock has to cover, and user-controlled keys (an expense name, a book
 # title) would grow the lock table without bound. See page_lock.py.
-ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID"}
+ALLOWED_LOCK_KEYS = {"area_db_id", "DIET_ID", "EXPENSES_ID", "CALENDAR_ID", "LETTI_ID"}
 
 # Repo-relative paths, not bare filenames: locking code lives in packages now,
 # and two files in different packages can share a name.
 LOCKING_MODULES = ["services/cancel.py", "services/expenses.py",
-                   "services/implement.py", "services/implement_diet.py",
+                   "services/implement.py", "services/implement_diet.py", "services/kindle.py",
                    "services/reminder.py"]
 
 # Every directory David's own code lives in. The scan below used to be

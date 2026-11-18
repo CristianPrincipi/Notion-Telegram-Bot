@@ -102,6 +102,31 @@ between them, up to 180,000 characters (about a hundred pages). A longer passage
 is refused, and nothing is saved. The same command typed without a file gets a
 reply saying to attach the PDF, so the two markers are never saved as the quote.
 
+### Kindle quotes
+
+With the KOReader plugin `citazioni` on a jailbroken Kindle, a highlight goes
+straight to the book in Letti, without Telegram: select a passage, tap **Invia a
+David**, type a title for it (prefilled with the chapter and page). David saves it
+like `Add q` and tells you here:
+
+```
+📖 Kindle quote added to 'Psicopolitica': Cap. 2 · p. 31
+```
+
+- **The book is found by its title**, and by its main title alone when the EPUB
+  adds a subtitle: "Psicopolitica. Il neoliberismo…" lands on your
+  "Psicopolitica".
+- **A book that is not in Letti is created**, with the title and author from the
+  EPUB and **no genre**. The message says so; set the genre in Notion if you want it.
+- **Offline, the Kindle keeps the highlight** and sends it when it is back on
+  Wi-Fi. If Notion is down, it stays queued and is sent again later. A
+  highlight sent twice is saved once.
+- A highlight longer than one quote can hold, or one that was only partly
+  written, is not retried — the Kindle shows why.
+
+It needs `KINDLE_TOKEN` set and a public domain on Railway
+([setup](setup.md#kindle-quotes-optional)). Without the token, nothing listens.
+
 ### Learn
 
 ```

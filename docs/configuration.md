@@ -48,6 +48,8 @@ line were not there.
 | `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused until midnight, Europe/Rome. |
 | `ANTHROPIC_SPEND_FILE` | `.anthropic_spend.json` | Where the day's running spend is kept. On Railway the disk is wiped on every deploy, so a redeploy resets the day's count — a bounded over-spend, not a broken bot. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. An unrecognised value logs a warning and falls back to `INFO`. |
+| `KINDLE_TOKEN` | — | The secret the Kindle sends with every highlight ([Kindle quotes](features.md#kindle-quotes)). Unset, the endpoint does not start and nothing listens. Any long random string: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
+| `PORT` | `8080` | Port the Kindle endpoint listens on. Railway sets it for you; set it only for a local run. |
 
 ## Where each feature gets its IDs
 

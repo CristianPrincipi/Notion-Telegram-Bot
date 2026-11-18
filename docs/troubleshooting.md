@@ -93,6 +93,22 @@ Check it against **Settings → your calendar → Integrate calendar → Calenda
   no `Add q` in front. The first part WAS saved, as a quote of its own: delete it
   in Notion, then use the PDF form for that passage.
 
+## Kindle quotes are not arriving
+
+- **The Kindle says "Wrong or missing token"** — the secret in the plugin's
+  settings differs from `KINDLE_TOKEN` on Railway. Copy it again; spaces count.
+- **The Kindle cannot reach David** — check, in order: `KINDLE_TOKEN` is set (the
+  log says `KINDLE_TOKEN is not set — the Kindle quote endpoint is off` when it is
+  not); the service has a domain (**Settings → Networking**); the address in the
+  plugin starts with `https://`. **Test connection** on the Kindle calls
+  `/kindle/ping` and needs nothing from Notion.
+- **"could not search your library … It stays queued on the Kindle"** — Notion
+  was unreachable. Nothing was written; the Kindle sends it again by itself.
+- **A book appeared twice in Letti** — its Notion title shares no prefix with the
+  EPUB title (say "Il Principe" against "Principe, Il"), so David did not find it
+  and created one. Move the quote, delete the new row, and rename one of the two
+  so they match.
+
 ## A summary or Manual comes back cut short
 
 The reply says the answer was truncated and names `ANTHROPIC_MAX_TOKENS`. Raise

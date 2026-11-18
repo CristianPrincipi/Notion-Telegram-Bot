@@ -167,7 +167,7 @@ refuse, and say so. (`primary` is refused too: for a service account it means
    `python david.py`. (The repo's `Procfile` says so too; setting it explicitly
    removes any doubt about which file the builder reads.)
 5. David polls Telegram — it needs **no public domain and no port**. Leave
-   networking alone.
+   networking alone, unless you use [Kindle quotes](#kindle-quotes-optional).
 6. Keep **one replica**. Two copies of the bot polling with the same token make
    Telegram reject both.
 
@@ -178,6 +178,22 @@ missing, the log shows `David cannot start` followed by the complete list.
 **Updates:** every push to your fork's `main` redeploys. If a build fails,
 Railway keeps the previous version running and says nothing in Telegram — after
 you push, send `v`: it answers with the commit that is actually running.
+
+### Kindle quotes (optional)
+
+Only if you use the KOReader `citazioni` plugin ([Kindle quotes](features.md#kindle-quotes)).
+This is the one feature that needs David reachable from the internet:
+
+1. Make a long random secret: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+2. Add it to the service's variables as `KINDLE_TOKEN`. Railway redeploys; the log
+   says `Kindle quote endpoint listening on port …`.
+3. Open **Settings → Networking → Generate Domain**. Railway gives the service a
+   `https://….up.railway.app` address and routes it to `$PORT`, which it sets
+   itself.
+4. In the plugin's settings on the Kindle, enter that address and the same secret,
+   then **Test connection**: it calls `/kindle/ping` and should say OK.
+
+Without `KINDLE_TOKEN` the endpoint never starts, so the domain answers nothing.
 
 ## 7. Run locally
 
