@@ -103,9 +103,18 @@ async def start(bot, chat_id):
         return None
     app = build_app(token=KINDLE_TOKEN, notify=for_chat(bot, chat_id))
     runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=KINDLE_PORT)
-    await site.start()
+    # This runs from PTB's post_init, which does NOT swallow an exception: a port
+    # already in use would abort David's whole startup, Telegram included. An
+    # optional feature degrades out loud instead (CLAUDE.md, Conventions).
+    try:
+        await runner.setup()
+        site = web.TCPSite(runner, host="0.0.0.0", port=KINDLE_PORT)
+        await site.start()
+    except OSError:
+        logger.exception("The Kindle quote endpoint could not start on port %s — "
+                         "David runs without it.", KINDLE_PORT)
+        await runner.cleanup()
+        return None
     logger.info("Kindle quote endpoint listening on port %s", KINDLE_PORT)
     return runner
 

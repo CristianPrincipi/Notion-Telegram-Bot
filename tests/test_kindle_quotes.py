@@ -399,3 +399,62 @@ def test_the_endpoint_stays_off_without_a_token(monkeypatch, caplog):
 
     assert runner is None
     assert "KINDLE_TOKEN is not set" in caplog.text
+
+
+# ─── REVIEW FINDINGS (PR #69) ──────────────────────────────────────────────────
+
+def test_a_busy_port_does_not_stop_david(monkeypatch, caplog):
+    """post_init does not swallow exceptions: a bind failure here would abort the
+    whole bot. It must log and carry on without the endpoint."""
+    import socket
+
+    blocker = socket.socket()
+    blocker.bind(("0.0.0.0", 0))
+    blocker.listen()
+    port = blocker.getsockname()[1]
+    monkeypatch.setattr(kindle_http, "KINDLE_TOKEN", TOKEN)
+    monkeypatch.setattr(kindle_http, "KINDLE_PORT", port)
+    try:
+        runner = run(kindle_http.start(bot=None, chat_id="x"))
+    finally:
+        blocker.close()
+
+    assert runner is None
+    assert "could not start" in caplog.text
+
+
+class FailingBot:
+    async def send_message(self, chat_id, text):
+        raise RuntimeError("Telegram is down")
+
+
+def test_a_failed_chat_message_keeps_the_partial_write_a_422(monkeypatch):
+    """With notify raising, the handler answered 500 — which the Kindle retries,
+    appending a second copy of a quote already partly on the page."""
+    from bot.notify import for_chat
+
+    lib = Library(["Psicopolitica"], written=written_half(1, 2, 2)).install(monkeypatch)
+
+    async def go():
+        app = kindle_http.build_app(token=TOKEN, notify=for_chat(FailingBot(), "chat"))
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/kindle/quote", headers=AUTH, json=BODY)
+            return resp.status, await resp.json()
+
+    status, body = run(go())
+
+    assert status == 422 and body["retry"] is False
+    assert len(lib.quotes) == 1
+
+
+def test_a_failed_chat_message_does_not_undo_a_save(monkeypatch):
+    Library(["Psicopolitica"]).install(monkeypatch)
+    from bot.notify import for_chat
+
+    async def go():
+        app = kindle_http.build_app(token=TOKEN, notify=for_chat(FailingBot(), "chat"))
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/kindle/quote", headers=AUTH, json=BODY)
+            return resp.status
+
+    assert run(go()) == 200

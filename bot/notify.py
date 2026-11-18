@@ -23,9 +23,12 @@ caller with nothing to render Markdown — a test collecting into a list, a job
 writing to the log — implements the whole interface with one function.
 """
 
+import logging
 from functools import partial
 
 from telegram_text import reply
+
+logger = logging.getLogger(__name__)
 
 
 def for_update(update):
@@ -45,8 +48,18 @@ def for_chat(bot, chat_id):
 
     Plain text only, like `notify`: the strings carry Notion's raw errors and
     book titles, which are not Markdown-safe.
+
+    A FAILED SEND IS LOGGED, NEVER RAISED. Here the message is a side note to
+    work that has already happened, and the caller still owes its own answer:
+    a Telegram outage must not turn a Kindle 422 ("do not retry: part of it is
+    already on the page") into a 500 the Kindle retries, appending the quote
+    twice. A message reply has no such second audience, so `for_update` keeps
+    raising.
     """
     async def notify(text):
-        await bot.send_message(chat_id=chat_id, text=text)
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            logger.exception("Could not send a chat notification: %s", text[:200])
 
     return notify
