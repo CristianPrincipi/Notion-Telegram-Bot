@@ -44,16 +44,23 @@ LITERATURE_ID = os.environ.get("LITERATURE_ID")
 
 
 # --- NEW READED BOOK --- #
-def add_New_Book(name, author, genre):
-    """Create a new book entry in Notion. Returns page_id on success, None on failure."""
+def add_New_Book(name, author, genre=None):
+    """Create a new book entry in Notion. Returns page_id on success, None on failure.
+
+    `genre=None` leaves the Genre column EMPTY rather than inventing one: a book
+    created from a Kindle highlight has no genre David could know, and a guessed
+    one would read as a choice you made. You fill it in Notion if you want it.
+    """
+    properties = {
+        BOOK_TITLE_PROPERTY:  {"title": [{"text": {"content": name}}]},
+        BOOK_AUTHOR_PROPERTY: {"rich_text": [{"text": {"content": author}}]},
+        BOOK_AREA_RELATION:   {"relation": [{"id": LITERATURE_ID}]},
+    }
+    if genre is not None:
+        properties[BOOK_GENRE_PROPERTY] = {"multi_select": [{"name": genre}]}
     data = {
         "parent": {"database_id": LETTI_ID},
-        "properties": {
-            BOOK_TITLE_PROPERTY:  {"title": [{"text": {"content": name}}]},
-            BOOK_AUTHOR_PROPERTY: {"rich_text": [{"text": {"content": author}}]},
-            BOOK_GENRE_PROPERTY:  {"multi_select": [{"name": genre}]},
-            BOOK_AREA_RELATION:   {"relation": [{"id": LITERATURE_ID}]},
-        }
+        "properties": properties,
     }
     response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
     if response.status_code != 200:

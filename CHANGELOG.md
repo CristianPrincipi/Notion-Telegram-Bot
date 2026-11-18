@@ -6,6 +6,14 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Kindle quotes.** With the KOReader plugin `citazioni`, a highlight on the
+  Kindle is saved to its book in Letti and announced here, without going through
+  Telegram or anyone else's server. A book not yet in Letti is created with no
+  genre. Off unless `KINDLE_TOKEN` is set; needs a public domain on Railway.
+  See [Kindle quotes](docs/features.md#kindle-quotes).
+
 ### Changed
 
 - **`Learn` and `Implement` run on Claude Sonnet 5.5.** Claude Sonnet 4.5 retires

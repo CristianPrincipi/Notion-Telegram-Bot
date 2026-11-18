@@ -122,6 +122,7 @@ before changing what a rule protects. The overview and the full module map are i
 | Implement → Diet page | `DIET_ID` | refused |
 | `U e` / `D e` (lookup **and** write), and the number answering them | `EXPENSES_ID` | queues |
 | `Remind`; `Cancel` (lookup **and** delete), its number and its `undo` | `CALENDAR_ID` | queues |
+| Kindle quote: find **or create** the book, then append | `LETTI_ID` | queues |
 
 ## Testing
 

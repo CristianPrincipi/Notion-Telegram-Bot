@@ -32,6 +32,22 @@ def env_or(name: str, default: str = "") -> str:
 BUDGET_CEILING = float(env_or("BUDGET_CEILING", "300"))
 
 
+# ─── KINDLE QUOTES ─────────────────────────────────────────────────────────────
+# The Kindle (KOReader plugin `citazioni`) posts highlights to David over HTTP.
+# The endpoint only starts when KINDLE_TOKEN is set; without it David runs as a
+# pure Telegram worker, exactly as before. See bot/kindle_http.py.
+KINDLE_TOKEN = env_or("KINDLE_TOKEN")
+# Railway routes the service's public domain to $PORT; 8080 is the local default.
+KINDLE_PORT = int(env_or("PORT", "8080"))
+# A highlight plus its metadata is a few KB. Anything far beyond the longest quote
+# one block can hold is refused by aiohttp before it reaches the handler.
+KINDLE_MAX_REQUEST_BYTES = 256 * 1024
+# Request ids remembered to answer a Kindle retry without writing the quote twice.
+# In memory on purpose (CLAUDE.md, hard rule 1): losing it on a restart only
+# re-opens the tiny window where a lost response AND a restart coincide.
+KINDLE_SEEN_IDS = 500
+
+
 # ─── NOTION SCHEMA ─────────────────────────────────────────────────────────────
 # Every Notion column David names, and every page it looks up by title — one
 # home. A column renamed in Notion is one line changed here and nothing else.
@@ -552,6 +568,10 @@ OPTIONAL_ENV = {
                                    "Defaults to .anthropic_spend.json."),
     "LOG_LEVEL":                  ("Logging verbosity: DEBUG, INFO, WARNING, ERROR or "
                                    "CRITICAL. Defaults to INFO."),
+    "KINDLE_TOKEN":               ("Shared secret the Kindle sends with each highlight. Without "
+                                   "it the Kindle quote endpoint does not start."),
+    "PORT":                       ("Port the Kindle quote endpoint listens on. Railway sets it; "
+                                   "defaults to 8080."),
 }
 
 

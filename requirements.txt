@@ -40,3 +40,8 @@ trafilatura>=2.0
 beautifulsoup4>=4.12
 google-api-python-client>=2.100
 google-auth>=2.30
+# The Kindle quote endpoint (bot/kindle_http.py): a small HTTP server inside
+# the same event loop as the Telegram poller. aiohttp has C speedups but ships
+# manylinux wheels for every one, so nothing compiles on Railway — verified with
+# the same --only-binary=:all: dry-run as trafilatura above (2026-11-18).
+aiohttp>=3.10

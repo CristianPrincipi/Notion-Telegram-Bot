@@ -876,6 +876,7 @@ until the lookup the lock has to cover:
 | `Remind` | `CALENDAR_ID` | queues |
 | `Cancel` (lookup **and** delete) | `CALENDAR_ID` | queues |
 | A number answering an ambiguous `Cancel`, and its `undo` | `CALENDAR_ID` | queues |
+| Kindle quote: find **or create** the book, then append | `LETTI_ID` | queues |
 
 The ambiguous path releases the lock while it waits for your number — holding it
 across a reply would stall every expense write for as long as you took to answer,
@@ -889,6 +890,37 @@ a second — and it is exactly what one key per DATABASE buys.
 
 `services/month.py` uses a `threading.RLock`, not `page_lock`: its cycle is reached from worker
 threads, and an `asyncio.Lock` between two threads acquires without ever blocking.
+
+**The Kindle endpoint is the one place concurrency was widened, and only for itself.**
+A highlight arriving over HTTP (`bot/kindle_http.py`) is handled in the same event loop
+as the poller, so it can interleave with a Telegram command — `concurrent_updates`
+itself stays off. The cycle it adds is find-**or-create**: two highlights from a book
+not yet in Letti, close together, would both miss the lookup and create the book twice.
+So the whole of it — the retry check, the lookup, the create, the append — runs under
+`page_lock(LETTI_ID)`; `test_two_quotes_from_a_new_book_create_it_once` fails without
+it. `Add b` and `Add q` take no lock: `Add b` never looks anything up, and `Add q`
+only appends to a book it found, so neither can race the Kindle into a second row.
+
+**Why HTTP at all.** A bot cannot send a message to another bot, and the Kindle has no
+Telegram client. The KOReader plugin the Kindle used before ("Send to Bot") relayed
+every highlight through a third-party server to reach Telegram. A direct endpoint keeps
+the path Kindle → David → Notion, gated by `KINDLE_TOKEN` (compared in constant time)
+instead of `OWNER_ID`. Without the token nothing listens: a public endpoint without a
+secret is not a degraded mode.
+
+**Why a missing book is created, when `Add q` refuses.** `Add q` has you at the
+keyboard to fix the title and resend; the Kindle does not, and a refused highlight would
+sit in its queue forever. The new row gets the EPUB's title and author and an EMPTY
+genre — `add_New_Book(genre=None)` omits the column rather than sending a guess, so the
+row never claims a choice you did not make.
+
+**Why the remembered ids live in memory.** The Kindle resends a highlight whose response
+it never saw. `services/kindle._saved` maps its id to the result, bounded by
+`KINDLE_SEEN_IDS`, and is checked inside the lock so a retry overlapping the first send
+waits for it. It is a cache in the hard-rule-1 sense: deleting it (a restart) only
+re-opens the case where the response was lost AND David restarted before the retry —
+a duplicate quote you can delete, never a lost one. Only successes are remembered, so a
+failed send's retry still writes.
 
 ## Testing
 
