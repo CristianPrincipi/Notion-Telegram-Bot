@@ -49,6 +49,12 @@ Notable changes to David. The format follows
   words of the passage are separated by ` | `. A book or a quote title can now
   contain a dash, and a typed quote a slash. The old form is no longer
   understood. `Add b` is unchanged.
+- **David no longer sends a new expense, book, page or quote to Notion twice.**
+  When Notion's answer to one was an error from its gateway, or never arrived,
+  David sent it again, though the first one may already have been saved: one
+  `Add e` could make two or three rows. Now it asks you to check Notion instead, and a Kindle
+  highlight in that state is not resent. `Add e` also says what went wrong,
+  instead of "Check your API keys" for every failure.
 
 ### Fixed
 

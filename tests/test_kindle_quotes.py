@@ -23,7 +23,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot import kindle_http
 from clients import notion_client
-from conftest import LETTI_ID, NOTION_BASE, run, written_half, written_nothing, written_ok
+from conftest import (
+    LETTI_ID, NOTION_BASE, run, written_half, written_nothing, written_ok, written_unsure,
+)
 import page_lock
 from services import books, kindle
 
@@ -276,6 +278,18 @@ def test_a_partial_write_is_never_retried(monkeypatch):
 
     assert err.retryable is False
     assert "SECOND copy" in sent[0]
+
+
+def test_an_unconfirmed_write_is_not_retried(monkeypatch):
+    """Notion did not confirm the append, so the quote may be there: a resend
+    from the Kindle could be a second copy."""
+    Library(["Psicopolitica"], written=written_unsure()).install(monkeypatch)
+    sent, notify = collect()
+
+    _, err = run(kindle.run_kindle_quote(quote(), notify=notify))
+
+    assert err.retryable is False
+    assert "may be on the page" in sent[0]
 
 
 def test_a_write_that_landed_nothing_stays_queued(monkeypatch):

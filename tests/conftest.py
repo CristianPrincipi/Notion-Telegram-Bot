@@ -128,6 +128,16 @@ def written_half(batches_done=2, batches_total=5, blocks_total=430):
                    blocks_total=blocks_total)
 
 
+def written_unsure(batches_done=0, batches_total=1, blocks_total=2):
+    """An append whose batch Notion did not confirm (an UnsureWrite): it MAY be on
+    the page, so it is partial — a re-run may append a second copy."""
+    from clients.notion_client import Written
+
+    return Written([{"id": f"new-{i}"} for i in range(batches_done * 100)],
+                   batches_done=batches_done, batches_total=batches_total,
+                   blocks_total=blocks_total, unsure=True)
+
+
 # ─── TELEGRAM DOUBLES ──────────────────────────────────────────────────────────
 
 class FakeDocument:

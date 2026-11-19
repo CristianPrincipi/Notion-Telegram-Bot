@@ -51,6 +51,10 @@ before changing what a rule protects. The overview and the full module map are i
 - **One budget, one number, one cut.** Extractors return text WHOLE; prompt builders
   never re-slice; the SECTION half of a merge prompt is never clipped (refuse instead);
   the reply says when source text was cut; the cut runs before `is_unverified_source`.
+- **A create is sent once.** `notion_request` retries a create (`notion_client.creates`:
+  a POST that is not a query or search, a PATCH to `children`) only on a 429 or a
+  connection never made; any other failure raises `UnsureWrite`, which says Notion may
+  have saved it. An unconfirmed append is `Written.unsure`, and so partial.
 - **A partial write is a third outcome.** `append_children` returns `Written` (a list
   with `batches_done` / `batches_total`); callers print the tally and warn that a
   re-run duplicates. A test double returns `Written` too (`conftest.written_*`).

@@ -62,7 +62,7 @@ def notion_writes(monkeypatch):
     monkeypatch.setattr(expenses, "add_Expenses",
                         lambda name, amount, category:
                         calls.append({"name": name, "amount": amount,
-                                      "category": category}) or True)
+                                      "category": category}) or (True, None))
     monkeypatch.setattr(books, "add_New_Book",
                         lambda name, author, genre:
                         calls.append({"name": name, "author": author,
@@ -205,6 +205,36 @@ def test_expense_is_dated_in_rome_not_utc(midnight_in_rome, monkeypatch):
     body = responses.calls[0].request.body
     sent = body.decode() if isinstance(body, bytes) else body
     assert '"start": "2025-06-11"' in sent, f"dated wrongly: {sent}"
+
+
+@responses.activate
+def test_an_expense_notion_did_not_confirm_is_sent_once_and_says_so(monkeypatch):
+    """A 502 on the create: Notion may have saved the row before the gateway gave
+    up. It used to be sent again — up to three rows for one `Add e` — and a final
+    failure read "Check your API keys"."""
+    from clients import notion_client
+
+    monkeypatch.setattr(notion_client.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(expenses, "current_month_id", lambda: "test-month-id")
+    responses.add(responses.POST, PAGES_URL, status=502, body="bad gateway")
+    responses.add(responses.POST, PAGES_URL, status=200, json={"id": "new-page"})
+    update = FakeUpdate(text="Add e Carrefour 2.20")
+
+    run(david.handle_message(update, FakeContext()))
+
+    assert len(responses.calls) == 1, "the expense was sent twice"
+    assert update.message.replied_with("may have been saved")
+    assert not update.message.replied_with("Success")
+
+
+def test_an_expense_with_no_month_page_says_so(monkeypatch):
+    monkeypatch.setattr(expenses, "current_month_id", lambda: None)
+    update = FakeUpdate(text="Add e Carrefour 2.20")
+
+    run(david.handle_message(update, FakeContext()))
+
+    assert update.message.replied_with("Month")
+    assert not update.message.replied_with("API keys")
 
 
 # The bug above was fixed at its one call site, and the class it belongs to was

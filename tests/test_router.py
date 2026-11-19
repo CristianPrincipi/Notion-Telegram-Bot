@@ -126,7 +126,7 @@ SPY_TARGETS = [
     ("add_New_Book",     ("name", "author", "genre"),               (BOOK_PAGE_ID, None), False),
     ("find_Book_Page",   ("book_name",),                            (BOOK_ROW, None),     False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
-    ("add_Expenses",     ("name", "amount", "category"),            True,                 False),
+    ("add_Expenses",     ("name", "amount", "category"),            (True, None),         False),
     # The destructive pair is find-then-write, so both halves are spied: the
     # finder carries the parsed NAME, the writer the parsed amount/category.
     ("find_expense_matches", ("name",),                             (ONE_MATCH, None),    False),
@@ -890,12 +890,17 @@ def test_book_reports_a_failed_notion_write(router, monkeypatch):
 
 
 def test_expense_reports_a_failed_notion_write(router, monkeypatch):
-    monkeypatch.setattr(expenses, "add_Expenses", lambda name, amount, category: False)
+    """Notion's answer, not "Could not connect to Notion. Check your API keys" —
+    which it said for every failure, a validation error included."""
+    monkeypatch.setattr(expenses, "add_Expenses",
+                        lambda name, amount, category: (False, "Notion 400: body failed validation"))
     update = FakeUpdate(text="Add e Carrefour 2.20")
 
     run(david.handle_message(update, FakeContext()))
 
-    assert update.message.replied_with("Could not connect to Notion")
+    assert update.message.replied_with("Notion 400: body failed validation")
+    assert not update.message.replied_with("API keys")
+    assert not update.message.replied_with("Success")
 
 
 def test_update_expense_distinguishes_the_three_lookup_outcomes(router, monkeypatch):

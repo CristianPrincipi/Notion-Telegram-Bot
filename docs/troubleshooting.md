@@ -44,6 +44,18 @@ which column, e.g. `Author is not a property that exists`.
   ([Customization](customization.md#notion-column-names)).
 - `Diag` checks the Expenses columns for you.
 
+## "Notion did not confirm the write … It may have been saved anyway"
+
+Notion was asked to create something — an expense, a book, a page, a quote,
+lines in a Manual — and the answer never came back clearly: Notion's gateway
+failed (502, 504) or the connection dropped after the request went out. David
+does not know whether it was saved, so it does not send it again, because that
+is how one expense became two.
+
+Open Notion and look. If it is there, you are done. If it is not, send the
+command again. A Manual or Diet section in this state is listed as
+half-written: check the lines that reply names.
+
 ## Notion says a database does not exist
 
 `Could not find database with ID …` (a 404) means one of two things:
