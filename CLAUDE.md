@@ -96,7 +96,7 @@ before changing what a rule protects. The overview and the full module map are i
   `docs/configuration.md` and a line in `.env.example`. A blank variable is unset.
 - **Optional features degrade in their own commands, out loud** — never by failing
   startup, never silently (e.g. the calendar refuses an unset `GOOGLE_CALENDAR_ID`).
-- **Async:** every synchronous call (requests, Notion, Anthropic, PyPDF2, Google) runs
+- **Async:** every synchronous call (requests, Notion, Anthropic, pypdf, Google) runs
   via `asyncio.to_thread`, and those functions stay synchronous. Long reads get an
   `asyncio.wait_for` cap from `config`; writes never do.
 - **`Remind` / `Agenda` dates** follow

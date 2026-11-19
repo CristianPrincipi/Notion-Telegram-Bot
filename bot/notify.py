@@ -5,7 +5,7 @@ David already had two and the difference is load-bearing:
 
   notify(text)     plain. `update.message.reply_text`, no parse_mode, nothing
                    that can be rejected for bad markup. What a raw Notion error,
-                   a PyPDF2 exception or a slice of an uploaded PDF goes out as.
+                   a pypdf exception or a slice of an uploaded PDF goes out as.
 
   notify_md(text)  Markdown, through telegram_text.reply — so David's own
                    *bold* renders, every interpolated value is escaped at the

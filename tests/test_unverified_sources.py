@@ -193,6 +193,21 @@ def test_the_reply_says_it_too(monkeypatch):
     assert update.message.replied_with("recollection")
 
 
+def test_the_reply_does_not_warn_about_quotes_the_page_does_not_have(monkeypatch):
+    """A recollection's page carries no quotes (two guards above), so "treat
+    quotes … as unverified" pointed at something that is not there."""
+    monkeypatch.setattr(learn, "summarize_with_claude",
+                        lambda *a, **k: (SUMMARY, None))
+    monkeypatch.setattr(learn, "create_learn_page",
+                        lambda *a, **k: (True, "page-1", None))
+    update = FakeUpdate(text="Learn book Atomic Habits")
+
+    run(learn.run_learn("Learn book Atomic Habits", **with_update(update)))
+
+    assert update.message.replied_with("figures and dates as unverified")
+    assert not update.message.replied_with("quotes")
+
+
 # ─── 2. IMPLEMENT SURFACES IT ──────────────────────────────────────────────────
 
 MANUAL = [

@@ -503,7 +503,7 @@ landed in one function.
 
 ### Async discipline
 
-Every synchronous call — `requests`, Notion, Anthropic, PyPDF2,
+Every synchronous call — `requests`, Notion, Anthropic, pypdf,
 Google Calendar — runs via `asyncio.to_thread`. PTB runs updates on one event loop, so a
 blocking call in an `async def` freezes the whole bot: a 300-second Anthropic read took
 David down for five minutes. Keep those functions **synchronous** so they stay directly
