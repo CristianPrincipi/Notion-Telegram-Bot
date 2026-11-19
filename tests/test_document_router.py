@@ -32,7 +32,7 @@ def spies(monkeypatch):
 
     def find_Book_Page(book_name):
         calls["find_Book_Page"] = {"book_name": book_name}
-        return BOOK_PAGE, None
+        return books.Book(BOOK_PAGE, book_name), None
 
     def add_Quote(page_id, quote_title, quote_text):
         calls["add_Quote"] = {"page_id": page_id, "quote_title": quote_title,

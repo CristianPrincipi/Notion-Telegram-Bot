@@ -138,7 +138,7 @@ def test_add_quote_is_one_request_so_a_failure_writes_nothing():
 
 @pytest.fixture
 def book_found(monkeypatch):
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: ("book-page-1", None))
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book("book-page-1", name), None))
 
 
 def quote_it(monkeypatch, result):
