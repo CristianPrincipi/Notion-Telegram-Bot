@@ -108,7 +108,7 @@ async def _download():
 def pdf_quote(monkeypatch):
     """The PDF flow with the book found and a spy on the write."""
     saved = []
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: (PAGE_ID, None))
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book(PAGE_ID, name), None))
     monkeypatch.setattr(books, "add_Quote",
                         lambda page_id, title, text: saved.append(text) or (written_ok(2), None))
 

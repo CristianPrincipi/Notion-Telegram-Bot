@@ -37,10 +37,6 @@ from services.books import LETTI_ID
 
 logger = logging.getLogger(__name__)
 
-# Shortest prefix of a title worth searching on its own: "Il" or "La" would
-# match half the library.
-MIN_PREFIX_CHARS = 4
-
 
 class KindleError(NamedTuple):
     message: str
@@ -79,19 +75,21 @@ def title_candidates(title):
     title = " ".join(title.split())
     candidates = [title]
     prefix = re.split(r"\s*(?::|\.\s|\s[-–—]\s|\()", title, maxsplit=1)[0].strip()
-    if len(prefix) >= MIN_PREFIX_CHARS and prefix != title:
+    # A main title too short to search ("Io", "Mr") is not tried alone: under
+    # books.MIN_CONTAINS_CHARS it would only ever match itself exactly.
+    if len(prefix) >= books.MIN_CONTAINS_CHARS and prefix != title:
         candidates.append(prefix)
     return candidates
 
 
 async def _find_book(title):
-    """(page_id, None) / (None, None) / (None, error) — find_Book_Page's three answers."""
+    """(Book, None) / (None, None) / (None, error) — find_Book_Page's three answers."""
     for candidate in title_candidates(title):
-        page_id, err = await asyncio.to_thread(books.find_Book_Page, candidate)
+        found, err = await asyncio.to_thread(books.find_Book_Page, candidate)
         if err:
             return None, err
-        if page_id:
-            return page_id, None
+        if found:
+            return found, None
     return None, None
 
 
@@ -107,7 +105,8 @@ def validate(quote):
 async def run_kindle_quote(quote, *, notify):
     """Save one Kindle highlight. Returns (result, error); reports through `notify`.
 
-    result = {"book": str, "created": bool, "duplicate": bool}
+    result = {"book": str, "created": bool, "duplicate": bool} — `book` is the
+    Letti row's own title, which need not be the EPUB's.
     """
     book = " ".join(quote.book.split())
     title = quote.title.strip() or book
@@ -124,27 +123,29 @@ async def run_kindle_quote(quote, *, notify):
             if quote.id and quote.id in _saved:
                 return {**_saved[quote.id], "duplicate": True}, None
 
-            page_id, err = await _find_book(book)
+            found, err = await _find_book(book)
             if err:
                 await notify(f"❌ Kindle quote from '{book}' not saved: could not search "
                              f"your library. It stays queued on the Kindle. Notion said:\n{err}")
                 return None, KindleError(f"Notion lookup failed: {err}", retryable=True)
 
             created = False
-            if not page_id:
-                page_id = await asyncio.to_thread(
+            if not found:
+                page_id, err = await asyncio.to_thread(
                     books.add_New_Book, book, quote.author.strip(), None)
-                if not page_id:
+                if err:
                     await notify(f"❌ Kindle quote from '{book}' not saved: the book is not in "
-                                 "your library and creating it failed. It stays queued on the Kindle.")
-                    return None, KindleError("Could not create the book in Notion", retryable=True)
-                created = True
+                                 "your library and creating it failed. It stays queued on the "
+                                 f"Kindle. Notion said:\n{err}")
+                    return None, KindleError(f"Could not create the book in Notion: {err}",
+                                             retryable=True)
+                found, created = books.Book(page_id, book), True
 
-            written, err = await asyncio.to_thread(books.add_Quote, page_id, title, quote.text)
+            written, err = await asyncio.to_thread(books.add_Quote, found.id, title, quote.text)
             if err and written.partial:
                 # Part of it is on the page: a retry would append a second copy,
                 # so the Kindle must NOT keep it queued.
-                await notify(f"⚠️ Kindle quote only partly added to '{book}'.\n"
+                await notify(f"⚠️ Kindle quote only partly added to {books.landed_on(found, book)}.\n"
                              + books.partial_quote_warning(written))
                 return None, KindleError("Saved partially — fix it in Notion", retryable=False)
             if err:
@@ -152,13 +153,13 @@ async def run_kindle_quote(quote, *, notify):
                              f"the Kindle. Notion said:\n{err}")
                 return None, KindleError(f"Notion write failed: {err}", retryable=True)
 
-            result = {"book": book, "created": created, "duplicate": False}
+            result = {"book": found.title, "created": created, "duplicate": False}
             _remember(quote.id, result)
     except PageBusy:
         return None, KindleError("Your library is busy, try again in a moment", retryable=True)
 
-    logger.info("Kindle quote saved to %r (created=%s)", book, created)
-    message = f"📖 Kindle quote added to '{book}': {title}"
+    logger.info("Kindle quote saved to %r (created=%s)", found.title, created)
+    message = f"📖 Kindle quote added to {books.landed_on(found, book)}: {title}"
     if created:
         message += "\nThe book was not in your library, so it was created — with no genre."
     await notify(message)

@@ -300,7 +300,7 @@ def slow_command_stubs(monkeypatch):
 
     monkeypatch.setattr(bot.learn, "handle_learn", noop)
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: ("book-1", None))
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book("book-1", name), None))
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
     monkeypatch.setattr(bot.budget, "budget", lambda: ("TOTAL", None))
     monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
@@ -308,7 +308,7 @@ def slow_command_stubs(monkeypatch):
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
     monkeypatch.setattr(expense_service, "update_Expense", lambda *a: (True, None))
     monkeypatch.setattr(expense_service, "delete_Expense", lambda *a: (True, None))
-    monkeypatch.setattr(books, "add_New_Book", lambda *a: "book-1")
+    monkeypatch.setattr(books, "add_New_Book", lambda *a: ("book-1", None))
     monkeypatch.setattr(agenda_service, "get_events_for_day", lambda day: ([], None))
     monkeypatch.setattr(cancel_service, "find_event_matches",
                         lambda name: ([{"id": "evt-1", "summary": "Gym",
