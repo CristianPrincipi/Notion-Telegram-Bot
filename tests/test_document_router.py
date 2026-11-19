@@ -15,7 +15,8 @@ import david
 from clients import telegram_files
 from services import books
 from conftest import (
-    FakeContext, FakeDocument, FakeUpdate, run, with_update, written_nothing, written_ok,
+    FakeContext, FakeDocument, FakeFile, FakeUpdate, run, with_update, written_nothing,
+    written_ok,
 )
 
 FILE_URL   = "https://api.telegram.org/file/bot-token/doc.pdf"
@@ -311,6 +312,38 @@ def test_download_failure_is_reported_on_both_paths(spies, caption):
     assert update.message.replied_with("Download error")
     assert "handle_learn" not in spies
     assert "add_Quote" not in spies
+
+
+# A real file URL carries the bot token (`/file/bot<id>:<secret>/…`), and requests
+# quotes the URL in its exceptions, so a failed download's message held the token
+# and was sent to the chat as it was.
+TOKEN_SECRET   = "AAHfake-Token_9xYz"
+TOKENED_URL    = f"https://api.telegram.org/file/bot123456789:{TOKEN_SECRET}/documents/file_7.pdf"
+
+
+@BOTH_PDF_CAPTIONS
+@pytest.mark.parametrize("failure", [
+    {"status": 404},                                                        # HTTPError: "… for url: <URL>"
+    {"body": telegram_files.requests.ConnectionError(f"Max retries exceeded with url: {TOKENED_URL}")},
+], ids=["http-error", "connection-error"])
+@responses.activate
+def test_a_failed_download_never_shows_the_bot_token(spies, caption, failure):
+    responses.add(responses.GET, TOKENED_URL, **failure)
+    update = FakeUpdate(caption=caption, document=FakeDocument())
+
+    run(david.handle_document(update, FakeContext(file=FakeFile(file_path=TOKENED_URL))))
+
+    assert update.message.replied_with("Download error"), update.message.reply_texts
+    assert not update.message.replied_with(TOKEN_SECRET), update.message.reply_texts
+    # Exactly the token goes: no tail of it left before the path (a secret with
+    # a - or _ in it is cut whole), and the path still says which file failed.
+    assert update.message.replied_with("/file/bot<redacted>/documents/file_7.pdf"), \
+        update.message.reply_texts
+
+
+def test_redaction_leaves_text_without_a_token_alone():
+    text = "404 Client Error: Not Found for url: https://example.com/bot/about"
+    assert telegram_files.redact_token(text) == text
 
 
 @BOTH_PDF_CAPTIONS

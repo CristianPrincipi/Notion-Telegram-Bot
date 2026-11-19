@@ -52,6 +52,12 @@ Notable changes to David. The format follows
 
 ### Fixed
 
+- **The bot token is no longer written to the Railway log.** Every request to
+  Telegram was logged with its full address, and the address contains the
+  token, so anyone who could read the log could take over the bot. A failed PDF
+  download no longer shows the token in its error message either. If your logs
+  were ever shared or kept, get a new token from BotFather (`/revoke`) and
+  update `TELEGRAM_TOKEN` on Railway.
 - **`Implement` no longer deletes lines nested under a Manual or Diet line.**
   Every line of a section it merged into was deleted and written back, so
   anything nested under one of them was lost, along with bold labels on lines it

@@ -17,6 +17,7 @@ would refuse.
 """
 
 import asyncio
+import re
 
 import requests
 
@@ -25,6 +26,21 @@ MAX_PDF_MB    = 15
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
 HTTP_TIMEOUT_SECONDS     = 30    # per-request cap: fail fast on a stalled socket
 DOWNLOAD_TIMEOUT_SECONDS = 120   # whole-operation cap
+
+# The bot token inside a Telegram URL: `/file/bot<id>:<secret>/documents/…`.
+_TOKEN_IN_URL = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
+
+
+def redact_token(text: str) -> str:
+    """`text` with any bot token replaced by `bot<redacted>`.
+
+    The file URL `get_file` hands back carries the token, and requests quotes the
+    URL in its exceptions ("404 Client Error: … for url: <URL>", "Max retries
+    exceeded with url: …"). The download error goes to the chat, so it went there
+    with the token in it. The rest of the URL stays: it still says which request
+    failed.
+    """
+    return _TOKEN_IN_URL.sub("bot<redacted>", text)
 
 
 def validate_pdf_attachment(doc) -> str | None:
@@ -79,7 +95,7 @@ async def download_pdf_attachment(context, doc):
         return None, ("❌ Download timed out after 2 minutes.\n"
                       "Try a smaller PDF.")
     except Exception as e:
-        return None, f"❌ Download error: {e}"
+        return None, f"❌ Download error: {redact_token(str(e))}"
 
     # file_size is optional in the Telegram API, so re-check what actually arrived.
     if len(content) > MAX_PDF_BYTES:
