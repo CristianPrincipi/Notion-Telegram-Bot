@@ -449,6 +449,28 @@ Railway.
 costs one fix, not one redeploy per variable. Add a var to `REQUIRED_ENV`/`OPTIONAL_ENV`,
 a row to `docs/configuration.md` and a line to `.env.example` when you introduce one.
 
+### No secret in a log line or a reply
+
+Coming from environment variables keeps a secret out of the repository; it does not keep
+it out of the log. The bot token is part of every Telegram URL —
+`https://api.telegram.org/bot<TOKEN>/getUpdates`, and `/file/bot<TOKEN>/…` for an
+uploaded file — and two libraries print URLs:
+
+- **httpx**, python-telegram-bot's transport, logs every request with its full URL at
+  INFO. INFO is David's default level, so the token was in the Railway log on every
+  poll, readable by anyone who could read the log, for as long as the log is kept.
+- **urllib3**, under requests, logs each request's path at DEBUG, and the `Learn pdf` /
+  `Add q` download's path is the token again.
+
+`setup_logging` caps both at WARNING, never below `LOG_LEVEL` (a record meets only its
+own logger's level, so a flat WARNING would let their warnings through
+`LOG_LEVEL=ERROR`). Their request lines added nothing David's own lines do not say.
+
+The same URL reached the chat: requests quotes it in its exceptions, and the download
+error was sent as it was. `telegram_files.redact_token` cuts the token out and keeps
+the rest of the URL, which still says which request failed. PTB's own network errors
+were checked and carry no URL.
+
 ### A blank variable is an unset one, and `config.env_or` is the only reader with a default
 
 `os.environ.get(name, default)` falls back only when the key is ABSENT, so
