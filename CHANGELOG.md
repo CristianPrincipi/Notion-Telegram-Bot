@@ -70,12 +70,29 @@ Notable changes to David. The format follows
   If the merge named a section outside the ones it was sent, that section's
   content was replaced with lines written without seeing it. Only the sections
   Claude was shown can be changed now.
+- **`Implement` says when it could not remove a line.** If Notion refused to
+  delete a line being replaced or removed, the reply still counted it as
+  changed while the old line stayed on the page. The section is now listed as
+  half-written, quoting the line to delete by hand.
+- **`Implement` no longer applies two edits to one line** when Claude names the
+  same section twice in its answer. The line could be written twice, a line added
+  after one being removed could end up anchored on nothing, and a new step could
+  get two headings.
 - **`Implement … - Diet` says when a section was only half-written**, instead
   of listing it as unchanged.
 - **A long quote is saved as one quote.** `Add q` used to start a new quote block
   every 1800 characters, so a pasted quote of 2500 characters showed up in Notion
   as two. One quote block now holds up to 180,000 characters; a passage cut out of
   a PDF that is longer than that is refused, saying so, and nothing is saved.
+- **A quote goes to the book whose title you typed, and the reply names the book
+  it went to.** With "Dune" and a later "Dune Messiah" in Letti, `Add q Dune /
+  …` and a Kindle highlight from Dune were saved in Dune Messiah, and the reply
+  said "Dune". A title that matches exactly now wins over a longer one, a name of
+  three letters or fewer must match the whole title, and when the book found is
+  titled differently the reply says which one it was.
+- **`Add b` says why a book could not be added**, with Notion's own reason,
+  instead of "Check your API keys" for every failure. A Kindle highlight whose
+  book could not be created says why too, and stays queued.
 
 ## [1.1.0] - 2026-10-04
 

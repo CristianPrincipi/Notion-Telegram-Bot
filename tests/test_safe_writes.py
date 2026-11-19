@@ -57,6 +57,7 @@ class NotionSpy:
 
     def delete_block(self, block_id):
         self.calls.append(("delete", block_id))
+        return True, None
 
 
 # ─── 1. MANUAL: APPEND BEFORE DELETE ───────────────────────────────────────────
@@ -282,6 +283,7 @@ def test_diet_running_twice_does_not_double_the_section(diet_spy):
 
     def delete_block(block_id):
         live[:] = [b for b in live if b["id"] != block_id]
+        return True, None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(implement_diet, "get_children", get_children)

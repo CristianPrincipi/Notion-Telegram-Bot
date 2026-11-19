@@ -217,6 +217,35 @@ def plan_edits(path: str, lines: list, ops: list, *, render, top) -> SectionEdit
     return edit
 
 
+def merge_by_section(updates: list, key) -> list:
+    """`updates` with every entry that names the same section merged into one.
+
+    A merge answer can name one section in two entries. Planned one entry at a
+    time, each was checked against the same numbered lines on its own, so "a line
+    named twice is ignored" held only INSIDE an entry: two replaces of one line
+    wrote it twice and deleted it twice, a remove in one entry ran before an add
+    anchored on that line in the next, and a new step named twice got two
+    headings.
+
+    `key(path)` is the caller's identity for the section a path writes to, or None
+    for a path it does not know; those entries are kept as they are, so the caller
+    still reports each one. First-seen order; the first entry's path is kept.
+    """
+    merged, out = {}, []
+    for upd in updates:
+        path = (upd.get("path") or "").strip()
+        ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
+        section = key(path) if path else None
+        if section is None:
+            out.append(upd)
+        elif section in merged:
+            merged[section]["ops"].extend(ops)
+        else:
+            merged[section] = {**upd, "path": path, "ops": ops}
+            out.append(merged[section])
+    return out
+
+
 def hold_back_rewrites(updates: list, lines_for) -> tuple[list, list]:
     """Split an unverified merge into (may_be_written, held_back).
 
@@ -254,6 +283,12 @@ def hold_back_rewrites(updates: list, lines_for) -> tuple[list, list]:
 
 # ─── 3. WRITING ONE SECTION ────────────────────────────────────────────────────
 
+# The heading both replies put over the "partial" bucket. One string, so the two
+# cannot describe the same state two ways.
+HALF_WRITTEN = ("Half-written — open these in Notion: the edit stopped part-way, so a "
+                "line being replaced may be there twice")
+
+
 def write_edit(parent_id: str, edit: SectionEdit, *, append_children, delete_ids):
     """Write one section's edit. Returns (bucket, note).
 
@@ -261,7 +296,8 @@ def write_edit(parent_id: str, edit: SectionEdit, *, append_children, delete_ids
 
     `bucket` is "edited", "skipped" or "partial", and `note` says why for the
     last two. `append_children(parent_id, blocks, after=…)` and `delete_ids(ids)`
-    are the caller's.
+    are the caller's; `delete_ids` returns [(block_id, error)] for each delete
+    that failed.
 
     APPEND FIRST, DELETE AFTER (Hard Rule 2). The IDs to delete come from the
     lines numbered BEFORE anything was written, never from a re-read — a re-read
@@ -272,8 +308,10 @@ def write_edit(parent_id: str, edit: SectionEdit, *, append_children, delete_ids
     THREE buckets, not two. "skipped" is genuinely unchanged: the first append
     failed, so nothing landed and nothing was deleted. "partial" had some
     insertions land before one failed — they are on the page, nothing was
-    deleted, and a line being replaced is there twice. That is the one state a
-    re-run cannot fix by itself.
+    deleted, and a line being replaced is there twice — OR every insertion
+    landed and a delete failed, so that line is still there beside its
+    replacement (or was not removed). That is the one state a re-run cannot fix
+    by itself. A failed delete used to be silent, and counted as done.
     """
     if not edit.inserts and not edit.removed:
         log_edit(edit)
@@ -293,8 +331,18 @@ def write_edit(parent_id: str, edit: SectionEdit, *, append_children, delete_ids
         # Nothing appended, nothing deleted — genuinely unchanged.
         return "skipped", err
 
-    delete_ids(edit.doomed_ids)
+    failed = dict(delete_ids(edit.doomed_ids))
     log_edit(edit)
+    if failed:
+        stuck = [line for line, _ in edit.replaced + edit.removed if line.block_id in failed]
+        logger.warning("Implement %s: %d line(s) could not be removed: %s", edit.path,
+                       len(stuck), "; ".join(f"{line.block_id}: {failed[line.block_id]}"
+                                             for line in stuck))
+        verb = "is" if len(stuck) == 1 else "are"
+        return "partial", (f"every line was written, but {len(stuck)} could not be removed "
+                           f"and {verb} still on the page: "
+                           + "; ".join(f"“{short(line.text)}”" for line in stuck)
+                           + f" — {failed[stuck[0].block_id]}")
     return "edited", None
 
 

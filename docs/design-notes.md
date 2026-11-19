@@ -179,6 +179,16 @@ section is neither applied nor "unchanged", and it was being filed under the
 latter, next to a heading that said so. The Diet path gained it with edit
 operations, when one section became several appends that can fail part-way.
 
+A DELETE that fails is the same state from the other side, and it was invisible:
+`delete_block` was best-effort — no status check, every exception swallowed — so
+after a replace whose delete Notion refused, the old line sat beside its replacement
+while the reply said "~1 sharpened". It returns `(ok, error)` now; the delete
+callbacks return the failures and keep going, and `edit_ops.write_edit` files the
+section as half-written, quoting each line still on the page. A refused delete is
+reported, never retried or guessed at: a block someone archived by hand in the
+meantime is gone either way, and the reply saying "could not be removed" costs one
+look at the page.
+
 ### A source with no source says so, in the page body
 
 `Learn book X` summarises
@@ -251,10 +261,18 @@ still touches exactly one line. A line no operation names is never written to.
 - **Bad operations are ignored, out loud.** A missing line, a fixed line, or a line
   named by two replace/remove operations (they contradict each other; keeping the
   line loses nothing). The reply counts them and the log names each one.
+- **One section, one edit, however many entries name it.** Claude can name a section
+  in two entries of its answer. Planned one entry at a time, each was checked against
+  the same numbered lines on its own, so "named twice" held only inside an entry: two
+  replaces of one line wrote it twice, a remove in one entry ran before an add anchored
+  on that line in the next, and a new step named twice got two headings.
+  `edit_ops.merge_by_section` folds them into one list of operations first, keyed by
+  the section each path resolves to (found by the #68 review; fixed 2026-11-19).
 - **Hard Rule 2 per section.** One append per anchor line, the replacement first so the
   order survives the delete; deletes only after every append in the section landed,
   from the pre-write index. A failure after the first append is `partial`: nothing was
-  removed, so a line being replaced is there twice.
+  removed, so a line being replaced is there twice. So is a delete that fails after
+  every append landed (see "A partial write is a third outcome").
 - **A replacement keeps its line's type** (a numbered step stays numbered) **and a
   leading bold label** when the new text starts with it. Other formatting belonged to
   the old text and goes with it.
@@ -335,6 +353,25 @@ Two properties of it are load-bearing:
   when the safeguard is optional; that asymmetry is the opposite of
   `title_property`'s, and it is deliberate — there, guessing produces a *wrong
   answer*, here, refusing costs you the command.
+
+### A book lookup prefers the exact title, and the reply names the row
+
+`find_Book_Page` asks Notion for every Letti title CONTAINING the search, newest
+first, and used to take the first row whatever it was. With "Dune" and a later
+"Dune Messiah" in the library, `Add q Dune / …` and a Kindle highlight from Dune
+were saved in Dune Messiah; a Kindle book titled "It" went to any title with "it"
+in it. And the reply named the SEARCH — "Quote added to 'Dune'!" — so nothing
+showed where the quote had actually gone.
+
+Now a title equal to the search wins (`same_title`: case and runs of spaces folded,
+punctuation and accents not); failing that, the newest title containing it, but
+only for a search of at least `MIN_CONTAINS_CHARS` (4) — the same floor the Kindle
+already used for a main title tried alone. The fallback stays because a Letti row
+often carries more than you type ("Dune (Fanucci)"). The lookup returns a `Book`
+with the row's own title, and every reply goes through `landed_on`, which adds
+`(searched for '…')` when the two differ. That line is the backstop: an append is
+not a destructive command, so Hard Rule 4's "refuse and ask" was not worth a
+prompt on every quote, but a quote that went somewhere unexpected has to say so.
 
 ### Notion is asked what its columns are called
 

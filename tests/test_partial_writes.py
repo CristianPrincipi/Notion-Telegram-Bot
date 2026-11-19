@@ -138,7 +138,7 @@ def test_add_quote_is_one_request_so_a_failure_writes_nothing():
 
 @pytest.fixture
 def book_found(monkeypatch):
-    monkeypatch.setattr(books, "find_Book_Page", lambda name: ("book-page-1", None))
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book("book-page-1", name), None))
 
 
 def quote_it(monkeypatch, result):
@@ -283,7 +283,8 @@ def manual(monkeypatch):
     monkeypatch.setattr(implement, "get_children", lambda page_id: (SECTIONS_PAGE, None))
     monkeypatch.setattr(implement, "append_children",
                         lambda block_id, blocks, after=None: state["append"])
-    monkeypatch.setattr(implement, "delete_block", state["deletes"].append)
+    monkeypatch.setattr(implement, "delete_block",
+                        lambda block_id: state["deletes"].append(block_id) or (True, None))
     return state
 
 

@@ -18,12 +18,14 @@ import io
 import logging
 import os
 import re
+from typing import NamedTuple
 
 import pypdf
 
 from clients import telegram_files
 from clients.notion_client import (
-    CREATED_DESC, Written, append_children, body_excerpt, notion_request, query_database,
+    CREATED_DESC, Written, append_children, body_excerpt, get_page_title, notion_request,
+    query_database,
 )
 from config import (
     BOOK_AREA_RELATION, BOOK_AUTHOR_PROPERTY, BOOK_GENRE_PROPERTY, BOOK_TITLE_PROPERTY,
@@ -37,6 +39,13 @@ LETTI_ID      = os.environ.get("LETTI_ID")
 LITERATURE_ID = os.environ.get("LITERATURE_ID")
 
 
+class Book(NamedTuple):
+    """A Letti row as a lookup found it: where to write, and what it is called."""
+
+    id: str
+    title: str
+
+
 # --- NOTION FUNCTIONS --- #
 #
 # SYNCHRONOUS and blocking, like every other Notion call in David. Reached only
@@ -45,11 +54,15 @@ LITERATURE_ID = os.environ.get("LITERATURE_ID")
 
 # --- NEW READED BOOK --- #
 def add_New_Book(name, author, genre=None):
-    """Create a new book entry in Notion. Returns page_id on success, None on failure.
+    """Create a new book entry in Notion. Returns (page_id, error) and never raises.
 
     `genre=None` leaves the Genre column EMPTY rather than inventing one: a book
     created from a Kindle highlight has no genre David could know, and a guessed
     one would read as a choice you made. You fill it in Notion if you want it.
+
+    It returned a bare page id or None, and let a network failure raise: `Add b`
+    answered every failure with "Check your API keys" — a validation error
+    included — and the Kindle endpoint answered 500 instead of "keep it queued".
     """
     properties = {
         BOOK_TITLE_PROPERTY:  {"title": [{"text": {"content": name}}]},
@@ -62,36 +75,82 @@ def add_New_Book(name, author, genre=None):
         "parent": {"database_id": LETTI_ID},
         "properties": properties,
     }
-    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
-    if response.status_code != 200:
-        logger.error("add_New_Book failed: Notion %s: %s",
-                     response.status_code, body_excerpt(response))
-        return None
-    return response.json()["id"]
+    try:
+        response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
+        if response.status_code != 200:
+            err = f"Notion {response.status_code}: {body_excerpt(response)}"
+            logger.error("add_New_Book failed: %s", err)
+            return None, err
+        return response.json()["id"], None
+    except Exception as e:
+        logger.error("add_New_Book failed: %s: %s", type(e).__name__, e)
+        return None, str(e) or type(e).__name__
+
+
+# A search shorter than this matches a title only EXACTLY. Notion is asked for
+# every title CONTAINING the search, and "It" or "Io" is inside half a library.
+MIN_CONTAINS_CHARS = 4
+
+
+def same_title(a: str, b: str) -> bool:
+    """Equal once case and runs of whitespace are ignored — what "exact" means here.
+
+    Punctuation and accents still count: "Dune." and "Dune" are two titles.
+    """
+    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
+def landed_on(book: Book, searched: str) -> str:
+    """The row a quote went to, for a reply: 'Dune' — or, when the row is not
+    titled what was searched, 'Dune Messiah' (searched for 'Dune').
+
+    The replies used to name the SEARCH, so a quote filed under another row
+    read as filed where you asked.
+    """
+    if same_title(book.title, searched):
+        return f"'{book.title}'"
+    return f"'{book.title}' (searched for '{searched}')"
 
 
 # --- NEW QUOTE FUNCTION ---
 def find_Book_Page(book_name):
-    """Search LETTI database for a book by name.
+    """Search LETTI database for a book by name. Returns (Book, error).
 
-    Three answers, like search_page_in_db: (page_id, None) found, (None, None)
+    Three answers, like search_page_in_db: (Book, None) found, (None, None)
     nothing matches, (None, error) the read failed. It used to return a bare
     None for the last two, so during a Notion outage `Add q` told you the book
     was not in your library — a confident answer about data it had not read.
 
+    WHICH ROW. Notion returns every title CONTAINING the search. A title equal
+    to the search (`same_title`) wins; failing that, the newest row containing
+    it — for a search of at least MIN_CONTAINS_CHARS. It used to take the newest
+    row whatever it was, so with "Dune" and a newer "Dune Messiah" in Letti a
+    quote from Dune went to Dune Messiah, and a Kindle book titled "It" went to
+    any title with "it" in it.
+
     Sorted newest-first, so with two editions of the same title in the library
     the quote lands on the same one every time instead of on whichever row
     Notion happened to return first. See notion_client.CREATED_DESC.
+
+    The Book carries the row's own title, so a reply can say where the quote went.
     """
+    name = " ".join(book_name.split())
     results, err = query_database(
         LETTI_ID,
-        filter_obj={"property": BOOK_TITLE_PROPERTY, "title": {"contains": book_name.strip()}},
+        filter_obj={"property": BOOK_TITLE_PROPERTY, "title": {"contains": name}},
         sorts=CREATED_DESC,
     )
     if err:
         logger.error("find_Book_Page(%r) failed: %s", book_name, err)
         return None, err
-    return (results[0]["id"] if results else None), None
+
+    rows = [Book(result["id"], get_page_title(result)) for result in results]
+    exact = next((row for row in rows if same_title(row.title, name)), None)
+    if exact:
+        return exact, None
+    if len(name) < MIN_CONTAINS_CHARS or not rows:
+        return None, None
+    return rows[0], None
 
 
 def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
@@ -259,12 +318,13 @@ async def run_add_book(name, author, genre_shortcut, *, notify, notify_md=None):
     await notify(f"⏳ Adding '{name}' '{author}' '{genre_shortcut}' to Notion...")
 
     # CALL THE NOTION FUNCTION
-    page_id = await asyncio.to_thread(add_New_Book, name, author, genre)
+    _, err = await asyncio.to_thread(add_New_Book, name, author, genre)
 
-    if page_id:
-        await notify("✅ Success! Book added to your database.")
+    if err:
+        # Plain: the error is Notion's (or the network's), not David's.
+        await notify(f"❌ Could not add '{name}' to your library. Notion said:\n{err}")
     else:
-        await notify("❌ Error: Could not connect to Notion. Check your API keys.")
+        await notify("✅ Success! Book added to your database.")
 
 
 async def _report_lookup_failure(book_name, err, notify):
@@ -282,12 +342,12 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
     notify_md = notify_md or notify
 
     await notify(f"🔍 Searching '{book_name}' in library...")
-    page_id, err = await asyncio.to_thread(find_Book_Page, book_name)
+    book, err = await asyncio.to_thread(find_Book_Page, book_name)
 
     if err:
         await _report_lookup_failure(book_name, err, notify)
         return
-    if not page_id:
+    if not book:
         await notify(f"⚠️ I didn't find '{book_name}' in the library.")
         return
 
@@ -300,11 +360,11 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
         return
 
     # --- MANUAL MODE: full quote provided directly ---
-    written, err = await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content)
+    written, err = await asyncio.to_thread(add_Quote, book.id, quote_title, quote_content)
     if not err:
-        await notify(f"✍️ Quote added to '{book_name}'!")
+        await notify(f"✍️ Quote added to {landed_on(book, book_name)}!")
     elif written.partial:
-        await notify(f"⚠️ Quote only partly added to '{book_name}'.\n"
+        await notify(f"⚠️ Quote only partly added to {landed_on(book, book_name)}.\n"
                      + partial_quote_warning(written))
     else:
         await notify("❌ Error during quote transcription.")
@@ -322,11 +382,11 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
 
     # Find book in Notion
     await notify(f"🔍 Searching \'{book_name}\' in library…")
-    page_id, err = await asyncio.to_thread(find_Book_Page, book_name)
+    book, err = await asyncio.to_thread(find_Book_Page, book_name)
     if err:
         await _report_lookup_failure(book_name, err, notify)
         return
-    if not page_id:
+    if not book:
         await notify(f"⚠️ \'{book_name}\' not found in library.")
         return
 
@@ -379,11 +439,11 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
     )
 
     # Save to Notion
-    written, err = await asyncio.to_thread(add_Quote, page_id, quote_title, quote_content)
+    written, err = await asyncio.to_thread(add_Quote, book.id, quote_title, quote_content)
     if not err:
-        await notify(f"✍️ Quote added to \'{book_name}\'!")
+        await notify(f"✍️ Quote added to {landed_on(book, book_name)}!")
     elif written.partial:
-        await notify(f"⚠️ Quote only partly added to \'{book_name}\'.\n"
+        await notify(f"⚠️ Quote only partly added to {landed_on(book, book_name)}.\n"
                      + partial_quote_warning(written))
     else:
         await notify("❌ Error saving quote to Notion.")

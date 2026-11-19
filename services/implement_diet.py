@@ -16,8 +16,8 @@ from telegram_text import escape_md
 # module scope.
 from services.implement import fit_to_budget
 from services.edit_ops import (
-    format_edits, format_held, hold_back_rewrites, listing, number_lines, op_schema,
-    plan_edits, write_edit,
+    HALF_WRITTEN, format_edits, format_held, hold_back_rewrites, listing, merge_by_section,
+    number_lines, op_schema, plan_edits, write_edit,
 )
 from clients.notion_client import (
     search_page_in_db, get_children, blocks_to_text,
@@ -520,7 +520,7 @@ def apply_updates(updates: list, targets: dict, contents: dict):
     """
     edited, skipped, partial = [], [], []
 
-    for upd in updates:
+    for upd in merge_by_section(updates, lambda path: _known_path(path, targets)):
         path = (upd.get("path") or "").strip()
         ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
         if not path or not ops:
@@ -542,12 +542,17 @@ def apply_updates(updates: list, targets: dict, contents: dict):
     return edited, skipped, partial
 
 
-def _delete_ids(block_ids: list) -> None:
+def _delete_ids(block_ids: list) -> list:
     """Delete blocks taken from the pre-write read. Looked up at call time, so a
-    test that replaces delete_block sees every delete."""
+    test that replaces delete_block sees every delete. Returns [(block_id, error)]
+    for every delete that failed; the others still run."""
+    failed = []
     for block_id in block_ids:
         if block_id:
-            delete_block(block_id)
+            ok, err = delete_block(block_id)
+            if not ok:
+                failed.append((block_id, err))
+    return failed
 
 
 def _path_key(path: str) -> str:
@@ -872,9 +877,7 @@ async def run_implement_diet(summary_name: str, *, notify, notify_md=None):
             # skipped / partial entries are "path (note)" — Claude's path either
             # way, so both halves need escaping.
             lines += _report_lines("Skipped — unchanged", skipped, "⚠️")
-            lines += _report_lines("Half-written — open these in Notion: part of the edit "
-                                   "is there and nothing was removed, so a line being "
-                                   "replaced is there twice", partial, "🚨")
+            lines += _report_lines(HALF_WRITTEN, partial, "🚨")
             lines += _report_lines("Routed but left unchanged by the merge", unchanged, "➖")
             lines += _report_lines("Not found on the page", unresolved, "❓")
             await notify_md("\n".join(lines) + format_held(held))

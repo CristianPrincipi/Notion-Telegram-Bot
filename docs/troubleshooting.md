@@ -93,6 +93,19 @@ Check it against **Settings → your calendar → Integrate calendar → Calenda
   no `Add q` in front. The first part WAS saved, as a quote of its own: delete it
   in Notion, then use the PDF form for that passage.
 
+## A quote went to the wrong book, or its book is "not found"
+
+- **The reply names another book: "added to 'Dune Messiah' (searched for
+  'Dune')"** — no book in Letti is titled exactly what you typed, so the quote
+  went to the newest title containing it. Move the quote in Notion, and either
+  add the missing book (`Add b`) or type its title in full.
+- **"I didn't find 'It' in the library" for a book you have** — a name of three
+  letters or fewer has to match the whole title. Check the title in Letti for a
+  stray character.
+- **`Add b`: "Could not add … Notion said: …"** — Notion's own reason follows.
+  A 400 is usually a column name or genre option that differs from Letti's; see
+  [A command fails with a Notion 400](#a-command-fails-with-a-notion-400).
+
 ## Kindle quotes are not arriving
 
 - **The Kindle says "Wrong or missing token"** — the secret in the plugin's
@@ -104,6 +117,9 @@ Check it against **Settings → your calendar → Integrate calendar → Calenda
   `/kindle/ping` and needs nothing from Notion.
 - **"could not search your library … It stays queued on the Kindle"** — Notion
   was unreachable. Nothing was written; the Kindle sends it again by itself.
+- **"the book is not in your library and creating it failed … Notion said: …"**
+  — the highlight stays queued and is sent again later. A 400 that repeats needs
+  fixing in Letti: see [A command fails with a Notion 400](#a-command-fails-with-a-notion-400).
 - **A book appeared twice in Letti** — its Notion title shares no prefix with the
   EPUB title (say "Il Principe" against "Principe, Il"), so David did not find it
   and created one. Move the quote, delete the new row, and rename one of the two
@@ -150,6 +166,20 @@ should have changed too.
 Make that change by hand in Notion. To let `Implement` edit a line in future,
 move the lines nested under it out of it, or turn the block into a plain bullet.
 The Railway log has one line per section naming each ignored edit and why.
+
+## `Implement`: a section is "Half-written"
+
+The edit stopped part-way, and the section needs a look in Notion:
+
+- **"… of … insertions written, nothing removed"** — Notion failed in the middle
+  of adding lines. What landed is on the page; nothing old was removed, so a line
+  being replaced is there in both versions. Delete the one you do not want.
+- **"every line was written, but … could not be removed and is still on the
+  page"** — the new lines are in, and Notion refused to delete the old one, which
+  the reply quotes. Delete it by hand. If it is already gone, someone removed it
+  in the meantime and there is nothing to do.
+
+Running `Implement` again does not fix either: Claude would see both lines.
 
 ## `Implement` says an update is already in progress
 

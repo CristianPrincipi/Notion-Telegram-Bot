@@ -250,7 +250,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(implement, "apply_section_updates",
                         lambda page_id, updates, sections, new_paths=None: (
                             [implement.SectionEdit("Perfect Process")], [], []))
-    monkeypatch.setattr(implement, "delete_block", lambda block_id: None)
+    monkeypatch.setattr(implement, "delete_block", lambda block_id: (True, None))
     # The Sources ledger write. Stubbed rather than left live, or it would reach
     # the real append_children and, through it, the network.
     monkeypatch.setattr(implement, "append_children",
