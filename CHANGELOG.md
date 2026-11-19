@@ -43,6 +43,10 @@ Notable changes to David. The format follows
   only add to a Manual. Before, the Diet page warned about it and then let it
   rewrite anything.
 
+- **PDFs are read with pypdf**, the maintained successor of PyPDF2, which is no
+  longer updated. `Learn pdf` and `Add q` from a PDF work as before.
+- **The `Learn book` reply no longer says to treat its quotes as unverified:**
+  those pages have no quotes. It says claims, figures and dates.
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption
   `Add q Dune / Fear / I must not fear | it will be gone` — the first and last

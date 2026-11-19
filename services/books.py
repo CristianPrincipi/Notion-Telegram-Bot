@@ -1,6 +1,6 @@
 """Books and the quotes that go on them.
 
-Moved out of david.py unchanged: the Notion writes, the PyPDF2 walk, the two
+Moved out of david.py unchanged: the Notion writes, the pypdf walk, the two
 timeouts around it, and every message. `update.message.reply_text` became
 `notify`, `telegram_text.reply` became `notify_md`, and the one thing a service
 genuinely cannot do for itself — fetch a file from Telegram's CDN — is handed in
@@ -19,7 +19,7 @@ import logging
 import os
 import re
 
-import PyPDF2
+import pypdf
 
 from clients import telegram_files
 from clients.notion_client import (
@@ -113,7 +113,7 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
         return None, "Begin or End text cannot be empty."
 
     try:
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         if not reader.pages:
             return None, "PDF appears to be empty."
 
@@ -140,7 +140,7 @@ def extract_quote_from_pdf(pdf_bytes: bytes, begin_text: str, end_text: str):
             return None, f"Begin text not found in PDF.\nSearched for: \'{begin_text[:100]}\'"
         return None, f"End text not found after begin marker.\nSearched for: \'{end_text[:100]}\'"
 
-    except PyPDF2.errors.PdfReadError as e:
+    except pypdf.errors.PdfReadError as e:
         return None, f"Could not read PDF: {e}"
     except Exception as e:
         return None, f"PDF extraction error: {e}"

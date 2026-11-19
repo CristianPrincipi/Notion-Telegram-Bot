@@ -101,7 +101,7 @@ def test_records_outside_an_update_get_a_placeholder():
 
 
 def test_the_correlation_id_survives_asyncio_to_thread():
-    """Every Notion, Anthropic and PyPDF2 call is offloaded — the tag must follow."""
+    """Every Notion, Anthropic and pypdf call is offloaded — the tag must follow."""
     set_correlation_id(99)
 
     async def main():

@@ -3,7 +3,7 @@
 THE BUG THIS LOCKS DOWN
 -----------------------
 python-telegram-bot processes updates sequentially on a single event loop. Every
-Notion, Anthropic and PyPDF2 call in David is synchronous, so calling one
+Notion, Anthropic and pypdf call in David is synchronous, so calling one
 directly from an `async def` stops the ENTIRE bot for its duration — no other
 command answered, no scheduled job fired. A `Learn video` on a long transcript
 sits in a 300-second Anthropic read; David was dead for those five minutes.
@@ -212,7 +212,7 @@ def test_learn_runs_fetch_claude_and_notion_off_the_loop(offloaded, learn_stubs,
 
 
 def test_learn_pdf_parses_off_the_loop(offloaded, learn_stubs):
-    """PyPDF2 is CPU-bound, which pins the loop just as hard as a network call."""
+    """pypdf is CPU-bound, which pins the loop just as hard as a network call."""
     update = FakeUpdate(text="Learn pdf")
 
     run(learn.run_learn("Learn pdf", file_bytes=b"%PDF-1.4 fake", **with_update(update)))

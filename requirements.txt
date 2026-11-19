@@ -16,7 +16,11 @@ python-telegram-bot[job-queue]>=21.0
 anthropic>=1.0,<2
 requests>=2.31
 pytz>=2024.1
-PyPDF2>=3.0
+# PDF text for `Learn pdf` and `Add q` from a PDF. pypdf is PyPDF2's own
+# successor — PyPDF2 stopped at 3.0.1 and warns on import that it is deprecated.
+# Pure Python; the --only-binary=:all: dry-run below was re-run with it
+# (2026-11-19). tests/test_pdf_text.py reads a real PDF with it.
+pypdf>=7.1
 # Article extraction. trafilatura scores the DOM for content density, so the
 # summariser gets the article body instead of the body plus the nav, the cookie
 # banner and the footer. beautifulsoup4 stays as the fallback parser — pure
