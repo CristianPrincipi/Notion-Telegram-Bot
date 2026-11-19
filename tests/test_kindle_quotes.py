@@ -74,16 +74,16 @@ class Library:
             return None, self.lookup_error
         for title, page in self.pages.items():
             if name.strip() in title:
-                return page, None
+                return books.Book(page, title), None
         return None, None
 
     def create(self, name, author, genre=None):
         time.sleep(0.05)  # widen the find-or-create window for the race test
         self.created.append((name, author, genre))
         if not self.create_ok:
-            return None
+            return None, "Notion 400: body failed validation"
         self.pages[name] = f"page-new-{len(self.created)}"
-        return self.pages[name]
+        return self.pages[name], None
 
     def add_quote(self, page_id, title, text):
         self.quotes.append((page_id, title, text))
@@ -138,9 +138,9 @@ def test_creating_a_book_with_no_genre_sends_no_genre_column():
     """The Notion request itself: an empty Genre is ABSENT, not `[{"name": None}]`."""
     responses.add(responses.POST, f"{NOTION_BASE}/pages", status=200, json={"id": "new-book"})
 
-    page_id = books.add_New_Book("Il manuale", "Epitteto", None)
+    page_id, err = books.add_New_Book("Il manuale", "Epitteto", None)
 
-    assert page_id == "new-book"
+    assert (page_id, err) == ("new-book", None)
     sent = json.loads(responses.calls[0].request.body)
     assert sent["parent"] == {"database_id": LETTI_ID}
     assert "Genre" not in sent["properties"]
@@ -171,6 +171,29 @@ def test_the_epub_subtitle_does_not_hide_the_book(monkeypatch):
                             "Psicopolitica"]
 
 
+def test_the_message_and_the_answer_name_the_row_the_quote_went_to(monkeypatch):
+    """The notice named the EPUB's title, so a quote filed under a different row
+    — the main title, or a longer one containing it — never showed where it went."""
+    Library(["Psicopolitica"]).install(monkeypatch)
+    sent, notify = collect()
+
+    result, _ = run(kindle.run_kindle_quote(
+        quote(book="Psicopolitica. Il neoliberismo e le nuove tecniche del potere"), notify=notify))
+
+    assert result["book"] == "Psicopolitica"
+    assert "added to 'Psicopolitica'" in sent[-1], sent
+    assert "Il neoliberismo" in sent[-1], "the EPUB's own title should still be named"
+
+
+def test_a_book_found_under_its_own_title_is_named_once(monkeypatch):
+    Library(["Psicopolitica"]).install(monkeypatch)
+    sent, notify = collect()
+
+    run(kindle.run_kindle_quote(quote(), notify=notify))
+
+    assert sent[-1] == "📖 Kindle quote added to 'Psicopolitica': Cap. 2 · p. 31"
+
+
 @pytest.mark.parametrize("title, expected", [
     ("Psicopolitica. Il neoliberismo", ["Psicopolitica. Il neoliberismo", "Psicopolitica"]),
     ("Sapiens: Da animali a dèi", ["Sapiens: Da animali a dèi", "Sapiens"]),
@@ -199,11 +222,29 @@ def test_a_failed_lookup_writes_nothing_and_stays_queued(monkeypatch):
 
 def test_a_failed_create_stays_queued(monkeypatch):
     lib = Library([], create_ok=False).install(monkeypatch)
-    _, notify = collect()
+    sent, notify = collect()
 
     _, err = run(kindle.run_kindle_quote(quote(), notify=notify))
 
     assert err.retryable is True and lib.quotes == []
+    assert "Notion 400" in err.message, "Notion's reason was dropped"
+    assert "Notion 400" in sent[0]
+
+
+@responses.activate
+def test_a_network_failure_creating_the_book_stays_queued_and_raises_nothing(monkeypatch):
+    """add_New_Book let requests' exception escape: the Kindle got a 500, and a
+    raw traceback, instead of "keep it queued"."""
+    monkeypatch.setattr(books, "find_Book_Page", lambda name: (None, None))
+    monkeypatch.setattr(books, "add_Quote", lambda *a: pytest.fail("quoted a book never created"))
+    responses.add(responses.POST, f"{NOTION_BASE}/pages",
+                  body=notion_client.requests.ConnectionError("connection reset"))
+    sent, notify = collect()
+
+    result, err = run(kindle.run_kindle_quote(quote(), notify=notify))
+
+    assert result is None and err.retryable is True
+    assert "connection reset" in sent[0]
 
 
 def test_a_quote_too_long_for_one_block_is_refused_for_good(monkeypatch):

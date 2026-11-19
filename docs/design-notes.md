@@ -354,6 +354,25 @@ Two properties of it are load-bearing:
   `title_property`'s, and it is deliberate — there, guessing produces a *wrong
   answer*, here, refusing costs you the command.
 
+### A book lookup prefers the exact title, and the reply names the row
+
+`find_Book_Page` asks Notion for every Letti title CONTAINING the search, newest
+first, and used to take the first row whatever it was. With "Dune" and a later
+"Dune Messiah" in the library, `Add q Dune / …` and a Kindle highlight from Dune
+were saved in Dune Messiah; a Kindle book titled "It" went to any title with "it"
+in it. And the reply named the SEARCH — "Quote added to 'Dune'!" — so nothing
+showed where the quote had actually gone.
+
+Now a title equal to the search wins (`same_title`: case and runs of spaces folded,
+punctuation and accents not); failing that, the newest title containing it, but
+only for a search of at least `MIN_CONTAINS_CHARS` (4) — the same floor the Kindle
+already used for a main title tried alone. The fallback stays because a Letti row
+often carries more than you type ("Dune (Fanucci)"). The lookup returns a `Book`
+with the row's own title, and every reply goes through `landed_on`, which adds
+`(searched for '…')` when the two differ. That line is the backstop: an append is
+not a destructive command, so Hard Rule 4's "refuse and ask" was not worth a
+prompt on every quote, but a quote that went somewhere unexpected has to say so.
+
 ### Notion is asked what its columns are called
 
 `search_page_in_db` filtered on a

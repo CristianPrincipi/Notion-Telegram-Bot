@@ -85,6 +85,16 @@ Add b Dune - Frank Herbert - a
 Add q Dune / Fear / I must not fear. Fear is the mind-killer.
 ```
 
+**Which book.** A title in Letti equal to the one you typed wins, ignoring
+capitals and extra spaces; otherwise the newest title that contains it. A name
+of three letters or fewer has to be the whole title, so `It` never lands on
+"Little Women". When the book it found is not titled exactly what you typed,
+the reply says so:
+
+```
+✍️ Quote added to 'Dune Messiah' (searched for 'Dune')!
+```
+
 `Add q` separates its parts with a slash, so a book or a title can contain a
 dash: `Add q Dune - Part One / Fear - Litany / I must not fear.` A slash counts
 only with a space on each side, so `and/or` stays part of a title. Once the
@@ -115,7 +125,9 @@ like `Add q` and tells you here:
 
 - **The book is found by its title**, and by its main title alone when the EPUB
   adds a subtitle: "Psicopolitica. Il neoliberismo…" lands on your
-  "Psicopolitica".
+  "Psicopolitica". The title is matched [as for `Add q`](#books-and-quotes), and
+  the message names the book the highlight went to, with the EPUB's title beside
+  it when the two differ.
 - **A book that is not in Letti is created**, with the title and author from the
   EPUB and **no genre**. The message says so; set the genre in Notion if you want it.
 - **Offline, the Kindle keeps the highlight** and sends it when it is back on

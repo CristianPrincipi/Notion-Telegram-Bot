@@ -82,6 +82,9 @@ before changing what a rule protects. The overview and the full module map are i
 - **Learn de-duplicates by URL, before the fetch.** Normalisation folds only what cannot
   change the bytes (query kept, sorted). A missing `Source URL` column skips the check
   and the write, out loud; a failed check is reported and the run continues.
+- **A book lookup prefers the exact title** (`books.find_Book_Page`: case and spaces
+  folded; then the newest title containing it, only for ≥ `MIN_CONTAINS_CHARS`), and
+  every reply names the row written to (`books.landed_on`), never the search.
 - **Title columns are discovered for reads** (`title_property`: cached only on success,
   refused on failure, never guessed as `"Name"`), and named from `config` for writes.
 - **An area is an environment variable:** `get_area_db_id` maps `Brain` → `BRAIN_ID`.

@@ -66,11 +66,12 @@ def notion_writes(monkeypatch):
     monkeypatch.setattr(books, "add_New_Book",
                         lambda name, author, genre:
                         calls.append({"name": name, "author": author,
-                                      "genre": genre}) or "book-id")
+                                      "genre": genre}) or ("book-id", None))
     # The quote path must be stubbed too, or the mid-sentence `Add q` case below
     # reaches find_Book_Page and makes a REAL request to api.notion.com — which
     # would pass for the wrong reason and break the suite's offline guarantee.
-    monkeypatch.setattr(books, "find_Book_Page", lambda book_name: ("book-page-id", None))
+    monkeypatch.setattr(books, "find_Book_Page",
+                        lambda book_name: (books.Book("book-page-id", book_name), None))
     monkeypatch.setattr(books, "add_Quote",
                         lambda page_id, quote_title, quote_text:
                         calls.append({"quote_title": quote_title,
@@ -109,10 +110,12 @@ def test_book_lookup_searches_past_the_first_page():
                   status=200, json={"results": [], "has_more": True,
                                     "next_cursor": "cursor-1"})
     responses.add(responses.POST, f"{NOTION_BASE}/databases/test-letti-id/query",
-                  status=200, json={"results": [{"id": "found-on-page-2"}],
+                  status=200, json={"results": [{"id": "found-on-page-2", "properties": {
+                                        "Name": {"type": "title",
+                                                 "title": [{"plain_text": "Dune"}]}}}],
                                     "has_more": False, "next_cursor": None})
 
-    assert books.find_Book_Page("Dune") == ("found-on-page-2", None)
+    assert books.find_Book_Page("Dune") == (books.Book("found-on-page-2", "Dune"), None)
 
 
 # ─── BUG 2: COMMA DECIMALS AND UNANCHORED MATCHING ─────────────────────────────

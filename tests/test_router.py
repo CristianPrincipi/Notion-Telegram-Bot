@@ -57,6 +57,7 @@ from conftest import FakeContext, FakeUpdate, run, written_ok
 
 NO_HANDLER   = "(no handler)"      # command answered with a reply only
 BOOK_PAGE_ID = "book-page-id"      # the page the stubbed find_Book_Page finds
+BOOK_ROW     = books.Book(BOOK_PAGE_ID, "Dune")
 BUDGET_TEXT  = "MOCK BUDGET RECAP"
 # budget() returns (recap, error), so the spy must too — a double returning a
 # bare string would keep the `B` rows green against a shape the command no
@@ -122,8 +123,8 @@ SPY_TARGETS = [
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("handle_agenda",    ("_update", "day"),                        None,                 True),
     ("handle_version",   ("_update",),                              None,                 True),
-    ("add_New_Book",     ("name", "author", "genre"),               BOOK_PAGE_ID,         False),
-    ("find_Book_Page",   ("book_name",),                            (BOOK_PAGE_ID, None), False),
+    ("add_New_Book",     ("name", "author", "genre"),               (BOOK_PAGE_ID, None), False),
+    ("find_Book_Page",   ("book_name",),                            (BOOK_ROW, None),     False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
     ("add_Expenses",     ("name", "amount", "category"),            True,                 False),
     # The destructive pair is find-then-write, so both halves are spied: the
@@ -876,12 +877,16 @@ def test_quote_reports_a_book_that_is_not_in_the_library(router, monkeypatch):
 
 
 def test_book_reports_a_failed_notion_write(router, monkeypatch):
-    monkeypatch.setattr(books, "add_New_Book", lambda name, author, genre: None)
+    """Every failure used to read "Could not connect to Notion. Check your API
+    keys" — a validation error included, which sent you after the wrong fix."""
+    monkeypatch.setattr(books, "add_New_Book",
+                        lambda name, author, genre: (None, "Notion 400: body failed validation"))
     update = FakeUpdate(text="Add b Dune - Herbert - s")
 
     run(david.handle_message(update, FakeContext()))
 
-    assert update.message.replied_with("Could not connect to Notion")
+    assert update.message.replied_with("Notion 400: body failed validation")
+    assert not update.message.replied_with("API keys")
 
 
 def test_expense_reports_a_failed_notion_write(router, monkeypatch):
