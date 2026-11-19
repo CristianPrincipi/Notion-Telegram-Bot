@@ -43,6 +43,21 @@ _VALID_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
 _factory_installed = False
 
+# Libraries that write a SECRET into an ordinary log line, capped at WARNING
+# whatever LOG_LEVEL says. Every Telegram Bot API URL carries the bot token
+# (`https://api.telegram.org/bot<TOKEN>/getUpdates`, and `/file/bot<TOKEN>/…`
+# for an uploaded PDF), and:
+#
+#   httpx    python-telegram-bot's transport. Logs every request with its full
+#            URL at INFO — so at the default level the token went into the
+#            Railway log on every poll.
+#   urllib3  under requests. Logs every request's path at DEBUG, which is the
+#            token again when `Add q` or `Learn pdf` downloads the file.
+#
+# Neither line says anything David's own logs do not: each command already logs
+# what it called and what came back.
+QUIET_LOGGERS = ("httpx", "urllib3")
+
 
 # ─── CORRELATION ID ────────────────────────────────────────────────────────────
 
@@ -115,6 +130,12 @@ def setup_logging(level=None) -> None:
     root.setLevel(resolved)
     for handler in root.handlers:
         handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+    # Never BELOW the root's level either: a record is checked against its own
+    # logger's level only, not the root's again on the way to the handlers, so a
+    # flat WARNING here would let httpx warnings through LOG_LEVEL=ERROR.
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(max(resolved, logging.WARNING))
 
     if complaint:
         logging.getLogger(__name__).warning("%s", complaint)
