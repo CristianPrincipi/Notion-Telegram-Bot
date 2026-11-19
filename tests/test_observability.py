@@ -79,6 +79,68 @@ def test_setup_logging_is_safe_to_call_twice():
     assert hasattr(record, "cid")
 
 
+# ─── NO SECRET IN A THIRD-PARTY LOG LINE ───────────────────────────────────────
+#
+# httpx is python-telegram-bot's transport, and it logs every request at INFO with
+# its full URL — `https://api.telegram.org/bot<TOKEN>/getUpdates`. At the default
+# LOG_LEVEL that wrote the bot token into the Railway log on every poll.
+
+FAKE_TOKEN = "123456789:AAHfake-Token_9xYz"
+
+
+class _Collect(logging.Handler):
+    """Everything that reaches the root logger's handlers, which is what Railway prints."""
+
+    def __init__(self):
+        super().__init__(level=logging.NOTSET)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(f"{record.name}: {record.getMessage()}")
+
+
+@pytest.fixture
+def root_records():
+    collector = _Collect()
+    root = logging.getLogger()
+    root.addHandler(collector)
+    yield collector.lines
+    root.removeHandler(collector)
+    observability.setup_logging("INFO")      # the level every other test assumes
+
+
+@pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+def test_a_telegram_request_never_logs_the_bot_token(root_records, level):
+    import httpx
+
+    observability.setup_logging(level)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+    with httpx.Client(transport=transport) as client:
+        client.post(f"https://api.telegram.org/bot{FAKE_TOKEN}/getUpdates")
+
+    leaked = [line for line in root_records if FAKE_TOKEN in line]
+    assert leaked == [], leaked
+
+
+def test_a_downloaded_file_path_is_not_logged_at_debug(root_records):
+    """requests → urllib3 logs each request's PATH at DEBUG, and a Telegram file's
+    path is `/file/bot<TOKEN>/…` (the `Add q` and `Learn pdf` downloads)."""
+    observability.setup_logging("DEBUG")
+
+    assert not logging.getLogger("urllib3.connectionpool").isEnabledFor(logging.DEBUG)
+
+
+def test_the_cap_never_lowers_a_stricter_level():
+    """LOG_LEVEL=ERROR must not let a library's WARNING through: a logger's own
+    level is the only check a record meets — the root's is not applied again."""
+    observability.setup_logging("ERROR")
+    try:
+        for name in observability.QUIET_LOGGERS:
+            assert not logging.getLogger(name).isEnabledFor(logging.WARNING), name
+    finally:
+        observability.setup_logging("INFO")
+
+
 # ─── CORRELATION ID ────────────────────────────────────────────────────────────
 
 def test_every_log_record_carries_a_correlation_id():
