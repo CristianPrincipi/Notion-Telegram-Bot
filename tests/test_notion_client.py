@@ -13,6 +13,7 @@ from clients import notion_client
 from conftest import NOTION_BASE
 from clients.notion_client import (
     append_children,
+    delete_block,
     get_children,
     notion_request,
     query_database,
@@ -215,6 +216,38 @@ def test_append_children_stops_and_reports_a_failed_batch():
     assert "400" in err
     assert len(created) == 1, "partial progress should still be returned to the caller"
     assert len(responses.calls) == 2, "kept sending batches after a failure"
+
+
+# ─── DELETING A BLOCK SAYS WHETHER IT WORKED ───────────────────────────────────
+# It was best-effort and silent: a delete Notion refused, or that never arrived,
+# looked exactly like one that worked, so Implement reported a line "removed" or
+# "sharpened" while the old line was still on the page.
+
+@responses.activate
+def test_delete_block_says_it_worked():
+    responses.add(responses.DELETE, f"{NOTION_BASE}/blocks/b-1", status=200, json={})
+
+    assert delete_block("b-1") == (True, None)
+
+
+@responses.activate
+def test_delete_block_reports_a_refusal():
+    responses.add(responses.DELETE, f"{NOTION_BASE}/blocks/b-1", status=409,
+                  json={"code": "conflict_error"})
+
+    ok, err = delete_block("b-1")
+
+    assert ok is False and "409" in err
+
+
+@responses.activate
+def test_delete_block_reports_a_failure_to_reach_notion():
+    responses.add(responses.DELETE, f"{NOTION_BASE}/blocks/b-1",
+                  body=notion_client.requests.ConnectionError("connection reset"))
+
+    ok, err = delete_block("b-1")
+
+    assert ok is False and "connection reset" in err
 
 
 # ─── SEARCH HELPER ─────────────────────────────────────────────────────────────

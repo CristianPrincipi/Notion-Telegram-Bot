@@ -137,7 +137,8 @@ def manual(monkeypatch):
     monkeypatch.setattr(implement, "route_sections", route_sections)
     monkeypatch.setattr(implement, "merge_sections", merge_sections)
     monkeypatch.setattr(implement, "append_children", append_children)
-    monkeypatch.setattr(implement, "delete_block", state["deletes"].append)
+    monkeypatch.setattr(implement, "delete_block",
+                        lambda block_id: state["deletes"].append(block_id) or (True, None))
     monkeypatch.setattr(implement, "update_page", lambda page_id, props: (True, None))
     # The Sources ledger runs AFTER the section writes and appends to a section
     # none of these tests touch. Stubbed here so `appends` and the write-ordering
@@ -278,6 +279,7 @@ def test_the_replacement_is_appended_before_the_old_is_deleted(manual):
     def tracking_delete(block_id):
         order.append("delete")
         monkey_deletes.append(block_id)
+        return True, None
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(implement, "append_children", tracking_append)
@@ -869,6 +871,80 @@ def test_nothing_is_deleted_until_every_insertion_has_landed(manual, monkeypatch
     assert manual["deletes"] == []
     assert update.message.replied_with("Half-written")
     assert update.message.replied_with("1 of 2 insertions")
+
+
+def test_a_line_that_could_not_be_removed_is_reported_not_counted(manual, monkeypatch):
+    """Every insertion landed, then Notion refused one delete. The old line is
+    still on the page beside its replacement, so the section is half-written —
+    it used to be reported "~1 sharpened", because delete_block was silent."""
+    def delete_block(block_id):
+        manual["deletes"].append(block_id)
+        return (False, "Notion 409: conflict") if block_id == "p-1" else (True, None)
+
+    monkeypatch.setattr(implement, "delete_block", delete_block)
+    manual["updates"] = [{"path": "Perfect Process", "ops": [
+        op("replace", 1, "Prime it"), op("remove", 2, why="merged into 1")]}]
+
+    update = implement_it()
+
+    assert manual["deletes"] == ["p-1", "p-2"], "a failed delete stopped the others"
+    assert update.message.replied_with("Half-written")
+    assert update.message.replied_with("Prime the material"), "the stuck line is not named"
+    assert update.message.replied_with("Notion 409")
+    assert not update.message.replied_with("sharpened")
+
+
+def test_two_entries_for_one_section_are_one_edit(manual):
+    """Checked across the whole answer, not per entry: two entries both replacing
+    line [2] used to write it twice and delete it twice."""
+    manual["updates"] = [
+        {"path": "Perfect Process", "ops": [op("replace", 2, "Recall it the next day")]},
+        {"path": "perfect process ", "ops": [op("replace", 2, "Recall it after a walk"),
+                                             op("add", 2, "Sleep on it")]},
+    ]
+
+    update = implement_it()
+
+    assert manual["deletes"] == []
+    assert [after for after, _ in manual["appends"]] == ["p-2"], "the add still applies"
+    assert update.message.replied_with("+1 added · 2 ignored")
+
+
+def test_a_removal_and_an_add_after_it_in_two_entries_append_first(manual, monkeypatch):
+    """Split over two entries, the remove ran before the add: the add was then
+    anchored on a block already deleted."""
+    order = []
+    monkeypatch.setattr(implement, "append_children",
+                        lambda block_id, blocks, after=None:
+                        order.append(("append", after)) or (written_ok(len(blocks)), None))
+    monkeypatch.setattr(implement, "delete_block",
+                        lambda block_id: order.append(("delete", block_id)) or (True, None))
+    manual["updates"] = [
+        {"path": "Perfect Process", "ops": [op("remove", 2, why="superseded")]},
+        {"path": "Perfect Process", "ops": [op("add", 2, "Sleep on it")]},
+    ]
+
+    implement_it()
+
+    assert order == [("append", "p-2"), ("delete", "p-2")]
+
+
+def test_a_new_step_named_twice_gets_one_heading(manual):
+    manual["affected"] = []
+    manual["new_steps"] = [{"name": "Spaced Repetition"}]
+    manual["updates"] = [
+        {"path": "Step-by-Step Breakdown > Spaced Repetition",
+         "ops": [op("add", 0, "Review at expanding intervals")]},
+        {"path": "Step-by-Step Breakdown > Spaced Repetition",
+         "ops": [op("add", 0, "Start the day after")]},
+    ]
+
+    implement_it()
+
+    headings = [b for _, blocks in manual["appends"] for b in blocks if b["type"] == "heading_3"]
+    assert len(headings) == 1, "the same step was added twice"
+    lines = [b for _, blocks in manual["appends"] for b in blocks if b["type"] != "heading_3"]
+    assert len(lines) == 2
 
 
 def test_the_reply_quotes_what_was_replaced_or_removed_and_why(manual):
