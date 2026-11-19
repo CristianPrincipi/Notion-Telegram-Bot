@@ -455,11 +455,20 @@ def append_children(block_id: str, blocks: list, after: str | None = None):
 
 
 def delete_block(block_id: str):
-    """Archive (delete) a single block. Best-effort, no error raised."""
+    """Archive (delete) a single block. Returns (ok, error) and never raises.
+
+    It used to be best-effort and silent — no status check, every exception
+    swallowed — so a delete Notion refused looked exactly like one that worked,
+    and Implement reported a line "removed" or "sharpened" while the old line was
+    still on the page.
+    """
     try:
-        notion_request("DELETE", f"{NOTION_BASE}/blocks/{block_id}", timeout=10)
-    except Exception:
-        pass
+        resp = notion_request("DELETE", f"{NOTION_BASE}/blocks/{block_id}", timeout=10)
+        if resp.status_code != 200:
+            return False, f"Notion {resp.status_code}: {body_excerpt(resp)}"
+        return True, None
+    except Exception as e:
+        return False, str(e) or type(e).__name__
 
 
 def create_page(parent_db_id: str, properties: dict, children: list = None, icon: str = None):

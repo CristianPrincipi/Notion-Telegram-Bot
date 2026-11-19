@@ -59,8 +59,8 @@ from config import (
 )
 from page_lock import PageBusy, page_lock
 from services.edit_ops import (
-    SectionEdit, format_edits, format_held, hold_back_rewrites, listing, log_edit,
-    number_lines, op_schema, plan_edits, write_edit,
+    HALF_WRITTEN, SectionEdit, format_edits, format_held, hold_back_rewrites, listing,
+    log_edit, merge_by_section, number_lines, op_schema, plan_edits, write_edit,
 )
 from telegram_text import escape_md
 from clients.notion_client import (
@@ -144,17 +144,24 @@ def get_area_db_id(area_name: str) -> str | None:
 # has called in a long time) forwarded their arguments unchanged and bought only
 # a second name to look up.
 
-def clear_page_blocks_by_id(block_ids: list) -> None:
+def clear_page_blocks_by_id(block_ids: list) -> list:
     """Archive blocks from a snapshot of IDs taken before the replacement was written.
 
     Takes IDs rather than block objects so the caller can snapshot what to delete
     BEFORE appending the replacement, and only actually delete once the append
     has succeeded. Deleting from a re-read of the page after appending would
     delete the new content too.
+
+    Returns [(block_id, error)] for every delete that failed — the others still
+    run — so the reply can say which line is still on the page.
     """
+    failed = []
     for block_id in block_ids:
         if block_id:
-            delete_block(block_id)
+            ok, err = delete_block(block_id)
+            if not ok:
+                failed.append((block_id, err))
+    return failed
 
 
 def create_manual_page(db_id: str, blocks: list[dict]) -> tuple[str | None, str | None]:
@@ -681,10 +688,19 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
     three buckets. What stays here is what is particular to a flat page: the
     Sources guard, and a brand-new step, which is a heading plus its lines.
     """
-    new_paths = new_paths or set()
+    new_paths = {_normalise_path(p) for p in new_paths or ()}
     edited, skipped, partial = [], [], []
 
-    for upd in updates:
+    def section_of(path):
+        """Which section an entry writes to, so two entries for one are one edit."""
+        if is_sources_path(path):
+            return None
+        section = _resolve(path, sections)
+        if section is not None:
+            return ("section", section.path)
+        return ("new step", _normalise_path(path)) if _normalise_path(path) in new_paths else None
+
+    for upd in merge_by_section(updates, section_of):
         path = (upd.get("path") or "").strip()
         ops  = [op for op in upd.get("ops") or [] if isinstance(op, dict)]
         if not path or not ops:
@@ -703,7 +719,7 @@ def apply_section_updates(page_id: str, updates: list, sections: list,
 
         # ── A brand-new step: pure append under the steps section, nothing stale ──
         if section is None:
-            if _normalise_path(path) not in {_normalise_path(p) for p in new_paths}:
+            if _normalise_path(path) not in new_paths:
                 skipped.append(path)
                 continue
             anchor = _resolve(STEPS_SECTION, sections)
@@ -1133,8 +1149,7 @@ async def _sectioned_run(manual_page_id, area_name, page_name,
         # Its own heading, deliberately not folded into "skipped": these sections
         # hold their old content AND part of a replacement, and only a person
         # looking at the page can sort that out.
-        msg += ("\n\n🚨 Half-written — open these in Notion: part of the edit is "
-                "there and nothing was removed, so a line being replaced is there twice:\n"
+        msg += (f"\n\n🚨 {HALF_WRITTEN}:\n"
                 + "\n".join(f"• {escape_md(s)}" for s in partial[:8]))
     # A third kind of unchanged: David refusing, not Notion failing.
     msg += format_held(held)

@@ -283,7 +283,8 @@ def manual(monkeypatch):
     monkeypatch.setattr(implement, "get_children", lambda page_id: (SECTIONS_PAGE, None))
     monkeypatch.setattr(implement, "append_children",
                         lambda block_id, blocks, after=None: state["append"])
-    monkeypatch.setattr(implement, "delete_block", state["deletes"].append)
+    monkeypatch.setattr(implement, "delete_block",
+                        lambda block_id: state["deletes"].append(block_id) or (True, None))
     return state
 
 

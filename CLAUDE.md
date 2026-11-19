@@ -54,12 +54,15 @@ before changing what a rule protects. The overview and the full module map are i
 - **A partial write is a third outcome.** `append_children` returns `Written` (a list
   with `batches_done` / `batches_total`); callers print the tally and warn that a
   re-run duplicates. A test double returns `Written` too (`conftest.written_*`).
+  A failed delete is one too: `delete_block` returns `(ok, error)`, and
+  `edit_ops.write_edit` reports the line still on the page as half-written.
 - **A merge edits lines; it never rewrites a section** — on a Manual and on the Diet page.
   Claude answers with `add` / `replace` / `remove` on numbered lines
   (`edit_ops.number_lines`, from the one read taken before anything is written); a line no
   operation names is never written to. A block with children, or that is not plain text,
   is FIXED: added after, never replaced or removed. An operation naming a missing, fixed or
-  twice-named line is ignored and counted in the reply. Only a section Claude was shown
+  twice-named line is ignored and counted in the reply — twice across the whole answer:
+  entries naming one section are merged first (`edit_ops.merge_by_section`). Only a section Claude was shown
   can be written. Line 0 is a section's top on a Manual and its END on Diet (Notion
   cannot insert above a block's first child).
 - **A recollection may add to a Manual or the Diet page, never rewrite it.** `Learn book`
