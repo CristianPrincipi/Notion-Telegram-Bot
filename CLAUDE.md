@@ -48,6 +48,10 @@ before changing what a rule protects. The overview and the full module map are i
   never reads it as missing.
 - **The three error reporters and `v` send plain text on purpose** — `david.notify_error`,
   `david.on_error`, `proactive.scheduler._report_error`, `run_version`. Never convert them to Markdown.
+- **No secret in a log line or a reply.** Every Telegram URL carries the bot token:
+  `observability.QUIET_LOGGERS` (`httpx`, `urllib3`) stay at WARNING whatever
+  `LOG_LEVEL` says, and an error that can quote a Telegram file URL goes through
+  `telegram_files.redact_token`.
 - **One budget, one number, one cut.** Extractors return text WHOLE; prompt builders
   never re-slice; the SECTION half of a merge prompt is never clipped (refuse instead);
   the reply says when source text was cut; the cut runs before `is_unverified_source`.
