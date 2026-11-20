@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 
 import pytest
-from telegram import Chat, Document, Message, Update
+from telegram import Chat, Document, Message, Update, Voice
 from telegram import User as TelegramUser
 from telegram.ext import ApplicationBuilder
 
@@ -22,7 +22,7 @@ STRANGER_ID = 999999999
 owner_only = david.build_owner_filter(OWNER_ID)
 
 
-def make_update(user_id, text="B", caption=None, document=None):
+def make_update(user_id, text="B", caption=None, document=None, voice=None):
     """A real telegram.Update, as PTB would hand to the dispatcher."""
     message = Message(
         message_id=1,
@@ -32,6 +32,7 @@ def make_update(user_id, text="B", caption=None, document=None):
         text=text,
         caption=caption,
         document=document,
+        voice=voice,
     )
     return Update(update_id=1, message=message)
 
@@ -80,6 +81,7 @@ def test_the_catch_all_filter_is_the_exact_complement():
 # happily keep passing.
 
 PDF = Document(file_id="f", file_unique_id="u", mime_type="application/pdf", file_size=10)
+VOICE = Voice(file_id="v", file_unique_id="uv", duration=3)
 
 
 @pytest.fixture
@@ -112,7 +114,8 @@ def matching_callbacks(application, update):
     (make_update(OWNER_ID, text="B"), "handle_message"),
     (make_update(OWNER_ID, text="Add e Carrefour 2.20"), "handle_message"),
     (make_update(OWNER_ID, text=None, caption="Learn pdf", document=PDF), "handle_document"),
-], ids=["owner text", "owner expense", "owner upload"])
+    (make_update(OWNER_ID, text=None, voice=VOICE), "handle_voice"),
+], ids=["owner text", "owner expense", "owner upload", "owner voice note"])
 def test_owner_reaches_the_real_handlers(registered, update, expected):
     assert matching_callbacks(registered, update) == [expected]
 
@@ -123,7 +126,9 @@ def test_owner_reaches_the_real_handlers(registered, update, expected):
     make_update(STRANGER_ID, text="D e Carrefour"),
     make_update(STRANGER_ID, text="DBs"),
     make_update(STRANGER_ID, text=None, caption="Learn pdf", document=PDF),
-], ids=["budget", "write expense", "delete expense", "list databases", "upload"])
+    make_update(STRANGER_ID, text=None, voice=VOICE),
+], ids=["budget", "write expense", "delete expense", "list databases", "upload",
+        "voice note"])
 def test_stranger_reaches_only_the_unauthorized_logger(registered, update):
     """THE security property: no handler but the logger ever sees a stranger."""
     assert matching_callbacks(registered, update) == ["handle_unauthorized"]

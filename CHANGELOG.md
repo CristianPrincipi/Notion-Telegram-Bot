@@ -23,6 +23,11 @@ Notable changes to David. The format follows
   Haiku — a few hundredths of a cent a sentence, inside the daily Anthropic
   budget — and typed commands never reach it. See
   [plain sentences](docs/features.md#plain-sentences).
+- **Voice notes.** Record a voice note and David transcribes it (Groq's Whisper,
+  free tier), shows what it heard, and reads it like a sentence. Everything a
+  voice note asks for waits for ✅ Yes, even a question, and a spoken number never
+  answers a numbered list. Up to 30 seconds; needs `GROQ_API_KEY`. See
+  [voice notes](docs/features.md#voice-notes).
 
 ## [1.2.0] - 2026-11-20
 

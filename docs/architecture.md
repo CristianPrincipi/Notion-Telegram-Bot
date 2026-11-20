@@ -30,7 +30,7 @@ david.py     entry point: the command registry, its dispatch loop, the generated
 bot/         Telegram adapters — parse the update, call a service, send the reply
 services/    the work itself: expenses, books, learn, implement, implement_diet,
              reminder, agenda, cancel, pkm, notion_ids, month
-clients/     the wire: Notion, Google Calendar, Anthropic, Telegram file download
+clients/     the wire: Notion, Google Calendar, Anthropic, Groq, Telegram file download
 proactive/   the scheduled messages: one builder per job, plus the scheduler
 config.py    constants, schedules, timeouts, the Notion schema and the
              environment contract
@@ -53,6 +53,7 @@ What each file owns — and, as important, what it must not.
 | `david.py` | Entry point (`__main__`), the `COMMANDS` registry + `dispatch_text` (the one entry point for text, whatever channel it came by: open prompt → registry → "didn't get that") and `run_composed` (runs a command another channel built, only if it reads back as built), the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`), `env_or` and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/menu.py` | The button menu: the flows (one per command: its questions, its buttons, how each answer is checked), composing the canonical command text, reading it back with the service's own pattern where a service cuts the text up itself, and the reply keyboards | Running anything — it hands a `Composed` to `david.run_composed`; which handler a text reaches is the registry's |
+| `bot/voice.py` | A voice note: the key check, the bounded download, the capped transcription, "🎙️ Heard", then `sentences.understand` with `always_confirm` — and the interpreter's open question as the only prompt it may answer | The registry and the numbered list (a voice note never reaches either); transcription HTTP — that is `clients/speech_client.py` |
 | `bot/sentences.py` | A message nothing else claimed, read as a command: the size/number gate, the off-loop call with its cap, the exactly-one-command check (`matching`, passed in from the registry), the ✅ Yes / ❌ No confirmation and the clarifying question in `pending_choice`'s slot | The prompt and the model call — that is `services/interpret.py`; running the command — that is `david.run_composed` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message; `for_chat(bot, chat_id)` for work no message started (a Kindle highlight) | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
@@ -76,7 +77,8 @@ What each file owns — and, as important, what it must not.
 | `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff and which calls are creates that are never sent twice (`creates`, `UnsureWrite`), pagination, block builders | Any feature logic |
 | `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard, priced per model (`config.ANTHROPIC_RATES`) | Prompts — each feature owns its own system prompt and schema |
 | `clients/calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
-| `clients/telegram_files.py` | Attachment validation and the bounded PDF download | What the bytes are for |
+| `clients/telegram_files.py` | Attachment and voice-note validation, and the bounded download both share (`_fetch`) | What the bytes are for |
+| `clients/speech_client.py` | The **only** place that speaks to Groq: `transcribe(audio) → (text, error)`, the key in a header, 429/401 named | Commands — it returns words |
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |

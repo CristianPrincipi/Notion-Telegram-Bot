@@ -6,8 +6,8 @@ because it is the same KIND of thing — a bounded, retryable network call that
 returns `(value, error)` and knows nothing about what the bytes are for.
 
 Both attachment paths (`Learn pdf` and the `Add q … / …` quote extraction) go
-through `download_pdf_attachment`, so neither can regress to an unbounded
-download on its own.
+through `download_pdf_attachment`, and voice notes through `download_voice`; all
+three share `_fetch`, so none can regress to an unbounded download on its own.
 
 WHY IT DOES NOT `import telegram`. It never needs the library: `context.bot` is
 handed in already built, and `tg_file.file_path` is a plain CDN URL in PTB v20+,
@@ -65,6 +65,53 @@ def validate_pdf_attachment(doc) -> str | None:
     return None
 
 
+async def _fetch(context, file_id) -> bytes:
+    """One file off Telegram's CDN, bounded twice: a per-request timeout fails a
+    stalled socket fast, and asyncio.wait_for (the caller's) caps the whole
+    operation. Raises; the callers turn it into their own message."""
+    tg_file = await context.bot.get_file(file_id)
+
+    def _download():
+        resp = requests.get(tg_file.file_path, timeout=HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return resp.content
+
+    return await asyncio.wait_for(asyncio.to_thread(_download), timeout=DOWNLOAD_TIMEOUT_SECONDS)
+
+
+# Groq's cap on one file. A voice note under VOICE_MAX_SECONDS is a few hundred
+# KB; this is the backstop for one whose size Telegram did not state.
+MAX_VOICE_BYTES = 25 * 1024 * 1024
+
+
+def validate_voice(voice, max_seconds: int) -> str | None:
+    """Cheap local checks on a voice note, before anything is downloaded."""
+    if voice is None:
+        return "❌ No voice note."
+    if voice.duration is not None and voice.duration > max_seconds:
+        return (f"❌ That voice note is {voice.duration} seconds. The limit is "
+                f"{max_seconds}: say one command at a time.")
+    if voice.file_size is not None and voice.file_size > MAX_VOICE_BYTES:
+        return "❌ That voice note is too large to transcribe."
+    return None
+
+
+async def download_voice(context, voice, max_seconds: int):
+    """Validate and download a voice note. Returns (ogg_bytes, error_message)."""
+    err = validate_voice(voice, max_seconds)
+    if err:
+        return None, err
+    try:
+        content = await _fetch(context, voice.file_id)
+    except asyncio.TimeoutError:
+        return None, "❌ Downloading the voice note timed out."
+    except Exception as e:
+        return None, f"❌ Download error: {redact_token(str(e))}"
+    if len(content) > MAX_VOICE_BYTES:
+        return None, "❌ That voice note is too large to transcribe."
+    return content, None
+
+
 async def download_pdf_attachment(context, doc):
     """Validate and download an attached PDF. Returns (pdf_bytes, error_message).
 
@@ -79,18 +126,7 @@ async def download_pdf_attachment(context, doc):
         return None, err
 
     try:
-        tg_file = await context.bot.get_file(doc.file_id)
-        # tg_file.file_path is the full Telegram CDN URL in PTB v20+
-
-        def _download():
-            resp = requests.get(tg_file.file_path, timeout=HTTP_TIMEOUT_SECONDS)
-            resp.raise_for_status()
-            return resp.content
-
-        content = await asyncio.wait_for(
-            asyncio.to_thread(_download),
-            timeout=DOWNLOAD_TIMEOUT_SECONDS,
-        )
+        content = await _fetch(context, doc.file_id)
     except asyncio.TimeoutError:
         return None, ("❌ Download timed out after 2 minutes.\n"
                       "Try a smaller PDF.")

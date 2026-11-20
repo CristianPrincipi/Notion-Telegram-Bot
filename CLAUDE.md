@@ -25,6 +25,7 @@ before changing what a rule protects. The overview and the full module map are i
 | --- | --- |
 | HTTP to Notion | `clients/notion_client.py` |
 | Anthropic calls; the model names, effort levels and rates | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` / `ANTHROPIC_ROUTE_EFFORT`, the interpreter's `ANTHROPIC_INTERPRET_*`, and `ANTHROPIC_RATES` (one pair per model; an unpriced model is never called). Each feature owns its prompt and schema (structured output's subset, scanned), not retry or token accounting |
+| Speech to text (Groq) | `clients/speech_client.transcribe`; `config.TRANSCRIBE_MODEL` / `TRANSCRIBE_LANGUAGE` |
 | Reading a sentence as a command | `services/interpret.py` writes it; `bot/sentences.py` checks it is exactly one command and confirms a write |
 | Google Calendar | `clients/calendar_client.py` |
 | The clock | `calendar_client.now_local()`. Never a clock read without a timezone (scanned) |
@@ -124,6 +125,12 @@ before changing what a rule protects. The overview and the full module map are i
   as itself (`pending_choice.NOT_AN_ANSWER`); a clarifying question, like the menu's,
   takes any reply — `h` is a genre there, not the help. A model failure is reported,
   never a write.
+- **A voice note is a sentence that is always confirmed.** `bot/voice.py` shows what
+  was heard and calls `understand(always_confirm=True)`: even a read waits for ✅ Yes.
+  It never reaches the registry; while a numbered list or a menu question is open
+  it is refused and the prompt kept — it answers only the interpreter's own
+  clarifying question, whose `Clarifying.always_confirm` keeps ✅ Yes for a typed
+  answer. Over `VOICE_MAX_SECONDS`, or with no `GROQ_API_KEY`, nothing is downloaded.
 - **Free, or a few cents a month.** A new outside service, model or app is free or
   costs a few cents a month at most; the PR body states its estimated monthly cost.
   A Claude call that does not need Sonnet uses the cheapest model that works, as a

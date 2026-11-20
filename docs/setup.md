@@ -157,6 +157,18 @@ refuse, and say so. (`primary` is refused too: for a service account it means
 **Supadata** (optional, for `Learn video`): create an account at
 [supadata.ai](https://supadata.ai) and copy your API key. → `SUPADATA_KEY`
 
+### Voice notes (Groq)
+
+Optional, for [voice notes](features.md#voice-notes). Free: Groq's free tier
+needs no card.
+
+1. Sign up at [console.groq.com](https://console.groq.com).
+2. **API Keys → Create API Key.** → `GROQ_API_KEY`
+3. **Settings → Limits** shows your account's limits for `whisper-large-v3-turbo`
+   (requests and audio seconds per hour and per day). One person's 30-second
+   notes are far inside them; when one is reached, David says so and how long
+   to wait.
+
 ## 6. Deploy on Railway
 
 1. **Fork** this repository on GitHub.

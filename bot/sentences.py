@@ -90,6 +90,9 @@ class Clarifying:
     sentence: str
     question: str
     expires_at: float
+    # Carried to the answer: a question a voice note raised keeps the voice
+    # note's ✅ Yes even when the answer is typed (review of #78).
+    always_confirm: bool = False
 
 
 async def _interpret(text, catalogue, earlier=None):
@@ -102,11 +105,14 @@ async def _interpret(text, catalogue, earlier=None):
         return None, f"no answer within {INTERPRET_TIMEOUT} seconds"
 
 
-async def understand(update, context, text, *, catalogue, matching, earlier=None):
+async def understand(update, context, text, *, catalogue, matching, earlier=None,
+                     always_confirm=False):
     """Read a sentence as a command. Returns a Composed to run now — a read — or
     None, having replied itself: the confirmation, a question, or why not.
 
     `matching(text)` is the registry's list of commands that fullmatch `text`.
+    `always_confirm` puts even a read to ✅ Yes: a voice note's words were HEARD,
+    and what was heard may be wrong even when the command it became is right.
     """
     # A bare number on its own is never a sentence; as the answer to "how much?"
     # it is the whole point.
@@ -126,7 +132,8 @@ async def understand(update, context, text, *, catalogue, matching, earlier=None
             sentence = text if earlier is None else f"{earlier[0]} — {text}"
             pending_choice.remember(
                 context.user_data, CLARIFY,
-                Clarifying(sentence, answer["question"], pending_choice.deadline()), None)
+                Clarifying(sentence, answer["question"], pending_choice.deadline(),
+                           always_confirm), None)
             await update.message.reply_text(f"❓ {answer['question']}",
                                             reply_markup=MAIN_KEYBOARD)
             return None
@@ -142,7 +149,7 @@ async def understand(update, context, text, *, catalogue, matching, earlier=None
 
     command = commands[0]
     composed = Composed(answer["command"], command.name, {})
-    if command.read_only:
+    if command.read_only and not always_confirm:
         return composed
 
     pending_choice.remember(context.user_data, CONFIRM,
@@ -189,7 +196,8 @@ async def answer_clarification(update, context, text, *, catalogue, matching):
     if asked is None:
         return pending_choice.NOT_AN_ANSWER
     return await understand(update, context, text, catalogue=catalogue, matching=matching,
-                            earlier=(asked.sentence, asked.question))
+                            earlier=(asked.sentence, asked.question),
+                            always_confirm=asked.always_confirm)
 
 
 def is_stale_tap(text):
