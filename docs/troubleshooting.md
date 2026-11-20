@@ -188,8 +188,9 @@ failed too" and names the budget; typed commands and the menu still work.
 - **"Groq heard nothing"** — the note was silent or too quiet.
 - **"Heard" is right but the command is wrong** — tap ❌ No; nothing is written.
   The rest is the same as a [typed sentence](#a-sentence-gets-i-didnt-get-that-or-the-wrong-command).
-- **A spoken number did nothing while a list was open** — on purpose: type the
-  number.
+- **"Something above is still waiting for your answer"** — a numbered list or a
+  menu question is open, and only a typed or tapped answer closes it: answer it,
+  tap ❌ Cancel, or wait 2 minutes.
 
 ## `Implement`: an edit is "ignored", or a section is "unchanged"
 

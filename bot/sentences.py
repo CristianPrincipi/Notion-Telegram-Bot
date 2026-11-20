@@ -90,6 +90,9 @@ class Clarifying:
     sentence: str
     question: str
     expires_at: float
+    # Carried to the answer: a question a voice note raised keeps the voice
+    # note's ✅ Yes even when the answer is typed (review of #78).
+    always_confirm: bool = False
 
 
 async def _interpret(text, catalogue, earlier=None):
@@ -129,7 +132,8 @@ async def understand(update, context, text, *, catalogue, matching, earlier=None
             sentence = text if earlier is None else f"{earlier[0]} — {text}"
             pending_choice.remember(
                 context.user_data, CLARIFY,
-                Clarifying(sentence, answer["question"], pending_choice.deadline()), None)
+                Clarifying(sentence, answer["question"], pending_choice.deadline(),
+                           always_confirm), None)
             await update.message.reply_text(f"❓ {answer['question']}",
                                             reply_markup=MAIN_KEYBOARD)
             return None
@@ -192,7 +196,8 @@ async def answer_clarification(update, context, text, *, catalogue, matching):
     if asked is None:
         return pending_choice.NOT_AN_ANSWER
     return await understand(update, context, text, catalogue=catalogue, matching=matching,
-                            earlier=(asked.sentence, asked.question))
+                            earlier=(asked.sentence, asked.question),
+                            always_confirm=asked.always_confirm)
 
 
 def is_stale_tap(text):

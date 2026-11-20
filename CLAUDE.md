@@ -127,9 +127,10 @@ before changing what a rule protects. The overview and the full module map are i
   never a write.
 - **A voice note is a sentence that is always confirmed.** `bot/voice.py` shows what
   was heard and calls `understand(always_confirm=True)`: even a read waits for ✅ Yes.
-  It never reaches the registry or a numbered list — only the interpreter's own
-  clarifying question. Over `VOICE_MAX_SECONDS`, or with no `GROQ_API_KEY`, nothing
-  is downloaded.
+  It never reaches the registry; while a numbered list or a menu question is open
+  it is refused and the prompt kept — it answers only the interpreter's own
+  clarifying question, whose `Clarifying.always_confirm` keeps ✅ Yes for a typed
+  answer. Over `VOICE_MAX_SECONDS`, or with no `GROQ_API_KEY`, nothing is downloaded.
 - **Free, or a few cents a month.** A new outside service, model or app is free or
   costs a few cents a month at most; the PR body states its estimated monthly cost.
   A Claude call that does not need Sonnet uses the cheapest model that works, as a

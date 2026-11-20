@@ -75,10 +75,12 @@ David:  🎙️ Heard: «Ho speso dodici euro da Carrefour.»
 - **What was heard comes first**, so a misheard word shows before anything runs.
 - **Everything waits for ✅ Yes — even a question.** A typed "cosa ho domani?"
   runs at once; a spoken one asks first, because the words were heard, not typed.
-- **A voice note never answers a numbered list.** "Due" heard as `2` while `D e`
-  waits for a number does nothing; type the number.
+- **A voice note never answers a numbered list or a menu question.** While one
+  is open, a voice note is not read (David says so) and the list or question
+  stays as it was: type or tap the answer. "Due" heard as `2` must not pick row 2.
 - It can answer David's own question ("How much?"): the answer is read with the
-  first message, then confirmed like everything else.
+  first message, then confirmed like everything else — and a question a voice
+  note raised still waits for ✅ Yes when you type the answer.
 - **One command, at most 30 seconds.** A longer note is refused before it is
   downloaded.
 - Transcription is Groq's Whisper, on its free tier (`GROQ_API_KEY`, see

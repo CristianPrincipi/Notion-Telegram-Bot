@@ -659,6 +659,15 @@ for a number — the second row deleted on a mishearing. The one prompt it may
 answer is the interpreter's own question ("How much?"), because that answer is
 read by the model with the sentence and then confirmed.
 
+The review of #78 found the two ways the first version broke that. A voice note
+went past an open prompt it did not answer, and its proposal overwrote the one
+slot: a menu question closed by something other than ❌ Cancel, 📋 Menu or its
+expiry, a numbered list dropped. Now a voice note meeting a list or a menu
+question is refused before the download and the prompt is left alone; an open
+✅ Yes is still replaced, as a typed message replaces it. And `always_confirm`
+lived only for the call: a voice note that raised a question, answered by
+typing, ran a read unconfirmed. The question record carries it now.
+
 The 30-second limit and the key check run before the download: a command is a
 sentence, and neither a long note nor a missing key can end in one, so neither
 spends the free tier's audio allowance or a Telegram download.

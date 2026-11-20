@@ -17,9 +17,10 @@ import responses
 
 import david
 import pending_choice
-from bot import sentences, voice
+from bot import menu, sentences, voice
 from clients import speech_client, telegram_files
 from conftest import FakeContext, FakeFile, FakeUpdate, run
+from test_menu import REAL_SHOW_MENU
 from test_router import NO_HANDLER, router  # noqa: F401 — a fixture `spies` needs
 from test_sentences import claude, send, spies  # noqa: F401 — fixtures and helper
 
@@ -118,8 +119,9 @@ def test_a_transcript_that_is_already_a_command_is_still_read_and_confirmed(
     assert pending_choice.kind_of(context.user_data) == sentences.CONFIRM
 
 
-def test_a_spoken_number_never_answers_a_numbered_list(spies, claude, groq_key, cdn):
-    """"Due" heard as "2" while `D e` waits for a number must not delete row 2."""
+def test_a_voice_note_never_answers_a_numbered_list(spies, claude, groq_key, cdn):
+    """"Due" heard as "2" while `D e` waits for a number must not delete row 2 —
+    and the list must still be there to answer by typing."""
     groq_says(cdn, "2")
     context = voice_context()
     waiting = sentences.Proposal(None, pending_choice.deadline())  # any record with expires_at
@@ -129,8 +131,58 @@ def test_a_spoken_number_never_answers_a_numbered_list(spies, claude, groq_key, 
 
     assert spies.chain == NO_HANDLER
     assert claude.calls == []
-    assert heard.message.replied_with(sentences.DIDNT_GET_IT)
+    assert heard.message.reply_texts == [voice.STILL_WAITING]
     assert pending_choice.kind_of(context.user_data) == "expense_delete"
+    assert context.bot.get_file_ids == []
+
+
+def test_a_voice_note_leaves_an_open_menu_question_open(spies, claude, groq_key, cdn,
+                                                        monkeypatch):
+    """Found by the review of #78: the proposal overwrote the menu's question in
+    the one slot, though only ❌ Cancel, 📋 Menu or the expiry may close it."""
+    groq_says(cdn, "Dodici euro.")
+    claude.says("Add e Carrefour 12 f")
+    monkeypatch.setattr(menu, "show_menu", REAL_SHOW_MENU)   # the router spies it
+    context = voice_context()
+    send(context, menu.MENU_BUTTON, menu.FLOWS[0].label)
+    assert pending_choice.kind_of(context.user_data) == menu.KIND
+
+    heard = speak(context)
+
+    assert heard.message.reply_texts == [voice.STILL_WAITING]
+    assert pending_choice.kind_of(context.user_data) == menu.KIND
+    assert claude.calls == []
+
+
+def test_a_voice_note_still_drops_an_unanswered_proposal(spies, claude, groq_key, cdn):
+    """An open ✅ Yes is not a question that must be answered: like a typed
+    message, a new voice note is read, and the old proposal is not run."""
+    claude.says("Add e Carrefour 12 f")
+    claude.says("B")
+    groq_says(cdn, "Quanto mi resta?")
+    context = voice_context()
+    send(context, "ho speso 12 euro da Carrefour")
+
+    speak(context)
+    send(context, sentences.YES_BUTTON)
+
+    assert spies.chain == "budget"
+
+
+def test_a_typed_answer_to_a_question_a_voice_note_raised_is_still_confirmed(
+        spies, claude, groq_key, cdn):
+    """Found by the review of #78: `always_confirm` was not carried through the
+    clarifying question, so typing the answer ran a read unconfirmed."""
+    groq_says(cdn, "Cosa ho?")
+    claude.says(question="Per quale giorno?")
+    claude.says("Agenda tr")
+    context = voice_context()
+
+    speak(context)
+    [typed] = send(context, "domani")
+
+    assert spies.chain == NO_HANDLER
+    assert typed.message.replies[-1][1]["reply_markup"] == sentences.CONFIRM_KEYBOARD
 
 
 def test_a_spoken_answer_to_the_models_question_is_read_with_the_sentence(
