@@ -6,6 +6,8 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-20
+
 ### Added
 
 - **Kindle quotes.** With the KOReader plugin `citazioni`, a highlight on the
@@ -42,7 +44,6 @@ Notable changes to David. The format follows
 - **A `Learn book` source can only add to the Diet page**, as it already could
   only add to a Manual. Before, the Diet page warned about it and then let it
   rewrite anything.
-
 - **PDFs are read with pypdf**, the maintained successor of PyPDF2, which is no
   longer updated. `Learn pdf` and `Add q` from a PDF work as before.
 - **The `Learn book` reply no longer says to treat its quotes as unverified:**
@@ -56,9 +57,9 @@ Notable changes to David. The format follows
 - **David no longer sends a new expense, book, page or quote to Notion twice.**
   When Notion's answer to one was an error from its gateway, or never arrived,
   David sent it again, though the first one may already have been saved: one
-  `Add e` could make two or three rows. Now it asks you to check Notion instead, and a Kindle
-  highlight in that state is not resent. `Add e` also says what went wrong,
-  instead of "Check your API keys" for every failure.
+  `Add e` could make two or three rows. Now it asks you to check Notion instead,
+  and a Kindle highlight in that state is not resent. `Add e` also says what went
+  wrong, instead of "Check your API keys" for every failure.
 
 ### Fixed
 
@@ -149,6 +150,7 @@ The first public release.
   library search used to read as "I didn't find 'Dune' in the library"; it now
   says it could not search, and passes on Notion's error.
 
-[Unreleased]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/CristianPrincipi/Notion-Telegram-Bot/releases/tag/v1.0.0
