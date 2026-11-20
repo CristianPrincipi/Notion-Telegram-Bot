@@ -84,7 +84,11 @@ remark, a question David cannot answer), leave both empty.
 another year). Times: HH.MM, 24-hour, or a bare hour.
 - An expense category or a book genre is its shortcut. Leave the category out \
 when the message does not make it clear; it defaults to Food.
-- Amounts use a dot for decimals: 12.50."""
+- Amounts use a dot for decimals: 12.50.
+- When you are shown an earlier message, the question David asked about it and a
+reply, the reply answers that question: complete the earlier request with it. A
+one-letter reply is a shortcut (a genre, a category), not a command. Only if the
+reply is a complete request on its own does it replace the earlier message."""
 
 _EARLIER = """Earlier message: {sentence}
 David asked: {question}

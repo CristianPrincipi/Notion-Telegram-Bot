@@ -42,8 +42,9 @@ numbered list, and lapse after the same two minutes:
              a yes-or-no, and a new command typed instead of an answer is a new
              command, not a "no" that swallows it.
   CLARIFY  — the model asked for a missing part ("How much did you spend?"). The
-             reply is read together with the first sentence. A reply that is
-             itself a command runs as that command.
+             reply — whatever it says, even `h` or `m` — is read together with
+             the first sentence; the model is told a reply that is a complete
+             request on its own replaces it.
 """
 
 import asyncio
@@ -173,11 +174,19 @@ async def answer_confirmation(update, context, text):
 
 
 async def answer_clarification(update, context, text, *, catalogue, matching):
-    """The reply to the model's question, read with the sentence that raised it.
-    A reply that is a command on its own is handed back to run as one."""
+    """The reply to the model's question, read with the sentence that raised it —
+    WHATEVER it says, like the menu's open question.
+
+    It used to hand a reply that fullmatched a command back to the router, and a
+    one-letter answer is often a command: `h` is the History genre and the help,
+    `m` is Manga and the menu. "Which genre?" answered `h` opened the help and lost
+    the book. The model sees the earlier sentence and is told a reply that is a
+    complete request on its own replaces it; whatever it reads still has to be
+    exactly one command, and a write still waits for ✅ Yes.
+    """
     asked = pending_choice.peek(context.user_data, CLARIFY)
     pending_choice.clear(context.user_data)
-    if asked is None or matching(text):
+    if asked is None:
         return pending_choice.NOT_AN_ANSWER
     return await understand(update, context, text, catalogue=catalogue, matching=matching,
                             earlier=(asked.sentence, asked.question))

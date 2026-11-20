@@ -121,8 +121,9 @@ before changing what a rule protects. The overview and the full module map are i
   bare number, or over `INTERPRET_MAX_CHARS`). Its proposal runs only if it
   fullmatches exactly one command; at once only if that command is `read_only`
   (the set is named in a test). Anything but Yes / No drops the proposal and is read
-  as itself (`pending_choice.NOT_AN_ANSWER`). A model failure is reported, never a
-  write.
+  as itself (`pending_choice.NOT_AN_ANSWER`); a clarifying question, like the menu's,
+  takes any reply — `h` is a genre there, not the help. A model failure is reported,
+  never a write.
 - **Free, or a few cents a month.** A new outside service, model or app is free or
   costs a few cents a month at most; the PR body states its estimated monthly cost.
   A Claude call that does not need Sonnet uses the cheapest model that works, as a

@@ -280,14 +280,39 @@ def test_a_missing_part_is_asked_and_the_reply_read_with_the_sentence(spies, cla
     assert spies.chain == "add_Expenses"
 
 
-def test_a_command_typed_instead_of_the_missing_part_runs_as_itself(spies, claude):
+def test_an_answer_that_is_also_a_command_word_is_read_as_the_answer(spies, claude):
+    """`h` is the History genre AND the help command; `m` is Manga AND the menu.
+    Answering "Which genre?" with one of them must answer the question — it used
+    to open the help, and the book was never added."""
+    claude.says(question="Che genere?")
+    claude.says("Add b Sapiens - Harari - h")
+    context = FakeContext()
+
+    [_, proposed] = send(context, "aggiungi il libro Sapiens di Harari", "h")
+
+    assert spies.chain == NO_HANDLER
+    _, second_user_message, _ = claude.calls[1]
+    assert "Che genere?" in second_user_message and second_user_message.endswith("h")
+    assert proposed.message.replied_with("Add b Sapiens - Harari - h")
+
+    send(context, sentences.YES_BUTTON)
+
+    assert spies.chain == "add_New_Book"
+    assert spies.parsed_args == {"name": "Sapiens", "author": "Harari", "genre": "History"}
+
+
+def test_a_whole_command_given_as_the_answer_is_left_to_the_reading(spies, claude):
+    """The open question takes any reply, as the menu's does; the model is told a
+    reply that is a complete request on its own replaces the earlier message, and
+    whatever it reads still passes the same checks."""
     claude.says(question="Quanto hai speso?")
+    claude.says("B")
     context = FakeContext()
 
     send(context, "ho fatto la spesa da Carrefour", "B")
 
     assert spies.chain == "budget"
-    assert len(claude.calls) == 1
+    assert len(claude.calls) == 2
 
 
 # ─── WHAT THE MODEL IS GIVEN ───────────────────────────────────────────────────

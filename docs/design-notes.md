@@ -626,6 +626,14 @@ new command: the proposal is dropped (said so) and the message read as itself,
 through `pending_choice.NOT_AN_ANSWER`. Swallowing it as a "no" would lose it;
 reading it as a "yes" would be a guess about a write.
 
+A clarifying question is the other way round: it takes ANY reply, as the menu's
+open question does, because its answers are parts of a command and parts are
+often command words. It first handed back a reply that fullmatched a command, and
+the review of #77 found the cost: "Which genre?" answered `h` (History) opened the
+help, `m` (Manga) the menu, and the book was lost. The reply now goes to the model
+with the sentence and the question, and the model is told a one-letter reply is a
+shortcut and only a complete request replaces the earlier one.
+
 The daily guard prices every call at its own model's rates. Before this it priced
 every call at the main model's, which was right while there was one model; a
 Haiku call would have counted twenty times its cost and refused `Learn` on money
