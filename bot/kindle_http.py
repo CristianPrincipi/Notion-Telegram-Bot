@@ -18,7 +18,8 @@ not by taste: 200 saved (or already saved), 422 refused for good (drop it),
 503 try again later (keep it queued). 400/401 are the plugin's own bug or a
 wrong token — both shown on the Kindle, neither retried.
 
-Runs in the same event loop as PTB (started from post_init), so the service's
+Runs in the same event loop as PTB, inside the one server bot/http_server.py
+starts (with the Android assistant's routes beside these), so the service's
 Notion calls go through asyncio.to_thread like every other command's.
 """
 
@@ -27,8 +28,7 @@ import logging
 
 from aiohttp import web
 
-from bot.notify import for_chat
-from config import KINDLE_MAX_REQUEST_BYTES, KINDLE_PORT, KINDLE_TOKEN
+from config import KINDLE_MAX_REQUEST_BYTES
 from services import kindle
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,14 @@ def _parse(payload):
 
 
 def build_app(*, token, notify):
-    """The aiohttp application. Separate from `start` so tests drive it directly."""
+    """An application with only the Kindle's routes, for the tests."""
+    app = web.Application(client_max_size=KINDLE_MAX_REQUEST_BYTES)
+    add_routes(app, token=token, notify=notify)
+    return app
+
+
+def add_routes(app, *, token, notify):
+    """The Kindle's routes, on the server bot/http_server.py starts."""
 
     async def quote(request):
         if not _authorized(request, token):
@@ -87,38 +94,5 @@ def build_app(*, token, notify):
             return web.json_response({"ok": False, "error": "Wrong or missing token"}, status=401)
         return web.json_response({"ok": True})
 
-    app = web.Application(client_max_size=KINDLE_MAX_REQUEST_BYTES)
     app.router.add_post("/kindle/quote", quote)
     app.router.add_get("/kindle/ping", ping)
-    return app
-
-
-async def start(bot, chat_id):
-    """Start listening on KINDLE_PORT. Returns the runner to stop, or None.
-
-    Unset KINDLE_TOKEN → nothing listens, one warning (degrade out loud).
-    """
-    if not KINDLE_TOKEN:
-        logger.warning("KINDLE_TOKEN is not set — the Kindle quote endpoint is off.")
-        return None
-    app = build_app(token=KINDLE_TOKEN, notify=for_chat(bot, chat_id))
-    runner = web.AppRunner(app, access_log=None)
-    # This runs from PTB's post_init, which does NOT swallow an exception: a port
-    # already in use would abort David's whole startup, Telegram included. An
-    # optional feature degrades out loud instead (CLAUDE.md, Conventions).
-    try:
-        await runner.setup()
-        site = web.TCPSite(runner, host="0.0.0.0", port=KINDLE_PORT)
-        await site.start()
-    except OSError:
-        logger.exception("The Kindle quote endpoint could not start on port %s — "
-                         "David runs without it.", KINDLE_PORT)
-        await runner.cleanup()
-        return None
-    logger.info("Kindle quote endpoint listening on port %s", KINDLE_PORT)
-    return runner
-
-
-async def stop(runner):
-    if runner is not None:
-        await runner.cleanup()

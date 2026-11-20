@@ -50,7 +50,8 @@ line were not there.
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. An unrecognised value logs a warning and falls back to `INFO`. The HTTP libraries' own request lines stay off even at `DEBUG`: they would print the bot token. |
 | `GROQ_API_KEY` | — | A Groq API key, used to transcribe [voice notes](features.md#voice-notes). The free tier is enough. Unset, a voice note is answered that transcription is not configured, and nothing else changes. See [Setup § Groq](setup.md#voice-notes-groq). |
 | `KINDLE_TOKEN` | — | The secret the Kindle sends with every highlight ([Kindle quotes](features.md#kindle-quotes)). Unset, the endpoint does not start and nothing listens. Any long random string: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
-| `PORT` | `8080` | Port the Kindle endpoint listens on. Railway sets it for you; set it only for a local run. |
+| `ASSISTANT_TOKEN` | — | The secret the phone sends with every request to the [Android assistant](assistant-android.md). Unset, its routes are off. A long random string, **different from `KINDLE_TOKEN`**: each one opens only its own routes. |
+| `PORT` | `8080` | Port the HTTP endpoint (Kindle quotes, the Android assistant) listens on. Railway sets it for you; set it only for a local run. |
 
 ## Where each feature gets its IDs
 
@@ -63,6 +64,7 @@ line were not there.
 | `Remind`, `Agenda`, `Cancel`, briefings | `GOOGLE_CREDENTIALS_JSON`, `GOOGLE_CALENDAR_ID` |
 | Plain sentences | `ANTHROPIC_API_KEY` |
 | Voice notes | `GROQ_API_KEY`, `ANTHROPIC_API_KEY` |
+| Android assistant | `ASSISTANT_TOKEN`, `ANTHROPIC_API_KEY`, a public domain |
 
 Finding each Notion ID is covered in [Setup § Notion](setup.md#3-notion).
 

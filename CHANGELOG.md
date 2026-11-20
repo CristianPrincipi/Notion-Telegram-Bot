@@ -28,6 +28,11 @@ Notable changes to David. The format follows
   voice note asks for waits for ✅ Yes, even a question, and a spoken number never
   answers a numbered list. Up to 30 seconds; needs `GROQ_API_KEY`. See
   [voice notes](docs/features.md#voice-notes).
+- **The Android assistant.** Tap a tile on the phone, dictate a sentence with the
+  keyboard's microphone, and hear David's answer — no Telegram open. Questions are
+  answered at once; anything that writes asks Yes / No first; everything also
+  shows in the chat. Free (HTTP Shortcuts); needs `ASSISTANT_TOKEN` and the
+  public domain. See [the Android assistant](docs/assistant-android.md).
 
 ## [1.2.0] - 2026-11-20
 

@@ -192,6 +192,25 @@ failed too" and names the budget; typed commands and the menu still work.
   menu question is open, and only a typed or tapped answer closes it: answer it,
   tap ❌ Cancel, or wait 2 minutes.
 
+## The Android assistant answers "Wrong or missing token", or nothing
+
+- **"David is not reachable"** — the domain in `david_url` is wrong (no slash at
+  the end), or Railway's domain was removed. Open it in a browser:
+  `…/kindle/ping` answering anything at all means the server is up.
+- **"Wrong or missing token"** — `david_token` on the phone is not
+  `ASSISTANT_TOKEN` on Railway. The Kindle's token does not work here.
+- **"David answered 404"** — `ASSISTANT_TOKEN` is not set, so the assistant's
+  routes are off; the deploy log says `ASSISTANT_TOKEN is not set`.
+- **"That proposal has lapsed"** — a Yes after more than 2 minutes, or after a
+  new question. Say it again.
+- **"…: that picks from a numbered list, so do it from Telegram"** — on purpose:
+  `D e`, `U e`, `Cancel`, `undo`, the menu, `Learn` and `Implement` are
+  Telegram-only.
+- **The answer is cut off when read aloud** — HTTP Shortcuts reads 400
+  characters; the rest is in the dialog and the chat.
+- The rest — "I didn't get that", the budget — is the same as for a
+  [typed sentence](#a-sentence-gets-i-didnt-get-that-or-the-wrong-command).
+
 ## `Implement`: an edit is "ignored", or a section is "unchanged"
 
 Claude asked to change a line David will not touch, and nothing was done for that

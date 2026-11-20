@@ -672,6 +672,35 @@ The 30-second limit and the key check run before the download: a command is a
 sentence, and neither a long note nor a missing key can end in one, so neither
 spends the free tier's audio allowance or a Telegram download.
 
+### The Android assistant is a sentence with no chat on the other end
+
+The phone sends text — it listens itself, through the keyboard's dictation,
+because HTTP Shortcuts has no speech input — so the assistant is the plain-
+sentence path again: the same interpreter, the exactly-one-command check,
+`run_composed`, a read at once and a write only after a yes. What changes is that
+there is no chat to fall back on, and three rules follow from that.
+
+Some commands are refused, by name, with the reason said aloud. A destructive
+command finds its rows and, when more than one matches, shows a numbered list
+and waits for a number — a list read aloud and answered by voice is exactly the
+mishearing Hard Rule 4 exists to stop. `undo` undoes what was done in the chat.
+The menu is buttons. `Learn` and `Implement` answer minutes later, in the chat.
+The allowed set is named in a test, so a new command is a decision.
+
+What runs is mirrored to the chat. The handlers answer through
+`update.message.reply_text`; the assistant hands them a stand-in
+(`bot/chat_target.py`) whose replies go to the chat AND are kept as speech, so
+the chat stays the one record of what David did. The stand-in carries its own
+`user_data`: nothing the assistant runs can answer or close a prompt open in the
+chat.
+
+It holds the chat's lock. PTB hands David one update at a time, which is the
+ordering guarantee (`Add e` then `B`); an HTTP request is outside that queue and
+would interleave with a chat message at every await. A dispatch lock taken by
+every chat message and every assistant run gives the assistant the same
+one-at-a-time. Its pending write lives in memory for two minutes — a redeploy
+loses a question, never a write.
+
 ### Free, or a few cents a month
 
 David is a personal bot with one user, and a hobby tool should not grow a running

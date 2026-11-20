@@ -21,7 +21,7 @@ import pytest
 import responses
 from aiohttp.test_utils import TestClient, TestServer
 
-from bot import kindle_http
+from bot import http_server, kindle_http
 from clients import notion_client
 from conftest import (
     LETTI_ID, NOTION_BASE, run, written_half, written_nothing, written_ok, written_unsure,
@@ -448,9 +448,10 @@ def test_a_malformed_body_answers_400(monkeypatch, raw, body):
 
 
 def test_the_endpoint_stays_off_without_a_token(monkeypatch, caplog):
-    monkeypatch.setattr(kindle_http, "KINDLE_TOKEN", "")
+    monkeypatch.setattr(http_server, "KINDLE_TOKEN", "")
+    monkeypatch.setattr(http_server, "ASSISTANT_TOKEN", "")
 
-    runner = run(kindle_http.start(bot=None, chat_id="x"))
+    runner = run(http_server.start(bot=None, chat_id="x", router=None))
 
     assert runner is None
     assert "KINDLE_TOKEN is not set" in caplog.text
@@ -467,10 +468,11 @@ def test_a_busy_port_does_not_stop_david(monkeypatch, caplog):
     blocker.bind(("0.0.0.0", 0))
     blocker.listen()
     port = blocker.getsockname()[1]
-    monkeypatch.setattr(kindle_http, "KINDLE_TOKEN", TOKEN)
-    monkeypatch.setattr(kindle_http, "KINDLE_PORT", port)
+    monkeypatch.setattr(http_server, "KINDLE_TOKEN", TOKEN)
+    monkeypatch.setattr(http_server, "ASSISTANT_TOKEN", "")
+    monkeypatch.setattr(http_server, "KINDLE_PORT", port)
     try:
-        runner = run(kindle_http.start(bot=None, chat_id="x"))
+        runner = run(http_server.start(bot=None, chat_id="x", router=None))
     finally:
         blocker.close()
 

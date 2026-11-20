@@ -59,7 +59,10 @@ What each file owns — and, as important, what it must not.
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
 | `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, pypdf |
-| `bot/kindle_http.py` | The Kindle quote endpoint: the aiohttp app (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422). Started from `post_init`, off without a token | Finding or writing the book — that is `services/kindle.py` |
+| `bot/http_server.py` | David's one HTTP server: starts from `post_init` on `$PORT` with the Kindle's routes when `KINDLE_TOKEN` is set and the assistant's when `ASSISTANT_TOKEN` is; nothing listens with neither; a busy port is logged, not fatal | Any route |
+| `bot/assistant.py` | The Android assistant: `POST /assistant/ask` / `/assistant/confirm`, its token, the exactly-one-command and refused-command checks, the ONE pending slot (a write waiting for yes, or a question), running under david's dispatch lock | The registry and what is refused — david.py passes them in (`Router`, `ASSISTANT_REFUSED`) |
+| `bot/chat_target.py` | The stand-in `Update` / context an assistant run hands the handlers: replies sent to the chat and kept as speech, the assistant's own `user_data` | Anything a handler it may not run would need |
+| `bot/kindle_http.py` | The Kindle quote endpoint's routes (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422) | Starting the server — that is `bot/http_server.py` | Finding or writing the book — that is `services/kindle.py` |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
 | `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py`, `bot/version.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
@@ -298,6 +301,12 @@ else runs inline.
 | --- | --- | --- |
 | `Learn`, `Implement`, PDF uploads | detached, in the background | may finish in any order |
 | everything else | inline, one at a time | strictly ordered |
+| an Android assistant run | inline, under the dispatch lock | strictly ordered with the chat |
+
+The assistant arrives over HTTP, outside PTB's queue, so it takes
+`david.dispatch_lock()` — the lock every chat message holds while it runs — and
+a chat message and an assistant run never interleave
+(`tests/test_assistant.py`).
 
 **`concurrent_updates` stays off, deliberately.** It would add nothing on top of
 the above and would cost the guarantee sequential dispatch still gives:

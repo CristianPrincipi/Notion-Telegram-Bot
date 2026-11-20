@@ -88,6 +88,16 @@ David:  🎙️ Heard: «Ho speso dodici euro da Carrefour.»
   Claude call as a sentence. Without the key a voice note is answered that voice
   notes are not set up, and nothing else changes.
 
+### The Android assistant
+
+Ask David from the phone without opening Telegram: tap a quick-settings tile,
+dictate "ho speso 12 euro da Carrefour" or "cosa ho domani?" with the keyboard's
+🎤, and hear the answer. A question is answered at once; anything that writes
+asks **Yes / No** first; a missing part is asked for. Everything also appears in
+the chat. `D e`, `U e`, `Cancel`, `undo`, the menu, `Learn` and `Implement` stay
+Telegram-only, and it says so. Needs `ASSISTANT_TOKEN` and the free HTTP Shortcuts
+app — the whole setup is in [The Android assistant](assistant-android.md).
+
 ## The idea: Learn → Implement → Get
 
 Most of David is bookkeeping — expenses, books, reminders. The part that is not
