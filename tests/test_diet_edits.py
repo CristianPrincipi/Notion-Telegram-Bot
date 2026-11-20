@@ -85,7 +85,8 @@ def diet(monkeypatch):
     monkeypatch.setattr(implement_diet, "update_page", lambda pid, props: (True, None))
     monkeypatch.setattr(implement_diet, "complete_json", complete_json)
     monkeypatch.setattr(implement_diet, "append_children", append_children)
-    monkeypatch.setattr(implement_diet, "delete_block", state["deletes"].append)
+    monkeypatch.setattr(implement_diet, "delete_block",
+                        lambda block_id: state["deletes"].append(block_id) or (True, None))
     return state
 
 
@@ -298,3 +299,37 @@ def test_a_held_back_edit_is_counted_in_the_log(diet, caplog):
 
     assert any(f"{PATH}: held back 1 edit(s) from an unverified source" in r.getMessage()
                for r in caplog.records)
+
+
+# ─── A FAILED DELETE, AND ONE SECTION NAMED TWICE ──────────────────────────────
+
+def test_a_line_that_could_not_be_removed_is_reported_not_counted(diet, monkeypatch):
+    """The replacement landed and Notion refused the delete: the old bullet is
+    still there beside it. It used to be reported "~1 sharpened"."""
+    def delete_block(block_id):
+        diet["deletes"].append(block_id)
+        return False, "Notion 409: conflict"
+
+    monkeypatch.setattr(implement_diet, "delete_block", delete_block)
+    diet["merge_answer"] = edits(op("replace", 2, "Protein — first at every meal, 30 g"))
+
+    update = implement_it()
+
+    assert diet["deletes"] == ["b-2"]
+    assert update.message.replied_with("Half-written")
+    assert update.message.replied_with("Protein — first at every meal")
+    assert not update.message.replied_with("sharpened")
+
+
+def test_two_entries_for_one_section_are_one_edit(diet):
+    diet["merge_answer"] = {"updates": [
+        {"path": PATH, "ops": [op("replace", 2, "Protein first")]},
+        {"path": "goals > fat loss > strategies", "ops": [op("replace", 2, "Protein always"),
+                                                          op("add", 2, "Walk after meals")]},
+    ]}
+
+    update = implement_it()
+
+    assert diet["deletes"] == []
+    assert [after for _, after, _ in diet["appends"]] == ["b-2"], "the add still applies"
+    assert update.message.replied_with("+1 added · 2 ignored")

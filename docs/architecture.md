@@ -55,7 +55,7 @@ What each file owns — and, as important, what it must not.
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message; `for_chat(bot, chat_id)` for work no message started (a Kindle highlight) | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
-| `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, PyPDF2 |
+| `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, pypdf |
 | `bot/kindle_http.py` | The Kindle quote endpoint: the aiohttp app (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422). Started from `post_init`, off without a token | Finding or writing the book — that is `services/kindle.py` |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
@@ -245,7 +245,7 @@ but only after Notion has been asked and could not answer.
 
 ## Concurrency
 
-Every Notion, Anthropic and PyPDF2 call in David is a synchronous, blocking
+Every Notion, Anthropic and pypdf call in David is a synchronous, blocking
 call. python-telegram-bot runs updates on one event loop, so making one of those
 calls directly inside an `async def` stops the **entire** bot for its duration —
 no other command answered, no scheduled job fired. A `Learn video` on a long

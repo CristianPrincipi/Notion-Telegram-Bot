@@ -170,7 +170,7 @@ def _saved_when(page: dict) -> str:
 
 # ─── 1. CONTENT EXTRACTION ─────────────────────────────────────────────────────
 # Everything from here to the end of section 4 is SYNCHRONOUS and blocking —
-# HTTP requests and PyPDF2 parsing. run_learn calls all of it through
+# HTTP requests and pypdf parsing. run_learn calls all of it through
 # asyncio.to_thread; none of it may be awaited directly from the event loop.
 
 def extract_youtube(url: str) -> tuple[str | None, str | None]:
@@ -405,8 +405,8 @@ def extract_pdf(file_bytes: bytes) -> tuple[str | None, str | None]:
     """Return (text, error). Receives raw bytes from a Telegram document message."""
     try:
         import io
-        import PyPDF2
-        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
         pages  = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(pages), None
     except Exception as e:
@@ -852,7 +852,7 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
         if file_bytes is None:
             await notify_md("❌ Attach a PDF file and use `Learn pdf` as the *caption*.")
             return
-        # PyPDF2 walks every page; on a long book that is seconds to minutes of
+        # pypdf walks every page; on a long book that is seconds to minutes of
         # pure CPU, which would pin the event loop just as hard as a network call.
         try:
             text, err = await asyncio.wait_for(
@@ -959,4 +959,4 @@ async def run_learn(user_text: str, file_bytes: bytes | None = None,
     if content_type in KNOWLEDGE_RECALL_TYPES:
         await notify("⚠️ No source was read for this one — it is Claude's "
                      "recollection of the work, and the page says so at the top. "
-                     "Treat quotes, figures and dates as unverified.")
+                     "Treat its claims, figures and dates as unverified.")

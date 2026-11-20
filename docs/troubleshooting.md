@@ -179,6 +179,20 @@ Make that change by hand in Notion. To let `Implement` edit a line in future,
 move the lines nested under it out of it, or turn the block into a plain bullet.
 The Railway log has one line per section naming each ignored edit and why.
 
+## `Implement`: a section is "Half-written"
+
+The edit stopped part-way, and the section needs a look in Notion:
+
+- **"… of … insertions written, nothing removed"** — Notion failed in the middle
+  of adding lines. What landed is on the page; nothing old was removed, so a line
+  being replaced is there in both versions. Delete the one you do not want.
+- **"every line was written, but … could not be removed and is still on the
+  page"** — the new lines are in, and Notion refused to delete the old one, which
+  the reply quotes. Delete it by hand. If it is already gone, someone removed it
+  in the meantime and there is nothing to do.
+
+Running `Implement` again does not fix either: Claude would see both lines.
+
 ## `Implement` says an update is already in progress
 
 Two `Implement` runs into the same area are not allowed at once — the second is

@@ -43,6 +43,10 @@ Notable changes to David. The format follows
   only add to a Manual. Before, the Diet page warned about it and then let it
   rewrite anything.
 
+- **PDFs are read with pypdf**, the maintained successor of PyPDF2, which is no
+  longer updated. `Learn pdf` and `Add q` from a PDF work as before.
+- **The `Learn book` reply no longer says to treat its quotes as unverified:**
+  those pages have no quotes. It says claims, figures and dates.
 - **`Add q` separates its parts with ` / ` instead of ` - `:**
   `Add q Dune / Fear / I must not fear.`, and as a PDF caption
   `Add q Dune / Fear / I must not fear | it will be gone` — the first and last
@@ -72,6 +76,14 @@ Notable changes to David. The format follows
   If the merge named a section outside the ones it was sent, that section's
   content was replaced with lines written without seeing it. Only the sections
   Claude was shown can be changed now.
+- **`Implement` says when it could not remove a line.** If Notion refused to
+  delete a line being replaced or removed, the reply still counted it as
+  changed while the old line stayed on the page. The section is now listed as
+  half-written, quoting the line to delete by hand.
+- **`Implement` no longer applies two edits to one line** when Claude names the
+  same section twice in its answer. The line could be written twice, a line added
+  after one being removed could end up anchored on nothing, and a new step could
+  get two headings.
 - **`Implement … - Diet` says when a section was only half-written**, instead
   of listing it as unchanged.
 - **A long quote is saved as one quote.** `Add q` used to start a new quote block

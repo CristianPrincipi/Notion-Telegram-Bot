@@ -260,7 +260,7 @@ def category_help() -> str:
 ANTHROPIC_READ_TIMEOUT = 300   # per request — a 2-hour transcript is slow to summarise
 ANTHROPIC_TIMEOUT      = 330   # outer cap; must stay above ANTHROPIC_READ_TIMEOUT
 SOURCE_FETCH_TIMEOUT   = 90    # YouTube transcript or article scrape
-PDF_PARSE_TIMEOUT      = 120   # PyPDF2 text extraction: CPU-bound and unbounded by itself
+PDF_PARSE_TIMEOUT      = 120   # pypdf text extraction: CPU-bound and unbounded by itself
 
 
 # ─── ANTHROPIC ─────────────────────────────────────────────────────────────────

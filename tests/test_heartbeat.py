@@ -150,6 +150,7 @@ def test_the_report_is_plain_text_safe():
 
 def test_build_heartbeat_is_synchronous():
     """It runs via asyncio.to_thread — an async builder would never be awaited."""
-    import asyncio
+    # inspect's, not asyncio's: asyncio.iscoroutinefunction is deprecated (3.14).
+    import inspect
 
-    assert not asyncio.iscoroutinefunction(heartbeat.build_heartbeat)
+    assert not inspect.iscoroutinefunction(heartbeat.build_heartbeat)
