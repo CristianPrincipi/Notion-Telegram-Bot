@@ -54,12 +54,15 @@ What each file owns — and, as important, what it must not.
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`), `env_or` and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
 | `bot/menu.py` | The button menu: the flows (one per command: its questions, its buttons, how each answer is checked), composing the canonical command text, reading it back with the service's own pattern where a service cuts the text up itself, and the reply keyboards | Running anything — it hands a `Composed` to `david.run_composed`; which handler a text reaches is the registry's |
 | `bot/voice.py` | A voice note: the key check, the bounded download, the capped transcription, "🎙️ Heard", then `sentences.understand` with `always_confirm` — and the interpreter's open question as the only prompt it may answer | The registry and the numbered list (a voice note never reaches either); transcription HTTP — that is `clients/speech_client.py` |
-| `bot/sentences.py` | A message nothing else claimed, read as a command: the size/number gate, the off-loop call with its cap, the exactly-one-command check (`matching`, passed in from the registry), the ✅ Yes / ❌ No confirmation and the clarifying question in `pending_choice`'s slot | The prompt and the model call — that is `services/interpret.py`; running the command — that is `david.run_composed` |
+| `bot/sentences.py` | `read` — the ONE reading of a sentence for every channel (the size/number gate, the off-loop capped call, the exactly-one-command check through `matching`, passed in from the registry) — and the chat's side: the ✅ Yes / ❌ No confirmation and the clarifying question in `pending_choice`'s slot | The prompt and the model call — that is `services/interpret.py`; running the command — that is `david.run_composed` |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message; `for_chat(bot, chat_id)` for work no message started (a Kindle highlight) | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
 | `bot/books.py` | `Add b` and `Add q` in their typed form | Notion, pypdf |
-| `bot/kindle_http.py` | The Kindle quote endpoint: the aiohttp app (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422). Started from `post_init`, off without a token | Finding or writing the book — that is `services/kindle.py` |
+| `bot/http_server.py` | David's one HTTP server: starts from `post_init` on `$PORT` with the Kindle's routes when `KINDLE_TOKEN` is set and the assistant's when `ASSISTANT_TOKEN` is; nothing listens with neither; a busy port is logged, not fatal | Any route |
+| `bot/assistant.py` | The Android assistant: `POST /assistant/ask` / `/assistant/confirm`, its token, the refused-command check, a write or question parked in pending_choice's slot in its OWN `user_data` with an id, running under david's dispatch lock | Reading the sentence — that is `sentences.read`; the registry and what is refused — david.py passes them in (`Router`, `ASSISTANT_REFUSED`) |
+| `bot/chat_target.py` | The stand-in `Update` / context an assistant run hands the handlers: replies sent to the chat and kept as speech, the assistant's own `user_data` | Anything a handler it may not run would need |
+| `bot/kindle_http.py` | The Kindle quote endpoint's routes (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422) | Starting the server — that is `bot/http_server.py` | Finding or writing the book — that is `services/kindle.py` |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
 | `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py`, `bot/version.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
@@ -298,6 +301,12 @@ else runs inline.
 | --- | --- | --- |
 | `Learn`, `Implement`, PDF uploads | detached, in the background | may finish in any order |
 | everything else | inline, one at a time | strictly ordered |
+| an Android assistant run | inline, under the dispatch lock | strictly ordered with the chat |
+
+The assistant arrives over HTTP, outside PTB's queue, so it takes
+`david.dispatch_lock()` — the lock every chat message holds while it runs — and
+a chat message and an assistant run never interleave
+(`tests/test_assistant.py`).
 
 **`concurrent_updates` stays off, deliberately.** It would add nothing on top of
 the above and would cost the guarantee sequential dispatch still gives:

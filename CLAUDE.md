@@ -26,7 +26,8 @@ before changing what a rule protects. The overview and the full module map are i
 | HTTP to Notion | `clients/notion_client.py` |
 | Anthropic calls; the model names, effort levels and rates | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` / `ANTHROPIC_ROUTE_EFFORT`, the interpreter's `ANTHROPIC_INTERPRET_*`, and `ANTHROPIC_RATES` (one pair per model; an unpriced model is never called). Each feature owns its prompt and schema (structured output's subset, scanned), not retry or token accounting |
 | Speech to text (Groq) | `clients/speech_client.transcribe`; `config.TRANSCRIBE_MODEL` / `TRANSCRIBE_LANGUAGE` |
-| Reading a sentence as a command | `services/interpret.py` writes it; `bot/sentences.py` checks it is exactly one command and confirms a write |
+| The HTTP server (Kindle, Android assistant) | `bot/http_server.py` starts it; each route set has its own token (`KINDLE_TOKEN`, `ASSISTANT_TOKEN`) |
+| Reading a sentence as a command | `services/interpret.py` writes it; `bot/sentences.read` — the one reading for the chat, voice notes and the assistant — gates it and checks it is exactly one command; each channel confirms a write its own way |
 | Google Calendar | `clients/calendar_client.py` |
 | The clock | `calendar_client.now_local()`. Never a clock read without a timezone (scanned) |
 | Markdown to Telegram | `telegram_text` — `escape_md` at every interpolation site; `reply` / `send` are the only `parse_mode` senders |
@@ -131,6 +132,12 @@ before changing what a rule protects. The overview and the full module map are i
   it is refused and the prompt kept — it answers only the interpreter's own
   clarifying question, whose `Clarifying.always_confirm` keeps ✅ Yes for a typed
   answer. Over `VOICE_MAX_SECONDS`, or with no `GROQ_API_KEY`, nothing is downloaded.
+- **The Android assistant is a sentence with no chat on the other end.** A read runs
+  at once, a write only on `/assistant/confirm` with the id it was given (pending_choice's
+  slot in the assistant's own `user_data`, 2 minutes). `david.ASSISTANT_REFUSED` names what it may not run — destructive
+  commands, the menu, `undo`, `Learn`, `Implement` — and a test names what it may.
+  What it runs is mirrored to the chat (`bot/chat_target.py`, through
+  `telegram_text.send`) — header included — while it holds the dispatch lock.
 - **Free, or a few cents a month.** A new outside service, model or app is free or
   costs a few cents a month at most; the PR body states its estimated monthly cost.
   A Claude call that does not need Sonnet uses the cheapest model that works, as a
@@ -169,6 +176,7 @@ before changing what a rule protects. The overview and the full module map are i
 | `U e` / `D e` (lookup **and** write), and the number answering them | `EXPENSES_ID` | queues |
 | `Remind`; `Cancel` (lookup **and** delete), its number and its `undo` | `CALENDAR_ID` | queues |
 | Kindle quote: find **or create** the book, then append | `LETTI_ID` | queues |
+| A chat message, and an Android assistant run | `david.dispatch_lock()` (per event loop) | queues |
 
 ## Testing
 

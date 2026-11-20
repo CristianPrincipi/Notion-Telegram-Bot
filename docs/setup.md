@@ -207,6 +207,13 @@ This is the one feature that needs David reachable from the internet:
 
 Without `KINDLE_TOKEN` the endpoint never starts, so the domain answers nothing.
 
+### Android assistant (optional)
+
+To talk to David from the phone without Telegram: the same public domain as the
+Kindle's (generate one if you have none), a secret of its own in
+`ASSISTANT_TOKEN`, and the free HTTP Shortcuts app. Step by step in
+[The Android assistant](assistant-android.md).
+
 ## 7. Run locally
 
 Useful for trying David before deploying, or for working on it. Stop the

@@ -37,6 +37,9 @@ BUDGET_CEILING = float(env_or("BUDGET_CEILING", "300"))
 # The endpoint only starts when KINDLE_TOKEN is set; without it David runs as a
 # pure Telegram worker, exactly as before. See bot/kindle_http.py.
 KINDLE_TOKEN = env_or("KINDLE_TOKEN")
+# The Android assistant (bot/assistant.py) shares the server and the port, with
+# its own secret: the Kindle's token cannot drive it. Unset, its routes are off.
+ASSISTANT_TOKEN = env_or("ASSISTANT_TOKEN")
 # Railway routes the service's public domain to $PORT; 8080 is the local default.
 KINDLE_PORT = int(env_or("PORT", "8080"))
 # A highlight plus its metadata is a few KB. Anything far beyond the longest quote
@@ -617,8 +620,10 @@ OPTIONAL_ENV = {
                                    "is not configured."),
     "KINDLE_TOKEN":               ("Shared secret the Kindle sends with each highlight. Without "
                                    "it the Kindle quote endpoint does not start."),
-    "PORT":                       ("Port the Kindle quote endpoint listens on. Railway sets it; "
-                                   "defaults to 8080."),
+    "ASSISTANT_TOKEN":            ("Shared secret the Android assistant (HTTP Shortcuts) sends "
+                                   "with each request. Without it the assistant endpoint is off."),
+    "PORT":                       ("Port the HTTP endpoint (Kindle quotes, Android assistant) "
+                                   "listens on. Railway sets it; defaults to 8080."),
 }
 
 

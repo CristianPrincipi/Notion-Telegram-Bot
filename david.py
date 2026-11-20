@@ -2,6 +2,7 @@ import os
 import logging
 import re
 import asyncio
+import weakref
 import pytz
 from collections.abc import Callable
 from functools import partial
@@ -23,7 +24,7 @@ from bot.expenses import (
     AMOUNT, cmd_add_expense, cmd_delete_expense, cmd_update_expense,
     handle_selection,
 )
-from bot import kindle_http
+from bot import assistant, http_server
 from bot.implement import cmd_implement
 from bot.learn import cmd_learn
 from bot import menu
@@ -699,6 +700,25 @@ QUESTION_HANDLERS = {
 
 
 # --- TELEGRAM MESSAGE HANDLER ---
+# ─── THE DISPATCH LOCK ─────────────────────────────────────────────────────────
+# PTB hands David one update at a time (concurrent_updates stays off), and that
+# is the ordering guarantee: `Add e` then `B` reports the new total. The Android
+# assistant arrives over HTTP, in the same event loop but outside PTB's queue, so
+# it would interleave with a chat message at every await. A chat message and an
+# assistant run each hold this lock while they run, which gives the assistant
+# the same one-at-a-time the chat has (Hard Rule 5). One per event loop: a lock
+# is bound to the loop it first waits in.
+_dispatch_locks = weakref.WeakKeyDictionary()
+
+
+def dispatch_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _dispatch_locks.get(loop)
+    if lock is None:
+        lock = _dispatch_locks[loop] = asyncio.Lock()
+    return lock
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Tag every log line produced while handling this update — including from the
     # worker threads and detached tasks it spawns — with the update's ID, so one
@@ -709,7 +729,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text or ""
     logger.info("Received: %s", user_text.strip())
 
-    await dispatch_text(user_text, update, context)
+    async with dispatch_lock():
+        await dispatch_text(user_text, update, context)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -725,7 +746,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     composed = await voice.read_voice(update, context, catalogue=CATALOGUE,
                                       matching=matching_commands)
     if composed is not None:
-        await run_composed(composed, update, context)
+        async with dispatch_lock():
+            await run_composed(composed, update, context)
 
 
 async def dispatch_text(text: str, update, context):
@@ -838,6 +860,24 @@ async def run_composed(composed, update, context):
     await command.handler(update, context, match.groupdict())
 
 
+# The commands the Android assistant may NOT run, each with the reason it says
+# aloud. Everything else it may: a read at once, a write after the phone's yes.
+# tests/test_assistant.py names the allowed set exactly, so a new command is
+# decided here, not by default.
+ASSISTANT_REFUSED = {
+    **{c.name: "that picks from a numbered list, so do it from Telegram."
+       for c in COMMANDS if c.destructive},
+    "Menu":      "the menu is buttons in Telegram.",
+    "undo":      "undo works on what you did in Telegram, so do it there.",
+    "Learn":     "Learn reports in Telegram minutes later, so start it there.",
+    "Implement": "Implement reports in Telegram minutes later, so start it there.",
+}
+
+ASSISTANT_ROUTER = assistant.Router(
+    catalogue=CATALOGUE, matching=matching_commands, run_composed=run_composed,
+    lock=dispatch_lock, refused=ASSISTANT_REFUSED)
+
+
 # --- START THE BOT ---
 if __name__ == '__main__':
     config.validate()
@@ -858,17 +898,19 @@ if __name__ == '__main__':
     #
     # The locks are in place either way — expenses, calendar, and both Implement
     # flows — because run_detached does let two long commands overlap.
-    # The Kindle quote endpoint shares this event loop: started once PTB has
-    # one, stopped with it. Off (one warning) when KINDLE_TOKEN is unset.
-    async def start_kindle_endpoint(app):
-        app.bot_data["kindle_runner"] = await kindle_http.start(app.bot, CHAT_ID)
+    # The HTTP endpoint (Kindle quotes, Android assistant) shares this event loop:
+    # started once PTB has one, stopped with it. Each half is off (one warning)
+    # without its token; with neither, nothing listens.
+    async def start_http_endpoint(app):
+        app.bot_data["http_runner"] = await http_server.start(
+            app.bot, CHAT_ID, ASSISTANT_ROUTER, application=app)
 
-    async def stop_kindle_endpoint(app):
-        await kindle_http.stop(app.bot_data.get("kindle_runner"))
+    async def stop_http_endpoint(app):
+        await http_server.stop(app.bot_data.get("http_runner"))
 
     application = (ApplicationBuilder().token(TELEGRAM_TOKEN)
-                   .post_init(start_kindle_endpoint)
-                   .post_shutdown(stop_kindle_endpoint)
+                   .post_init(start_http_endpoint)
+                   .post_shutdown(stop_http_endpoint)
                    .build())
 
     # --- SCHEDULED JOBS ---
