@@ -126,6 +126,12 @@ def fit_to_budget(text: str, cap: int, *, label: str) -> tuple[str, str | None]:
 
 # ─── 1. AREA ROUTING ───────────────────────────────────────────────────────────
 
+# `Implement [Page] - [Area]`, cut at the FIRST dash — spaces around it optional —
+# so a page whose title holds a dash ("Step-by-step") is cut inside the title.
+# Named so the menu (bot/menu.py) can read a built command back with the same
+# pattern and refuse one that would be cut wrongly, instead of sending it.
+IMPLEMENT_PATTERN = r"(?i)implement\s+(.+?)\s*-\s*(.+)"
+
 def get_area_db_id(area_name: str) -> str | None:
     """Maps 'Brain' → BRAIN_ID, 'Finance' → FINANCE_ID — matching David's existing env var convention."""
     key = f"{area_name.upper().replace(' ', '_')}_ID"
@@ -833,7 +839,7 @@ async def run_implement(user_text: str, *, notify, notify_md=None):
     """
     notify_md = notify_md or notify
 
-    match = re.match(r"(?i)implement\s+(.+?)\s*-\s*(.+)", user_text.strip())
+    match = re.match(IMPLEMENT_PATTERN, user_text.strip())
     if not match:
         await notify_md("🔧 *Implement command usage:*\n"
             "`Implement [Page Name] - [Target Area]`\n\n"

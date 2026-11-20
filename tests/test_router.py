@@ -43,6 +43,7 @@ import bot.agenda
 import bot.budget
 import bot.implement
 import bot.learn
+import bot.menu
 import bot.month
 import bot.notion_ids
 import bot.pkm
@@ -123,6 +124,7 @@ SPY_TARGETS = [
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("handle_agenda",    ("_update", "day"),                        None,                 True),
     ("handle_version",   ("_update",),                              None,                 True),
+    ("show_menu",        ("_update",),                              None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               (BOOK_PAGE_ID, None), False),
     ("find_Book_Page",   ("book_name",),                            (BOOK_ROW, None),     False),
     ("add_Quote",        ("page_id", "quote_title", "quote_text"),  (written_ok(2), None), False),
@@ -149,6 +151,7 @@ SPY_HOMES = {
     "handle_get":           bot.pkm,
     "handle_agenda":        bot.agenda,
     "handle_version":       bot.version,
+    "show_menu":            bot.menu,
     "handle_remind":        bot.reminder,
     "find_event_matches":   cancel,
     "delete_event":         cancel,
@@ -249,6 +252,16 @@ ROUTES = [
     Route("help",  NO_HANDLER, reply("*ADD BOOK*"), "help"),
     Route("aiuto", NO_HANDLER, reply("*ADD BOOK*"), "help (italian)"),
     Route("HELP",  NO_HANDLER, reply("*ADD BOOK*"), "help is case-insensitive"),
+
+    # ── MENU ───────────────────────────────────────────────────────────────────
+    # Opening it is the only thing the registry routes: every answer after that
+    # is the open question's, driven end to end in test_menu.py.
+    Route("Menu",    "show_menu", {}, "open the button menu"),
+    Route("m",       "show_menu", {}, "menu, one letter"),
+    Route("📋 Menu", "show_menu", {}, "the persistent 📋 Menu button sends its label"),
+    Route("MENU",    "show_menu", {}, "menu is case-insensitive"),
+    Route("menu please", NO_HANDLER, reply("I didn't get that"),
+          "Menu takes no argument"),
 
     # ── VERSION ────────────────────────────────────────────────────────────────
     # `v` sits next to `h` in the registry and is the same shape of command: no

@@ -16,7 +16,11 @@ allow a live expense list AND a live event list at the same instant, and then `2
 means whichever prompt you had scrolled to — which is precisely the ambiguity the
 whole disambiguation path exists to remove, reintroduced one level up.
 
-So there is ONE slot, and it carries the KIND that owns it. The dispatch loop in
+So there is ONE slot, and it carries the KIND that owns it. The button menu
+(bot/menu.py) parks its open question here too, for the same reason one level
+up: a list and a menu question live at once would make `2` ambiguous again. A
+question is answered by any text, not by a number, so it reads its own record
+back through `peek` instead of being resolved once through `take`. The dispatch loop in
 david.py asks whether anything is live and routes the number to that kind's
 handler. The same is true of the undo record: `undo` reverses the last
 destructive thing David did, not the last destructive *expense*.
@@ -155,6 +159,18 @@ def take(user_data, kind: str, selection: int, now: float | None = None):
 
     user_data.pop(PENDING_KEY, None)
     return pending, items[selection - 1], None
+
+
+def peek(user_data, kind: str, now: float | None = None):
+    """The live record if `kind` owns the slot, else None. Does not consume.
+
+    For a prompt answered by any text rather than by a number — the menu's open
+    question — which reads its own record back on every reply instead of being
+    resolved once through `take`. An expired entry is dropped, as in has_pending.
+    """
+    if not has_pending(user_data, now) or kind_of(user_data) != kind:
+        return None
+    return user_data[PENDING_KEY][1]
 
 
 def clear(user_data) -> None:

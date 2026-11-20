@@ -566,6 +566,52 @@ long after the same bug had been fixed for expense dates at that one call site.
 `date.today()`, `datetime.today()`, `datetime.utcnow()` and a bare `datetime.now()`
 anywhere in production code: fixing the class, not the line.
 
+### Every channel composes; only the router runs
+
+The button menu was the first way to reach David that is not a typed message, and
+two more are planned (a sentence turned into a command, a voice note). Each could
+have called handlers itself; each would then have needed its own copy of the
+checks a typed command passes — the OWNER_ID gate, the numbered list a
+destructive command prints, the router tests — and a copy is a check that drifts.
+
+So a channel produces TEXT, and only the router turns text into a handler call:
+the menu writes `Add e Carrefour 2.20 f` out of three answers and hands it to
+`david.run_composed`, which routes it through `COMMANDS` like anything typed.
+The menu cannot do anything a typed command cannot, and the reply shows the
+command it built, so it teaches the syntax it saves.
+
+Building text from parts has one trap: a part can hold its command's separator.
+"Dune - Part One" as a book's title arrives as the book "Dune" by "Part One";
+`Remind Meet td 12 tr - 10` books "Meet", today at 12:00, though every part of it
+was fine on its own. So there are three checks, from the narrowest up: each part
+is refused if it holds the separator its command cuts at; where a service cuts
+the text itself (`Remind`, `Get`, `Implement`), the finished text is read back
+with that service's own pattern and a part that comes back different is asked
+again; and `run_composed` refuses text that does not fullmatch the command named
+with the groups named. The last is the one that cannot be forgotten by a new
+flow, and the first two are what make its refusal rare and its message specific.
+
+The menu uses reply-keyboard buttons, whose tap is an ordinary text message
+through the owner-only handler. Inline buttons send callback queries, which PTB's
+filters do not cover: the OWNER_ID gate would have become an `if` in handler code.
+
+Its open question lives in `pending_choice`'s one slot, for the reason the slot
+is one: a numbered list and a menu question open at once would make `2` mean
+either. While a question is open the next message is its answer, whatever it
+says — an expense can be called "B" — and it lapses after the list's two minutes,
+because the last answer of `Cancel` is a delete.
+
+### Free, or a few cents a month
+
+David is a personal bot with one user, and a hobby tool should not grow a running
+bill. Cristian set the rule on 2026-11-20, when the menu, voice notes and a voice
+assistant were planned: everything David uses — an outside API, a model, a phone
+app — is free or costs a few cents a month at most. So voice transcription uses
+Groq's free tier, the Android side uses HTTP Shortcuts rather than a paid app, and
+a Claude call that does not need Sonnet (turning a sentence into a command) uses
+the cheapest model that does the job. Every PR states its estimated monthly cost,
+so the rule is checked when the cost is decided, not when the bill arrives.
+
 ### Shipping goes through the Documentation contract
 
 The docs drifted every time they were left to memory. The hand-written help

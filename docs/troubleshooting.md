@@ -199,6 +199,20 @@ Two `Implement` runs into the same area are not allowed at once — the second i
 refused rather than merged against a page that is changing under it. Wait for
 the first to finish.
 
+## The menu keeps asking the same question, or says it has closed
+
+- **"… would read the name as …"** — the answer holds something its command
+  uses to separate parts: ` - ` in a book title or author, ` / ` in a quote's book
+  or title, a date inside a reminder's name, a dash in an `Implement` page name.
+  Type it without that, or send the whole command typed instead.
+- **"That menu has closed"** — a question lapses after 2 minutes. Tap **📋 Menu**
+  and start again. A reply typed after it lapsed is an ordinary message, which is
+  why it may get "I didn't get that".
+- **A command you typed was taken as an answer** — while the menu is asking, the
+  next message is the answer, whatever it says. Tap **❌ Cancel** first.
+- **No 📋 Menu button under the chat** — send `m` once; the button stays after
+  that.
+
 ## Scheduled messages never arrive
 
 - **`CHAT_ID`** is not the chat you are reading. For a private chat with the bot

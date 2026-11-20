@@ -128,6 +128,12 @@ CATEGORY_MAP = {
 # Default category when none is supplied on an expense
 DEFAULT_CATEGORY = "Food"
 
+# The areas the menu offers as buttons for `Get` and `Implement`. Each one's
+# {AREA}_ID is declared in OPTIONAL_ENV (tests/test_menu.py checks it). A button,
+# not a limit: any other area still works typed, as it does in a typed command —
+# get_area_db_id maps any name to its {AREA}_ID.
+AREA_BUTTONS = ("Brain", "Finance", "Diet")
+
 
 # ─── LEARN CONTENT TYPES ───────────────────────────────────────────────────────
 # What `Learn [type] [source]` accepts, the page icon each type gets, and which
