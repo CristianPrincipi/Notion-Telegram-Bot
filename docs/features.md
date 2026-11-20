@@ -14,6 +14,30 @@ in-chat list.
 Editing a message you already sent does **not** run it again, so fixing a typo
 never creates a second entry.
 
+### The menu
+
+Don't remember how a command is written? Send `Menu` (or `m`), or tap **📋 Menu**
+under the chat. David shows every command as a button; tap one and it asks for
+each part in turn — with buttons wherever the answer is a fixed list (category,
+genre, today or tomorrow, area) — then runs the command and shows you the one it
+built, e.g. `▶️ Add e Carrefour 2.20 f`. The menu only writes the command out for
+you: it runs exactly what you could have typed, with the same checks.
+
+- **While David is asking, your next message is the answer** — whatever it says.
+  An expense can be called `B`; it does not show your budget. Tap **❌ Cancel**
+  to stop, or **📋 Menu** to start again.
+- **A question lapses after 2 minutes**, like a numbered list. After that a reply
+  is an ordinary message again, and a button tapped late says the menu has
+  closed.
+- **A part that David would read differently is asked again**, with the reason:
+  a book title containing ` - ` (that is what separates title, author and genre),
+  a quote title containing ` / `, a reminder name that contains a date, an
+  `Implement` page name with a dash. Type the command instead if you need one of
+  those.
+- `Learn pdf` is not in the menu: a PDF is sent as a file with the command as its
+  caption. The diagnostics (`Diag`, `Find`, `DBs`), `Month`, `v` and `h` are not
+  in it either.
+
 ## The idea: Learn → Implement → Get
 
 Most of David is bookkeeping — expenses, books, reminders. The part that is not
@@ -43,6 +67,7 @@ line by line, with the same reply as a Manual (below).
 
 | Command | What it does |
 | --- | --- |
+| `Menu` | Every command as buttons — see [the menu](#the-menu). `m` and the 📋 Menu button work too |
 | `Add e [Name] [Amount] [Category]` | Add an expense. Categories: `s` Shopping, `f` Food, `g` Gift, `o` Other (default `f`) |
 | `U e [Name] [Amount] [Category]` | Change an expense's amount (and category). **This month only**; several matches → numbered list, reply with a number |
 | `D e [Name]` | Delete an expense. Same matching as `U e` |
@@ -295,7 +320,9 @@ was most recent — and works once:
   original — guest replies above all — does not come back.
 
 Only one numbered list and one `undo` exist at a time, across all three
-commands: a number always answers the most recent list.
+commands: a number always answers the most recent list. The menu shares that
+one slot — opening it closes a list that was waiting, so a `2` typed next
+answers the menu, never the old list.
 
 ## Scheduled messages
 

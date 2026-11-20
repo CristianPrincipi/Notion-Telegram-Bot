@@ -31,7 +31,9 @@ before changing what a rule protects. The overview and the full module map are i
 | Notion column names, looked-up page titles | `config.py`'s NOTION SCHEMA, per database even where two agree (scanned) |
 | Environment variables | `config.REQUIRED_ENV` / `OPTIONAL_ENV`; a default only through `config.env_or` (scanned). Railway's own `RAILWAY_*` are read in `services/version.py`, outside that contract on purpose |
 | Splitting a long reply | `bot/long_messages.py` |
-| The pending list and the undo record | `pending_choice.py` — ONE of each across every destructive command |
+| The pending prompt (a numbered list, or the menu's open question) and the undo record | `pending_choice.py` — ONE of each across every destructive command and the menu |
+| Turning text into a handler call | `david.dispatch_text`, for every channel; a BUILT command only through `david.run_composed` |
+| The button menu: its flows, checks and keyboards | `bot/menu.py` — composes, never runs |
 | Cutting source text to a budget | `run_learn` (`SUMMARY_INPUT_CHARS`); `run_implement` / `run_implement_diet` via `fit_to_budget` |
 | Sending scheduled messages | `proactive/scheduler.py`; builders return `(text, error)` and never send |
 | The unverified-source marker | `config.UNVERIFIED_MARKER` + `is_unverified_source` |
@@ -103,6 +105,20 @@ before changing what a rule protects. The overview and the full module map are i
 - **Async:** every synchronous call (requests, Notion, Anthropic, pypdf, Google) runs
   via `asyncio.to_thread`, and those functions stay synchronous. Long reads get an
   `asyncio.wait_for` cap from `config`; writes never do.
+- **Every channel composes; only the router runs.** The menu builds the canonical
+  command text (`Add e Carrefour 2.20 f`) and never picks a handler;
+  `david.run_composed` runs it only if it fullmatches the command named with the
+  groups named, else shows it and sends nothing. A part its command would cut
+  differently is asked again — a separator in it, or, where a service cuts the
+  text itself (`Remind`, `Get`, `Implement`), the service's own pattern reading it
+  back (`Flow.reads_back`). While a menu question is open the next message answers
+  it, a command word included; only ❌ Cancel, 📋 Menu or the 2-minute expiry close
+  it. Reply-keyboard buttons, never inline ones: a callback query bypasses the
+  OWNER_ID filter.
+- **Free, or a few cents a month.** A new outside service, model or app is free or
+  costs a few cents a month at most; the PR body states its estimated monthly cost.
+  A Claude call that does not need Sonnet uses the cheapest model that works, as a
+  named `config` constant.
 - **`Remind` / `Agenda` dates** follow
   [.claude/rules/dates-and-times.md](.claude/rules/dates-and-times.md), loaded when you
   touch those files.

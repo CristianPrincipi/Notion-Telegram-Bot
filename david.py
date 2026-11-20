@@ -25,6 +25,8 @@ from bot.expenses import (
 from bot import kindle_http
 from bot.implement import cmd_implement
 from bot.learn import cmd_learn
+from bot import menu
+from bot.menu import cmd_menu
 from bot.month import cmd_month
 from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
@@ -358,6 +360,18 @@ HELP_GROUPS = {
 
 COMMANDS = [
     Command(
+        name="Menu",
+        # First, so the help opens on the way in for anyone who does not know
+        # the rest of it. The 📋 Menu button sends its label, which this
+        # pattern takes too; while a menu question is open the button is read
+        # by bot/menu.py itself, before the registry is reached.
+        pattern=re.compile(r"(?:📋\s*)?menu|m", re.I),
+        handler=cmd_menu,
+        help=Help("📋 *MENU*", usage=("Menu", "m"), inline=True,
+                  notes=("Every command as buttons: tap one, answer one question per "
+                         "part, and I run it and show you the command I built",)),
+    ),
+    Command(
         name="Add b",
         pattern=re.compile(r"add b (?P<name>.+?) - (?P<author>.+?) - (?P<genre>.+)", re.I),
         handler=cmd_add_book,
@@ -620,6 +634,16 @@ SELECTION_HANDLERS = {
     calendar_safety.KIND: handle_event_selection,
 }
 
+# --- ANSWERING AN OPEN QUESTION --- #
+# The same slot holds the menu's open question, which is answered by ANY text,
+# not only by a number: while it is open the next message is its answer, a
+# command word included. The handler returns the command it composed once the
+# last part is in (a menu.Composed), and run_composed runs it; until then it has
+# replied itself and returns None.
+QUESTION_HANDLERS = {
+    menu.KIND: menu.answer,
+}
+
 
 # --- TELEGRAM MESSAGE HANDLER ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -629,41 +653,106 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_correlation_id(getattr(update, "update_id", None))
     record_command()
 
+    user_text = update.message.text or ""
+    logger.info("Received: %s", user_text.strip())
+
+    await dispatch_text(user_text, update, context)
+
+
+async def dispatch_text(text: str, update, context):
+    """Run one message's worth of text: THE entry point, whatever channel it came by.
+
+    A typed message comes through here, and so does every other way of talking to
+    David — the button menu today, a sentence or a voice note later. None of them
+    picks a handler itself; each produces text and hands it here, so the OWNER_ID
+    gate, Hard Rule 4 and the router tests hold for every channel with no copy.
+    """
     # Stripped once, here: every pattern is a fullmatch, so stray leading or
     # trailing whitespace would otherwise miss every command.
-    user_text = (update.message.text or "").strip()
-    logger.info("Received: %s", user_text)
+    text = (text or "").strip()
 
-    # --- PENDING CHOICE: a bare number answering a printed list of matches ---
+    # --- AN OPEN PROMPT: the reply to the last thing David asked ---
     # AHEAD OF THE REGISTRY, and not a Command itself, because it is the only
-    # thing David answers that depends on STATE rather than on the text: while a
-    # list is live the reply to it is a plain integer, which every pattern
-    # rejects, so it would fall through to "I didn't get that" with the list left
-    # unanswered. Guarded on there BEING a live list, so a stray "2" with nothing
-    # pending stays an unrecognised message rather than a command with no visible
-    # effect. See pending_choice.py.
+    # thing David answers that depends on STATE rather than on the text.
     #
-    # THERE IS ONE SLOT ACROSS EVERY DESTRUCTIVE COMMAND, and the number is
-    # routed by which one owns it. Two independent slots would let an expense
-    # list and an event list be live at the same instant, and then `2` means
-    # whichever prompt you had scrolled to — the exact ambiguity the numbered
-    # list exists to remove, one level up.
+    # THERE IS ONE SLOT ACROSS EVERY PROMPT — a numbered list from a destructive
+    # command, or the menu's open question — and the reply is routed by which one
+    # owns it. Two independent slots would let an expense list and an event list
+    # (or a list and a menu) be live at the same instant, and then `2` means
+    # whichever prompt you had scrolled to — the exact ambiguity the numbered list
+    # exists to remove, one level up. See pending_choice.py.
     if pending_choice.has_pending(context.user_data):
-        selection = pending_choice.parse_selection(user_text)
-        if selection is not None:
-            answer = SELECTION_HANDLERS[pending_choice.kind_of(context.user_data)]
-            await answer(update, context, selection)
+        kind = pending_choice.kind_of(context.user_data)
+
+        # A question takes ANY text as its answer, a command word included.
+        if kind in QUESTION_HANDLERS:
+            composed = await QUESTION_HANDLERS[kind](update, context, text)
+            if composed is not None:
+                await run_composed(composed, update, context)
             return
 
-    # fullmatch, never search: a partial match must fail loudly rather than
-    # execute a command the user only mentioned in passing.
-    for command in COMMANDS:
-        match = command.pattern.fullmatch(user_text)
-        if match:
-            await command.handler(update, context, match.groupdict())
+        # A list takes only a bare number. Guarded on there BEING a live list, so
+        # a stray "2" with nothing pending stays an unrecognised message rather
+        # than a command with no visible effect.
+        selection = pending_choice.parse_selection(text)
+        if selection is not None:
+            await SELECTION_HANDLERS[kind](update, context, selection)
             return
+
+    command, match = _first_match(text)
+    if command is not None:
+        await command.handler(update, context, match.groupdict())
+        return
+
+    if menu.is_stale_tap(text):
+        await menu.reply_stale(update)
+        return
 
     await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
+
+
+def _first_match(text):
+    """(command, match) for the first pattern that fullmatches, or (None, None).
+
+    fullmatch, never search: a partial match must fail loudly rather than execute
+    a command the user only mentioned in passing.
+    """
+    for command in COMMANDS:
+        match = command.pattern.fullmatch(text)
+        if match:
+            return command, match
+    return None, None
+
+
+async def run_composed(composed, update, context):
+    """Run a command another channel BUILT, only if it reads back as built.
+
+    The menu writes `Add b Dune - Herbert - a` out of three answers. Each part is
+    checked as it arrives, but this is the check under all of them: the text must
+    fullmatch the command it names, and that command must read exactly the parts
+    it was built from. "Dune - Part One" as a book's title would otherwise arrive
+    as the book "Dune" by the author "Part One". A text that fails is shown and
+    NOT sent — never routed to whatever it does happen to match.
+
+    The command is shown either way, so the menu teaches the syntax it saves.
+    """
+    command, match = _first_match(composed.text)
+    read = {} if match is None else match.groupdict()
+    reads_as_built = (command is not None and command.name == composed.command
+                      and all(read.get(key) == value
+                              for key, value in composed.groups.items()))
+    if not reads_as_built:
+        logger.warning("Composed %r does not read back as %s %r — not sent",
+                       composed.text, composed.command, composed.groups)
+        await update.message.reply_text(
+            f"⚠️ I built this, but {composed.command} would not read it the way you "
+            f"filled it in, so I did not send it:\n{composed.text}",
+            reply_markup=menu.MAIN_KEYBOARD)
+        return
+
+    logger.info("Composed: %s", composed.text)
+    await update.message.reply_text(f"▶️ {composed.text}", reply_markup=menu.MAIN_KEYBOARD)
+    await command.handler(update, context, match.groupdict())
 
 
 # --- START THE BOT ---

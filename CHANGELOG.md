@@ -6,6 +6,17 @@ Notable changes to David. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A button menu.** Send `Menu` or `m`, or tap **📋 Menu** under the chat: every
+  command is a button, and David asks for each part in turn — with buttons for
+  categories, genres, today/tomorrow and areas — then runs the command and shows
+  the one it built, so you learn the syntax as you go. It runs exactly what you
+  could have typed, through the same checks. A part David would read differently
+  (a book title containing ` - `, a reminder name containing a date) is asked
+  again with the reason. A question lapses after 2 minutes, like a numbered list.
+  See [the menu](docs/features.md#the-menu).
+
 ## [1.2.0] - 2026-11-20
 
 ### Added

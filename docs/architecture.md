@@ -50,8 +50,9 @@ What each file owns — and, as important, what it must not.
 
 | File | Owns | Must NOT own |
 | --- | --- | --- |
-| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + its dispatch loop, the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
+| `david.py` | Entry point (`__main__`), the `COMMANDS` registry + `dispatch_text` (the one entry point for text, whatever channel it came by: open prompt → registry → "didn't get that") and `run_composed` (runs a command another channel built, only if it reads back as built), the generated help (and `cmd_help`, which renders it), the owner filter and handler registration, job registration, `on_error` / `notify_error` | Any command's work, Notion, argument parsing beyond the patterns |
 | `config.py` | Constants, schedule times, timeouts, shortcut maps, weekday constants, the unverified-source marker + `is_unverified_source`, `TAKEAWAYS_HEADING` (two layers need each, neither owns it) and `CANCEL_SEARCH_DAYS`, the NOTION SCHEMA (every column name and every page title David looks up, per database), the env contract (`REQUIRED_ENV`/`OPTIONAL_ENV`), `env_or` and `validate()` | Reading feature IDs — each module reads its own `os.environ` |
+| `bot/menu.py` | The button menu: the flows (one per command: its questions, its buttons, how each answer is checked), composing the canonical command text, reading it back with the service's own pattern where a service cuts the text up itself, and the reply keyboards | Running anything — it hands a `Composed` to `david.run_composed`; which handler a text reaches is the registry's |
 | `bot/notify.py` | `for_update(update) -> (notify, notify_md)` — the **only** place a service's callbacks are bound to a message; `for_chat(bot, chat_id)` for work no message started (a Kindle highlight) | Anything a service could decide |
 | `bot/tasks.py` | `run_detached` — the per-command decision to background a long one | Which commands are long (that is the registry) |
 | `bot/expenses.py` | `Add e` / `U e` / `D e` / a bare number: the `AMOUNT` grammar, `parse_amount`, `resolve_category` | Which row a command means, the lock, the undo — and `undo` itself, which is `bot/undo.py` now that it spans two services |
@@ -77,7 +78,7 @@ What each file owns — and, as important, what it must not.
 | `page_lock.py` | Per-database asyncio locks (`page_lock`, `PageBusy`) | Anything else |
 | `telegram_text.py` | `escape_md`, and the **only** safe senders (`reply`, `send`) — the sole place `parse_mode` reaches Telegram | Feature logic, message wording |
 | `observability.py` | `setup_logging`, the correlation-ID contextvar, the heartbeat counters | Telegram, Notion, any probe |
-| `pending_choice.py` | The ONE pending slot and the ONE undo slot, both tagged by the kind that owns them, plus the rules that must not differ between two destructive commands: the 2-minute expiry, the strict-digit selection, the range check | Which fields tell two matches apart, any message wording, the shape of a reversal — those are per-feature |
+| `pending_choice.py` | The ONE pending slot (a numbered list, or the menu's open question) and the ONE undo slot, both tagged by the kind that owns them, plus the rules that must not differ between two destructive commands: the 2-minute expiry, the strict-digit selection, the range check | Which fields tell two matches apart, any message wording, the shape of a reversal — those are per-feature |
 | `expense_safety.py` | The expense half of the above: `Choice` / `Pending` / `Undo` shaped for a Notion row, and every message `U e` / `D e` print | Notion calls, Telegram sends — it decides and formats, `services/expenses.py` acts. And the machine itself, which is `pending_choice.py` |
 | `calendar_safety.py` | The same, for `Cancel`: what tells two same-named events apart, and the re-create-from-snapshot undo record | Google calls, Telegram sends — `services/cancel.py` acts |
 | `services/month.py` | Which page this month's expenses relate to: naming, find-or-create, cache, `run_month` | Expense writes, budget maths |
@@ -190,6 +191,13 @@ There is **one pending list and one undo record across every destructive
 command**, not one per feature (`pending_choice.py`). David prints one list at a
 time, so a bare number can only sensibly answer the last one printed — two
 independent lists would make `2` mean whichever prompt you had scrolled to.
+
+The button menu (`bot/menu.py`) parks its open question in the **same** slot, so
+there is one open prompt at a time of either kind: opening the menu replaces a
+waiting list, and the next message answers the menu. The menu composes the text
+of a command and hands it back to `david.run_composed`, which routes it through
+the registry like a typed message — the menu never picks a handler itself, so
+nothing it does can skip a check a typed command passes.
 
 ## Monthly rollover
 
