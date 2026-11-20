@@ -143,11 +143,14 @@ async def run_kindle_quote(quote, *, notify):
 
             written, err = await asyncio.to_thread(books.add_Quote, found.id, title, quote.text)
             if err and written.partial:
-                # Part of it is on the page: a retry would append a second copy,
-                # so the Kindle must NOT keep it queued.
-                await notify(f"⚠️ Kindle quote only partly added to {books.landed_on(found, book)}.\n"
-                             + books.partial_quote_warning(written))
-                return None, KindleError("Saved partially — fix it in Notion", retryable=False)
+                # Part of it is on the page, or Notion did not say whether it is
+                # (an unconfirmed append): a retry could append a second copy, so
+                # the Kindle must NOT keep it queued.
+                await notify(books.partial_quote_report(
+                    written, books.landed_on(found, book), what="Kindle quote"))
+                return None, KindleError("Not confirmed — check the book in Notion"
+                                         if written.unsure else
+                                         "Saved partially — fix it in Notion", retryable=False)
             if err:
                 await notify(f"❌ Kindle quote from '{book}' not saved. It stays queued on "
                              f"the Kindle. Notion said:\n{err}")

@@ -127,13 +127,26 @@ def test_written_is_still_a_list():
 # batched append.
 
 @responses.activate
-def test_add_quote_is_one_request_so_a_failure_writes_nothing():
-    responses.add(responses.PATCH, CHILDREN_URL, status=502, body="bad gateway")
+def test_add_quote_is_one_request_so_a_refusal_writes_nothing():
+    responses.add(responses.PATCH, CHILDREN_URL, status=400, body="bad block")
 
     written, err = books.add_Quote(BLOCK_ID, "On Fear", "x" * books.QUOTE_MAX_CHARS)
 
     assert err and not written.partial
     assert (written.batches_done, written.batches_total) == (0, 1)
+
+
+@responses.activate
+def test_a_quote_notion_did_not_confirm_may_be_on_the_page():
+    """A 502 is not a refusal: Notion may have saved the quote before the gateway
+    gave up. It was read as "nothing written" — and retried three times first."""
+    responses.add(responses.PATCH, CHILDREN_URL, status=502, body="bad gateway")
+    responses.add(responses.PATCH, CHILDREN_URL, status=200, json=created(2))
+
+    written, err = books.add_Quote(BLOCK_ID, "On Fear", "Fear is the mind-killer")
+
+    assert written.partial and written.unsure
+    assert len(responses.calls) == 1
 
 
 @pytest.fixture
@@ -175,6 +188,19 @@ def test_a_quote_that_wrote_nothing_still_reads_as_a_plain_failure(book_found, m
 
     assert update.message.replied_with("Error during quote transcription")
     assert not update.message.replied_with("partly")
+
+
+def test_an_unconfirmed_quote_says_to_check_before_re_sending(book_found, monkeypatch):
+    """Not "Error during quote transcription": read as nothing saved, that sends
+    you to re-send — a second copy, if Notion had saved the first."""
+    from conftest import written_unsure
+
+    update = quote_it(monkeypatch, (written_unsure(), "Notion did not confirm …"))
+
+    assert update.message.replied_with("may be on the page")
+    assert update.message.replied_with("SECOND copy")
+    assert not update.message.replied_with("Error during quote transcription")
+    assert not update.message.replied_with("partly"), "nothing says part of it landed"
 
 
 def test_a_fully_saved_quote_is_unchanged(book_found, monkeypatch):

@@ -9,7 +9,10 @@ implement_diet.py. Import from here instead of redefining.
 import os
 import threading
 import time
+from urllib.parse import urlparse
+
 import requests
+from urllib3.exceptions import NewConnectionError
 
 NOTION_KEY = os.environ.get("NOTION_KEY")
 
@@ -60,37 +63,91 @@ def _session() -> requests.Session:
 
 # ─── RETRY WRAPPER ─────────────────────────────────────────────────────────────
 
+class UnsureWrite(requests.RequestException):
+    """A create or an append that Notion did not confirm, and may have saved.
+
+    A 5xx, a read timeout or a dropped connection after the request went out says
+    nothing about whether Notion acted on it: a 502 is the gateway giving up, not
+    Notion refusing. Its message says to check Notion before trying again.
+    """
+
+
+def creates(method: str, url: str) -> bool:
+    """True when sending this call twice could leave two of something.
+
+    A POST creates — a page, a comment, an upload — unless it is a database query
+    or a search, which only read. A PATCH to a block's `children` appends. Every
+    other call reads, or sets something to a value, and setting it twice changes
+    nothing: a property update, an archive or restore, a delete. A POST nobody
+    listed counts as a create, so a new endpoint starts out safe.
+    """
+    path = urlparse(url).path.rstrip("/")
+    method = method.upper()
+    if method == "POST":
+        return not path.endswith(("/query", "/search"))
+    if method == "PATCH":
+        return path.endswith("/children")
+    return False
+
+
+def _never_arrived(exc: Exception) -> bool:
+    """True only when the request provably never reached Notion: no connection.
+
+    requests raises ConnectTimeout for a connect that timed out, and wraps a
+    refused connection or a failed DNS lookup as urllib3's NewConnectionError
+    inside a MaxRetryError. A reset, an aborted connection or a read timeout can
+    happen after Notion received the request, so none of them count.
+    """
+    if isinstance(exc, requests.ConnectTimeout):
+        return True
+    if isinstance(exc, requests.ConnectionError):
+        cause = exc.args[0] if exc.args else None
+        return isinstance(getattr(cause, "reason", None), NewConnectionError)
+    return False
+
+
+def _unsure(cause: str) -> UnsureWrite:
+    return UnsureWrite(f"Notion did not confirm the write ({cause}). It may have been "
+                       "saved anyway — check Notion before trying again.")
+
+
 def notion_request(method: str, url: str, *, max_retries: int = 3, **kwargs):
     """Make a Notion API request with automatic retry + exponential backoff.
 
     Retries on network errors and on 429/5xx responses (transient). Does NOT
     retry on 4xx client errors (400/401/404) — those won't fix themselves.
 
+    EXCEPT A CREATE (`creates`), which is sent again only when Notion provably
+    did nothing with it: a 429, or a connection that was never made. Any other
+    failure of a create raises UnsureWrite — its 5xx is not returned — because
+    Notion may have saved it before the answer was lost, and every retry used
+    to be a possible duplicate expense, book, page or block.
+
     Returns the requests.Response (caller checks status_code), or raises the
     final exception if every attempt failed at the network level.
     """
     kwargs.setdefault("timeout", 15)
     session = _session()
+    repeatable = not creates(method, url)
 
-    last_exc = None
     for attempt in range(max_retries):
+        last = attempt == max_retries - 1
         try:
             resp = session.request(method, url, **kwargs)
-            # Retry only on transient server-side conditions
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
-                wait = 2 ** attempt  # 1s, 2s, 4s
-                time.sleep(wait)
-                continue
-            return resp
         except requests.RequestException as e:
-            last_exc = e
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            raise
-    # Should not reach here, but just in case
-    if last_exc:
-        raise last_exc
+            if not repeatable and not _never_arrived(e):
+                raise _unsure(str(e) or type(e).__name__) from e
+            if last:
+                raise
+            time.sleep(2 ** attempt)  # 1s, 2s, 4s
+            continue
+        if not repeatable and resp.status_code >= 500:
+            raise _unsure(f"Notion {resp.status_code}: {body_excerpt(resp)}")
+        # Retry only on transient server-side conditions
+        if resp.status_code in (429, 500, 502, 503, 504) and not last:
+            time.sleep(2 ** attempt)
+            continue
+        return resp
 
 
 # ─── RICH TEXT HELPERS ─────────────────────────────────────────────────────────
@@ -385,22 +442,27 @@ class Written(list):
     an empty Written is falsy, exactly like the empty list it replaces.
     """
 
-    def __init__(self, blocks=(), *, batches_done=0, batches_total=0, blocks_total=0):
+    def __init__(self, blocks=(), *, batches_done=0, batches_total=0, blocks_total=0,
+                 unsure=False):
         super().__init__(blocks)
         self.batches_done  = batches_done
         self.batches_total = batches_total
         self.blocks_total  = blocks_total
+        # The batch after the last one counted ended in an UnsureWrite: Notion
+        # did not say whether it saved it.
+        self.unsure        = unsure
 
     @property
     def partial(self) -> bool:
-        """True when SOME of the write landed and the rest did not.
+        """True when SOME of the write landed and the rest did not — or may have.
 
         Deliberately not `bool(self) and self.batches_done < self.batches_total`:
         a batch that returned 200 with an empty `results` array still committed,
         so the batch tally is the authority on what is on the page, not the block
-        count.
+        count. An unconfirmed batch makes it partial too: it may be on the page,
+        so re-running may append a second copy, which is what callers warn about.
         """
-        return 0 < self.batches_done < self.batches_total
+        return self.unsure or 0 < self.batches_done < self.batches_total
 
     @property
     def summary(self) -> str:
@@ -451,6 +513,7 @@ def append_children(block_id: str, blocks: list, after: str | None = None):
                 anchor = batch_created[-1].get("id") or anchor
         return created, None
     except Exception as e:
+        created.unsure = isinstance(e, UnsureWrite)
         return created, str(e)
 
 
@@ -479,7 +542,9 @@ def create_page(parent_db_id: str, properties: dict, children: list = None, icon
         (page_id, None)   the page and all of its content exist
         (page_id, error)  THE PAGE EXISTS AND IS INCOMPLETE — the create call
                           succeeded, a later batch of content did not
-        (None,    error)  nothing was created
+        (None,    error)  nothing was created — or, when Notion did not confirm
+                          the create (UnsureWrite), nobody knows; the error says
+                          to check Notion first
 
     A caller that only checks `if not page_id` reports the middle case as a clean
     success, which is how a Learn page holding its first 100 blocks and nothing

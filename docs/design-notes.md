@@ -157,6 +157,39 @@ applied. Three things to keep:
   ever moved down the page, truncation would silently disarm the additions-only
   rule on precisely the long recollections that need it.
 
+### A create is sent once
+
+`notion_request` used to retry every call on a 5xx and on any network error, read
+timeouts included. For a read that costs nothing. For a create it is a duplicate: a 502
+is the gateway giving up, not Notion refusing, and a timed-out or dropped answer says
+nothing about whether the request was acted on. So an `Add e` that Notion saved before
+its 502 was sent again, up to three times — two or three rows for one expense — and the
+same for a book, a Learn page, a Manual, an appended quote or a Manual's new lines.
+
+A create is now sent again only when Notion provably did nothing with it: a **429**
+(Notion says so), or a connection that **was never made** — a connect timeout, a
+refused connection, a failed DNS lookup (`_never_arrived`). Anything else raises
+`UnsureWrite`, whose message says the write may have been saved and to check Notion
+before trying again. Failing out loud was chosen over the duplicate: a missing expense
+is noticed when you check, a duplicated one is noticed in the budget, if ever.
+
+- **Which calls are creates is decided in one place,** `notion_client.creates`, from
+  the method and the path — not by each caller passing a flag a new call site could
+  forget. A POST creates unless it is a database query or a search; a PATCH to a
+  block's `children` appends. Property updates, archive/restore and deletes set a value,
+  and setting it twice changes nothing, so they keep their retries. A POST nobody
+  listed counts as a create.
+- **An unconfirmed append is partial** (`Written.unsure`): it may be on the page, so
+  every caller already warns that a re-run may append a second copy — a quote says
+  "may be on the page", a Manual section is half-written, and the Kindle does not keep
+  the highlight queued. An unconfirmed book create from the Kindle stays retryable:
+  the resend finds the book first (find-or-create), so it adds the quote rather than
+  a second book.
+- **`Add e` says what went wrong.** `add_Expenses` returned a bare bool, so every
+  failure — a validation error, an outage, a missing month page — read "Could not
+  connect to Notion. Check your API keys". It returns `(ok, error)` now, and the reply
+  is the error.
+
 ### A partial write is a third outcome, not a failure
 
 Notion caps an append at

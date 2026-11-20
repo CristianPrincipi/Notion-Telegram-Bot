@@ -133,8 +133,9 @@ like `Add q` and tells you here:
 - **Offline, the Kindle keeps the highlight** and sends it when it is back on
   Wi-Fi. If Notion is down, it stays queued and is sent again later. A
   highlight sent twice is saved once.
-- A highlight longer than one quote can hold, or one that was only partly
-  written, is not retried — the Kindle shows why.
+- A highlight longer than one quote can hold, one that was only partly
+  written, or one Notion did not confirm saving, is not retried — the Kindle
+  shows why.
 
 It needs `KINDLE_TOKEN` set and a public domain on Railway
 ([setup](setup.md#kindle-quotes-optional)). Without the token, nothing listens.

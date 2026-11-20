@@ -480,6 +480,152 @@ def test_notion_request_sends_the_auth_headers():
     assert headers["Notion-Version"] == "2022-06-28"
 
 
+# ─── A WRITE THAT MAY HAVE LANDED IS NOT SENT AGAIN ────────────────────────────
+# Every request used to be retried on a 5xx and on any network error, read
+# timeouts included. A create (`Add e`, `Add b`, a Learn page, a Manual) or an
+# append that Notion committed before its 502 — or before the answer was lost —
+# was sent again: a duplicate expense, book, page or block. A create is now sent
+# again only when Notion provably never acted on it: a 429, or a connection that
+# was never made. Anything else is raised as UnsureWrite, which says so.
+
+PAGES_URL = f"{NOTION_BASE}/pages"
+
+
+def never_connected(kind):
+    """The two ways a request provably never left: requests' own shapes for them."""
+    if kind == "connect timeout":
+        return notion_client.requests.ConnectTimeout("connect timed out")
+    from urllib3.exceptions import MaxRetryError, NewConnectionError, NameResolutionError
+    reason = (NewConnectionError(None, "Connection refused") if kind == "refused"
+              else NameResolutionError("api.notion.com", None, "Name or service not known"))
+    return notion_client.requests.ConnectionError(MaxRetryError(None, PAGES_URL, reason))
+
+
+@responses.activate
+def test_a_create_answered_502_is_sent_once(no_real_sleeping):
+    responses.add(responses.POST, PAGES_URL, status=502, body="bad gateway")
+    responses.add(responses.POST, PAGES_URL, status=200, json={"id": "page-1"})
+
+    with pytest.raises(notion_client.UnsureWrite) as raised:
+        notion_request("POST", PAGES_URL, json={})
+
+    assert len(responses.calls) == 1, "a create Notion may have saved was sent again"
+    assert "502" in str(raised.value)
+    assert "may have been saved" in str(raised.value)
+
+
+@responses.activate
+@pytest.mark.parametrize("failure", [
+    notion_client.requests.ReadTimeout("read timed out"),
+    notion_client.requests.ConnectionError("Connection aborted: connection reset by peer"),
+])
+def test_an_append_whose_answer_was_lost_is_sent_once(failure, no_real_sleeping):
+    responses.add(responses.PATCH, CHILDREN_URL, body=failure)
+    responses.add(responses.PATCH, CHILDREN_URL, status=200, json={"results": []})
+
+    with pytest.raises(notion_client.UnsureWrite) as raised:
+        notion_request("PATCH", CHILDREN_URL, json={"children": []})
+
+    assert len(responses.calls) == 1
+    assert "may have been saved" in str(raised.value)
+
+
+@responses.activate
+def test_a_rate_limited_create_is_retried(no_real_sleeping):
+    """A 429 is Notion saying it did nothing."""
+    responses.add(responses.POST, PAGES_URL, status=429, body="slow down")
+    responses.add(responses.POST, PAGES_URL, status=200, json={"id": "page-1"})
+
+    resp = notion_request("POST", PAGES_URL, json={})
+
+    assert resp.status_code == 200
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+@pytest.mark.parametrize("kind", ["connect timeout", "refused", "dns"])
+def test_a_create_that_never_connected_is_retried(kind, no_real_sleeping):
+    responses.add(responses.POST, PAGES_URL, body=never_connected(kind))
+    responses.add(responses.POST, PAGES_URL, status=200, json={"id": "page-1"})
+
+    resp = notion_request("POST", PAGES_URL, json={})
+
+    assert resp.status_code == 200
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_a_create_that_never_connected_at_all_is_a_plain_error(no_real_sleeping):
+    """Nothing reached Notion, so nothing can be there: not an UnsureWrite."""
+    for _ in range(3):
+        responses.add(responses.POST, PAGES_URL, body=never_connected("refused"))
+
+    with pytest.raises(notion_client.requests.ConnectionError) as raised:
+        notion_request("POST", PAGES_URL, json={})
+
+    assert not isinstance(raised.value, notion_client.UnsureWrite)
+    assert len(responses.calls) == 3
+
+
+@responses.activate
+@pytest.mark.parametrize("method, url", [
+    ("GET",    SCHEMA_URL),
+    ("POST",   QUERY_URL),
+    ("POST",   f"{NOTION_BASE}/search"),
+    ("PATCH",  f"{NOTION_BASE}/pages/page-1"),       # a property update or an archive
+    ("DELETE", f"{NOTION_BASE}/blocks/block-1"),
+])
+def test_a_call_that_is_safe_to_repeat_is_still_retried(method, url, no_real_sleeping):
+    """Reading twice, or setting the same value twice, changes nothing."""
+    responses.add(method, url, body=notion_client.requests.ReadTimeout("read timed out"))
+    responses.add(method, url, status=502, body="bad gateway")
+    responses.add(method, url, status=200, json={})
+
+    resp = notion_request(method, url, json={})
+
+    assert resp.status_code == 200
+    assert len(responses.calls) == 3
+
+
+@pytest.mark.parametrize("method, path, creates", [
+    ("POST",  "/v1/pages", True),
+    ("PATCH", "/v1/blocks/b-1/children", True),
+    ("POST",  "/v1/comments", True),                 # any POST nobody listed is a create
+    ("POST",  "/v1/databases/db-1/query", False),
+    ("POST",  "/v1/search", False),
+    ("PATCH", "/v1/pages/p-1", False),
+    ("PATCH", "/v1/blocks/b-1", False),
+    ("GET",   "/v1/blocks/b-1/children", False),
+    ("DELETE", "/v1/blocks/b-1", False),
+])
+def test_what_counts_as_a_create(method, path, creates):
+    assert notion_client.creates(method, f"https://api.notion.com{path}") is creates
+
+
+@responses.activate
+def test_an_unconfirmed_append_may_be_on_the_page(no_real_sleeping):
+    """append_children's Written says so: partial, because it may be there."""
+    responses.add(responses.PATCH, CHILDREN_URL, status=504, body="gateway timeout")
+
+    written, err = append_children(BLOCK_ID, [{"type": "paragraph"}])
+
+    assert written.unsure and written.partial
+    assert written.batches_done == 0
+    assert "may have been saved" in err
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_an_unconfirmed_page_create_says_to_check(no_real_sleeping):
+    responses.add(responses.POST, PAGES_URL, status=502, body="bad gateway")
+
+    page_id, err = notion_client.create_page("db-1", {})
+
+    assert page_id is None
+    assert "may have been saved" in err
+    assert len(responses.calls) == 1
+
+
 # ─── CONNECTION POOLING ────────────────────────────────────────────────────────
 # Losing pooling is invisible: every test above still passes against a fresh
 # requests.request() per call, and production just quietly pays a TLS handshake

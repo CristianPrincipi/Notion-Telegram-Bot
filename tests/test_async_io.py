@@ -108,7 +108,7 @@ def david_stubs(monkeypatch):
         "add_Quote":      lambda page_id, quote_title, quote_text: (written_ok(2), None),
     })
     stubs |= stub_module(monkeypatch, expenses, {
-        "add_Expenses":   lambda name, amount, category: True,
+        "add_Expenses":   lambda name, amount, category: (True, None),
         # The destructive pair is find-then-write, and BOTH halves are blocking
         # Notion calls — the lookup is a database query, not a local decision.
         "find_expense_matches": lambda name: ([{"id": "exp-page-id", "properties": {}}], None),

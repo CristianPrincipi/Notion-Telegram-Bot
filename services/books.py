@@ -287,14 +287,20 @@ def add_Quote(page_id, quote_title, quote_text):
     return written, err
 
 
-def partial_quote_warning(written) -> str:
-    """What to say when part of a quote is on the page and part is not.
+def partial_quote_report(written, where: str, what: str = "Quote") -> str:
+    """What to say when part of a quote is on the page and part is not — or when
+    Notion did not say whether it is (`written.unsure`).
 
-    Named and shared because both quote flows have to say it and it is the whole
-    point of the change: the re-run advice is what stops a partial write becoming
-    a duplicated one.
+    Named and shared because the quote flows and the Kindle have to say it and it
+    is the whole point of the change: the re-run advice is what stops a partial
+    write becoming a duplicated one.
     """
-    return (f"⚠️ Saved partially — {written.summary} written.\n"
+    if written.unsure:
+        return (f"⚠️ {what} for {where} not confirmed: Notion did not answer, so it "
+                "may be on the page.\nCheck the book before re-sending — if it is "
+                "there, re-sending appends a SECOND copy.")
+    return (f"⚠️ {what} only partly added to {where}.\n"
+            f"⚠️ Saved partially — {written.summary} written.\n"
             "Re-sending this command appends a SECOND copy of the part that "
             "already landed. Delete the incomplete quote in Notion first.")
 
@@ -364,8 +370,7 @@ async def run_add_quote(book_name, quote_title, quote_content, *, notify, notify
     if not err:
         await notify(f"✍️ Quote added to {landed_on(book, book_name)}!")
     elif written.partial:
-        await notify(f"⚠️ Quote only partly added to {landed_on(book, book_name)}.\n"
-                     + partial_quote_warning(written))
+        await notify(partial_quote_report(written, landed_on(book, book_name)))
     else:
         await notify("❌ Error during quote transcription.")
 
@@ -443,7 +448,6 @@ async def run_quote_from_pdf(book_name, quote_title, begin_text, end_text,
     if not err:
         await notify(f"✍️ Quote added to {landed_on(book, book_name)}!")
     elif written.partial:
-        await notify(f"⚠️ Quote only partly added to {landed_on(book, book_name)}.\n"
-                     + partial_quote_warning(written))
+        await notify(partial_quote_report(written, landed_on(book, book_name)))
     else:
         await notify("❌ Error saving quote to Notion.")

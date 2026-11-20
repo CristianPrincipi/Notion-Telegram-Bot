@@ -70,7 +70,7 @@ What each file owns — and, as important, what it must not.
 | `services/implement.py` | `Implement [Page] - [Area]` — index a Manual by heading, route, and edit **only** the affected sections, line by line (`add` / `replace` / `remove`). Owns `get_area_db_id` and the `📚 Sources` ledger (`record_source`, and the two guards that keep it unwritable by a merge); applies the additions-only rule to unverified sources | Diet (delegates to `services/implement_diet.py`); the marker's TEXT (that is `config.py`); the edit operations themselves (`services/edit_ops.py`) |
 | `services/implement_diet.py` | The Diet page's H1>H2>H3 toggle tree: skeleton, breadth-first read, route, and edit **only** the routed sections, line by line; applies the additions-only rule to unverified sources | Generic Manual merging; the edit operations themselves (`services/edit_ops.py`) |
 | `services/edit_ops.py` | Edit operations on a section's numbered lines, for both of the above: `number_lines` / `listing`, `plan_edits` (ignores a missing, fixed or twice-named line), `write_edit` (append first, delete after; edited / skipped / partial), `hold_back_rewrites` (the additions-only rule), and the diff the replies print | Notion I/O — the caller passes in its own `append_children` and delete; prompts, schemas, and where a section's lines live |
-| `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff, pagination, block builders | Any feature logic |
+| `clients/notion_client.py` | The **only** place that speaks HTTP to Notion: headers, per-thread `Session`, retry/backoff and which calls are creates that are never sent twice (`creates`, `UnsureWrite`), pagination, block builders | Any feature logic |
 | `clients/anthropic_client.py` | The **only** place that speaks to Anthropic: `complete_json`, retry, `stop_reason` checks, token logging, the daily spend guard | Prompts — each feature owns its own system prompt and schema |
 | `clients/calendar_client.py` | The **only** place that speaks to Google Calendar; per-thread service. `now_local()` is the project clock — never `datetime.now()` | Telegram, Notion |
 | `clients/telegram_files.py` | Attachment validation and the bounded PDF download | What the bytes are for |
@@ -262,7 +262,8 @@ Only **reads** are capped that way. `wait_for` cancels the waiting coroutine but
 cannot cancel the worker thread, so timing out a write would report a failure
 while it was still in flight. Notion calls are already bounded by
 `clients.notion_client.notion_request`'s per-request timeout and its bounded
-retries.
+retries — none at all for a create Notion may have received (`creates`,
+`UnsureWrite`).
 
 Notion requests reuse a pooled `requests.Session`, one per worker thread —
 `requests.Session` is not thread-safe, and a shared one can hand the same socket

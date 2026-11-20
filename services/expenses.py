@@ -99,7 +99,8 @@ def add_Expenses(name, amount, category):
     month_id = current_month_id()
     if not month_id:
         logger.error("add_Expenses: no month page resolved — send `Month`, or check `Diag`.")
-        return False
+        return False, ("No page for this month in Notion, so the expense has nothing to "
+                       "belong to. Send `Month` to create it, or `Diag` to see why.")
 
     data = {
         "parent": {"database_id": EXPENSES_ID},
@@ -113,13 +114,18 @@ def add_Expenses(name, amount, category):
         }
     }
 
-    response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
+    try:
+        response = notion_request("POST", "https://api.notion.com/v1/pages", json=data)
+    except Exception as e:
+        # An UnsureWrite says itself that the row may be there.
+        logger.error("add_Expenses failed: %s", e)
+        return False, str(e) or type(e).__name__
 
     if response.status_code != 200:
         logger.error("add_Expenses failed: Notion %s: %s",
                      response.status_code, body_excerpt(response))
-
-    return response.status_code == 200
+        return False, f"Notion {response.status_code}: {body_excerpt(response)}"
+    return True, None
 
 
 # --- FINDING THE EXPENSE A DESTRUCTIVE COMMAND MEANS ---
@@ -214,13 +220,14 @@ async def run_add(name, amount, category, *, notify, notify_md=None):
     """`Add e [Name] [Amount] [Category]` — a bare create, no lookup, no lock."""
     await notify(f"⏳ Adding '{name}' (€{amount}) to Notion...")
 
-    # CALL THE NOTION FUNCTION
-    success = await asyncio.to_thread(add_Expenses, name, amount, category)
+    ok, err = await asyncio.to_thread(add_Expenses, name, amount, category)
 
-    if success:
+    if ok:
         await notify("✅ Success! Expenses added to your database.")
     else:
-        await notify("❌ Error: Could not connect to Notion. Check your API keys.")
+        # Notion's own answer. "Could not connect to Notion. Check your API keys"
+        # was said for every failure, a validation error included.
+        await notify(f"❌ Adding '{name}' (€{amount}) failed:\n{err}")
 
 
 # --- DESTRUCTIVE EXPENSE COMMANDS (`U e`, `D e`, `undo`) --- #

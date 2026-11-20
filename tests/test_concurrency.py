@@ -303,7 +303,7 @@ def slow_command_stubs(monkeypatch):
     monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book("book-1", name), None))
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
     monkeypatch.setattr(bot.budget, "budget", lambda: ("TOTAL", None))
-    monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: True)
+    monkeypatch.setattr(expense_service, "add_Expenses", lambda *a: (True, None))
     monkeypatch.setattr(expense_service, "find_expense_matches",
                         lambda name: ([{"id": "exp-1", "properties": {}}], None))
     monkeypatch.setattr(expense_service, "update_Expense", lambda *a: (True, None))
