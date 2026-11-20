@@ -105,6 +105,46 @@ async def _interpret(text, catalogue, earlier=None):
         return None, f"no answer within {INTERPRET_TIMEOUT} seconds"
 
 
+@dataclass(frozen=True)
+class Reading:
+    """What a sentence was read as. At most one of `error`, `question`,
+    `composed` is set; none means it is not a request for anything David does
+    (or was never sent: empty, too long, a bare number)."""
+
+    error: str = ""
+    question: str = ""
+    command: object = None              # the ONE registry Command it fullmatches
+    composed: Composed | None = None
+
+
+async def read(text, *, catalogue, matching, earlier=None) -> Reading:
+    """The one reading of a sentence, for every channel that has one — the chat,
+    a voice note, the Android assistant. Replies to no one: each channel says the
+    outcome its own way.
+
+    `matching(text)` is the registry's list of commands that fullmatch `text`.
+    """
+    # A bare number on its own is never a sentence; as the answer to "how much?"
+    # it is the whole point.
+    if (not text or len(text) > INTERPRET_MAX_CHARS
+            or (earlier is None and text.isdigit())):
+        return Reading()
+
+    answer, err = await _interpret(text, catalogue, earlier)
+    if err:
+        return Reading(error=err)
+    if not answer["command"]:
+        return Reading(question=answer["question"])
+
+    commands = matching(answer["command"])
+    if len(commands) != 1:
+        logger.warning("Interpreter proposed %r, which matches %d commands — dropped",
+                       answer["command"], len(commands))
+        return Reading()
+    return Reading(command=commands[0],
+                   composed=Composed(answer["command"], commands[0].name, {}))
+
+
 async def understand(update, context, text, *, catalogue, matching, earlier=None,
                      always_confirm=False):
     """Read a sentence as a command. Returns a Composed to run now — a read — or
@@ -114,42 +154,27 @@ async def understand(update, context, text, *, catalogue, matching, earlier=None
     `always_confirm` puts even a read to ✅ Yes: a voice note's words were HEARD,
     and what was heard may be wrong even when the command it became is right.
     """
-    # A bare number on its own is never a sentence; as the answer to "how much?"
-    # it is the whole point.
-    if (not text or len(text) > INTERPRET_MAX_CHARS
-            or (earlier is None and text.isdigit())):
-        await update.message.reply_text(DIDNT_GET_IT)
-        return None
-
-    answer, err = await _interpret(text, catalogue, earlier)
-    if err:
+    reading = await read(text, catalogue=catalogue, matching=matching, earlier=earlier)
+    if reading.error:
         await update.message.reply_text(
-            f"{DIDNT_GET_IT}\n(Reading it as a sentence failed too: {err})")
+            f"{DIDNT_GET_IT}\n(Reading it as a sentence failed too: {reading.error})")
         return None
 
-    if not answer["command"]:
-        if answer["question"]:
-            sentence = text if earlier is None else f"{earlier[0]} — {text}"
-            pending_choice.remember(
-                context.user_data, CLARIFY,
-                Clarifying(sentence, answer["question"], pending_choice.deadline(),
-                           always_confirm), None)
-            await update.message.reply_text(f"❓ {answer['question']}",
-                                            reply_markup=MAIN_KEYBOARD)
-            return None
+    if reading.question:
+        sentence = text if earlier is None else f"{earlier[0]} — {text}"
+        pending_choice.remember(
+            context.user_data, CLARIFY,
+            Clarifying(sentence, reading.question, pending_choice.deadline(),
+                       always_confirm), None)
+        await update.message.reply_text(f"❓ {reading.question}", reply_markup=MAIN_KEYBOARD)
+        return None
+
+    if reading.composed is None:
         await update.message.reply_text(DIDNT_GET_IT)
         return None
 
-    commands = matching(answer["command"])
-    if len(commands) != 1:
-        logger.warning("Interpreter proposed %r, which matches %d commands — dropped",
-                       answer["command"], len(commands))
-        await update.message.reply_text(DIDNT_GET_IT)
-        return None
-
-    command = commands[0]
-    composed = Composed(answer["command"], command.name, {})
-    if command.read_only and not always_confirm:
+    composed = reading.composed
+    if reading.command.read_only and not always_confirm:
         return composed
 
     pending_choice.remember(context.user_data, CONFIRM,

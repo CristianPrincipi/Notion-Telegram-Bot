@@ -6,10 +6,11 @@ David's handlers take `(update, context, args)` and answer through
 answer, the assistant hands them this: the same three things, offering ONLY what
 the handlers it may run actually use —
 
-  - `message.reply_text(text, **kwargs)` sends the reply to the chat (CHAT_ID),
-    so everything the assistant does is also in Telegram, and keeps a plain copy
-    for the phone to speak (`spoken`). A reply the chat could not take is still
-    spoken: the write already happened, and the phone is where you are looking;
+  - `message.reply_text(text, **kwargs)` sends the reply to the chat (CHAT_ID)
+    through telegram_text.send — so Markdown the chat rejects is resent plain —
+    and keeps a plain copy for the phone to speak (`spoken`). A reply the chat
+    could not take at all is still spoken: the write already happened, and the
+    phone is where you are looking;
   - `context.user_data`, a dict of the assistant's OWN, so nothing it runs can
     answer, close or overwrite a prompt open in the chat;
   - `context.bot` and `context.application`, the real ones.
@@ -21,6 +22,8 @@ before they get here, and a test names the ones it may run.
 
 import logging
 import re
+
+import telegram_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +48,16 @@ class ChatMessage:
         self.voice = None
         self.spoken = []
 
-    async def reply_text(self, text, **kwargs):
-        self.spoken.append(plain(text, kwargs.get("parse_mode")))
+    async def reply_text(self, text, parse_mode=None, **kwargs):
+        self.spoken.append(plain(text, parse_mode))
         try:
-            await self._bot.send_message(chat_id=self._chat_id, text=text, **kwargs)
+            # telegram_text.send, not bot.send_message: a reply whose Markdown the
+            # chat rejects is resent plain, as on every other path (review of #79).
+            await telegram_text.send(self._bot, self._chat_id, text,
+                                     parse_mode=parse_mode, **kwargs)
         except Exception as e:
-            # Raising here would turn a write that happened into a failed request;
-            # the BadRequest fallback in telegram_text never sees this path.
+            # Anything else — Telegram down — must not turn a write that happened
+            # into a failed request: the phone still hears it.
             logger.warning("Assistant reply not mirrored to the chat: %s", type(e).__name__)
 
 

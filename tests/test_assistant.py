@@ -275,6 +275,27 @@ def test_a_chat_that_cannot_be_reached_does_not_turn_a_write_into_an_error(spies
     assert spies.chain == "add_Expenses"
 
 
+def test_a_markdown_reply_the_chat_rejects_is_sent_plain():
+    """Review of #79: the stand-in swallowed Telegram's BadRequest, so a reply
+    with an unescaped `_` was spoken but never reached the chat — telegram_text's
+    plain-text retry could not run inside it."""
+    from telegram.error import BadRequest
+
+    class StrictBot(FakeBot):
+        async def send_message(self, chat_id, text, **kwargs):
+            if kwargs.get("parse_mode"):
+                raise BadRequest("Can't parse entities")
+            await super().send_message(chat_id, text, **kwargs)
+
+    bot = StrictBot()
+    message = chat_target.ChatMessage(bot, CHAT, "B")
+
+    run(message.reply_text("*Budget* for my_book", parse_mode="Markdown"))
+
+    assert bot.sent == [(CHAT, "*Budget* for my_book")]
+    assert message.spoken == ["Budget for mybook"]
+
+
 def test_a_markdown_reply_is_said_without_its_markers():
     assert chat_target.plain(r"*Budget*: 120\_50 `left`", "Markdown") == "Budget: 120_50 left"
     assert chat_target.plain("*not markdown*", None) == "*not markdown*"
@@ -332,6 +353,36 @@ def test_an_assistant_run_never_interleaves_with_a_chat_message(monkeypatch, cla
     assert order in (
         ["assistant Add e start", "assistant Add e end", "chat B start", "chat B end"],
         ["chat B start", "chat B end", "assistant Add e start", "assistant Add e end"])
+
+
+def test_the_chat_header_waits_for_the_lock_too(spies):
+    """Review of #79: the header was sent before the lock, so it could land in
+    the middle of a chat command's replies."""
+    phone = Phone()
+    composed = assistant.Composed("B", "B", {})
+
+    async def go():
+        lock = david.dispatch_lock()
+        await lock.acquire()
+        task = asyncio.create_task(phone.assistant._run(composed))
+        await asyncio.sleep(0.02)
+        sent_while_held = list(phone.bot.sent)
+        lock.release()
+        await task
+        return sent_while_held
+
+    assert run(go()) == []
+    assert phone.chat[0] == "🗣️ From the assistant:"
+
+
+def test_the_assistant_reads_a_sentence_through_the_chats_own_rules(spies, claude):
+    """Review of #79: the assistant re-implemented the reading. Through
+    sentences' one reading, a bare number is not a sentence and never costs a
+    Claude call — on either channel."""
+    _, body = Phone().ask("2")
+
+    assert body == {"say": assistant.DIDNT_GET_IT}
+    assert claude.calls == []
 
 
 # ─── THE SERVER ───────────────────────────────────────────────────────────────

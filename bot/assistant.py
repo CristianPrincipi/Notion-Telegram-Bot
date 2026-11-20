@@ -14,16 +14,18 @@ Every answer is JSON with `say` — what the phone reads aloud — and at most o
 
 The phone (HTTP Shortcuts, docs/assistant-android.md) does the listening — the
 keyboard's dictation — so the server receives text, and this is the plain-
-sentence path (bot/sentences.py) again, with its rules: the interpreter writes a
-command, it must fullmatch EXACTLY ONE command, a read runs at once, a write
-waits for yes, and it runs through david.run_composed like a typed message. Two
+sentence path again — `sentences.read`, the one reading every channel uses: the
+interpreter writes a command, it must fullmatch EXACTLY ONE command — then a read
+runs at once, a write waits for yes, and it runs through david.run_composed like
+a typed message. Two
 more rules, because there is no chat on the other end:
 
   - SOME COMMANDS ARE REFUSED — named by david.py in `Router.refused`, each with
     its reason: a destructive command picks from a numbered list in the chat; the
     menu is buttons; `undo` undoes what was done in the chat; Learn and Implement
     report minutes later, in the chat.
-  - ONE PENDING SLOT, two minutes, in memory. A new ask replaces it. Losing it to
+  - ONE PENDING SLOT: pending_choice's, in the assistant's own user_data, two
+    minutes, with an id the phone sends back. A new ask replaces it. Losing it to
     a redeploy loses a question, never a write (Hard Rule 1).
 
 What runs also appears in the chat (bot/chat_target.py): "🗣️ From the
@@ -31,7 +33,6 @@ assistant", then the command's own replies. It runs under david's dispatch lock,
 so it never interleaves with a chat message (Hard Rule 5).
 """
 
-import asyncio
 import hmac
 import logging
 import secrets
@@ -41,10 +42,8 @@ from typing import Callable
 from aiohttp import web
 
 import pending_choice
-from bot import chat_target
+from bot import chat_target, sentences
 from bot.menu import Composed
-from config import INTERPRET_MAX_CHARS, INTERPRET_TIMEOUT
-from services import interpret
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +63,16 @@ class Router:
     refused: dict               # command name -> why it is Telegram-only
 
 
-@dataclass
-class _Pending:
+@dataclass(frozen=True)
+class _Waiting:
+    """What the assistant parks in pending_choice's slot — its OWN user_data's,
+    under sentences' kinds: CONFIRM for a write waiting for yes, CLARIFY for a
+    question waiting for its answer. The id is what the phone sends back."""
+
     id: str
     expires_at: float
-    composed: Composed | None = None          # a write waiting for yes
-    earlier: tuple | None = None               # (sentence, question) waiting for a reply
+    composed: Composed | None = None           # CONFIRM
+    earlier: tuple | None = None               # CLARIFY: (sentence, question)
 
 
 @dataclass
@@ -79,70 +82,56 @@ class Assistant:
     chat_id: object
     application: object = None
     user_data: dict = field(default_factory=dict)
-    pending: _Pending | None = None
 
-    def _take(self, pending_id, want_write):
-        """The pending entry with this id and kind, still in time — removed."""
-        pending, self.pending = self.pending, None
-        if (pending is None or not pending_id or pending.id != pending_id
-                or pending_choice.is_expired(pending.expires_at)
-                or (pending.composed is not None) != want_write):
+    def _take(self, kind, pending_id):
+        """The waiting record of this kind and id, still in time — and the slot
+        emptied whatever it held: an answer that is not this one closes it."""
+        waiting = pending_choice.peek(self.user_data, kind)
+        pending_choice.clear(self.user_data)
+        if waiting is None or not pending_id or waiting.id != pending_id:
             return None
-        return pending
+        return waiting
 
-    def _park(self, **kwargs):
-        self.pending = _Pending(secrets.token_urlsafe(9), pending_choice.deadline(), **kwargs)
-        return self.pending.id
+    def _park(self, kind, **kwargs):
+        waiting = _Waiting(secrets.token_urlsafe(9), pending_choice.deadline(), **kwargs)
+        pending_choice.remember(self.user_data, kind, waiting, None)
+        return waiting.id
 
     async def ask(self, text, pending_id=None):
         """A sentence → the JSON answer (a dict)."""
         text = text.strip()
         earlier = None
         if pending_id:
-            asked = self._take(pending_id, want_write=False)
+            asked = self._take(sentences.CLARIFY, pending_id)
             if asked is None:
                 return {"say": LAPSED}
             earlier = asked.earlier
         else:
-            self.pending = None
+            pending_choice.clear(self.user_data)
 
-        if not text or len(text) > INTERPRET_MAX_CHARS:
+        # The chat's own reading: the same gate, interpreter and exactly-one check.
+        reading = await sentences.read(text, catalogue=self.router.catalogue,
+                                       matching=self.router.matching, earlier=earlier)
+        if reading.error:
+            return {"say": f"I could not read that: {reading.error}"}
+        if reading.question:
+            sentence = text if earlier is None else f"{earlier[0]} — {text}"
+            ask_id = self._park(sentences.CLARIFY, earlier=(sentence, reading.question))
+            return {"say": reading.question, "ask": reading.question, "id": ask_id}
+        if reading.composed is None:
             return {"say": DIDNT_GET_IT}
 
-        try:
-            answer, err = await asyncio.wait_for(
-                asyncio.to_thread(interpret.interpret, text, self.router.catalogue, earlier),
-                timeout=INTERPRET_TIMEOUT)
-        except asyncio.TimeoutError:
-            answer, err = None, f"no answer within {INTERPRET_TIMEOUT} seconds"
-        if err:
-            return {"say": f"I could not read that: {err}"}
-
-        if not answer["command"]:
-            if answer["question"]:
-                sentence = text if earlier is None else f"{earlier[0]} — {text}"
-                ask_id = self._park(earlier=(sentence, answer["question"]))
-                return {"say": answer["question"], "ask": answer["question"], "id": ask_id}
-            return {"say": DIDNT_GET_IT}
-
-        commands = self.router.matching(answer["command"])
-        if len(commands) != 1:
-            logger.warning("Assistant: %r matches %d commands — dropped",
-                           answer["command"], len(commands))
-            return {"say": DIDNT_GET_IT}
-        command = commands[0]
-        if command.name in self.router.refused:
-            return {"say": f"{answer['command']}: {self.router.refused[command.name]}"}
-
-        composed = Composed(answer["command"], command.name, {})
-        if command.read_only:
+        composed = reading.composed
+        if reading.command.name in self.router.refused:
+            return {"say": f"{composed.text}: {self.router.refused[reading.command.name]}"}
+        if reading.command.read_only:
             return {"say": await self._run(composed)}
-        write_id = self._park(composed=composed)
+        write_id = self._park(sentences.CONFIRM, composed=composed)
         return {"say": f"Shall I do this? {composed.text}", "confirm": composed.text,
                 "id": write_id}
 
     async def confirm(self, pending_id):
-        proposal = self._take(pending_id, want_write=True)
+        proposal = self._take(sentences.CONFIRM, pending_id)
         if proposal is None:
             return {"say": LAPSED}
         return {"say": await self._run(proposal.composed)}
@@ -152,12 +141,14 @@ class Assistant:
         message = chat_target.ChatMessage(self.bot, self.chat_id, composed.text)
         update = chat_target.ChatUpdate(message)
         context = chat_target.ChatContext(self.bot, self.application, self.user_data)
-        try:
-            await self.bot.send_message(chat_id=self.chat_id, text="🗣️ From the assistant:")
-        except Exception as e:
-            logger.warning("Assistant header not sent to the chat: %s", type(e).__name__)
         logger.info("Assistant runs: %s", composed.text)
         async with self.router.lock():
+            # The header too, inside the lock: before it, it could land between a
+            # chat command's replies (review of #79).
+            try:
+                await self.bot.send_message(chat_id=self.chat_id, text="🗣️ From the assistant:")
+            except Exception as e:
+                logger.warning("Assistant header not sent to the chat: %s", type(e).__name__)
             await self.router.run_composed(composed, update, context)
         # The first reply is run_composed's "▶️ <command>": shown in the chat,
         # not worth reading aloud.

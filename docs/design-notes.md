@@ -701,6 +701,16 @@ every chat message and every assistant run gives the assistant the same
 one-at-a-time. Its pending write lives in memory for two minutes — a redeploy
 loses a question, never a write.
 
+The review of #79 found three ways the first version broke this. It read the
+sentence with its own copy of the gate and the exactly-one check, and kept its
+pending write in a slot of its own: it now calls `sentences.read`, the reading
+the chat and voice notes use (so a bare `2` costs no Claude call there either),
+and parks in pending_choice's slot in its own `user_data`. Its stand-in sent
+replies with `bot.send_message`, so a reply whose Markdown the chat rejected was
+spoken but never shown: it now goes through `telegram_text.send` and its
+plain-text retry. And the "🗣️ From the assistant" header was sent before the
+lock, so it could land between a chat command's replies: it is inside now.
+
 ### Free, or a few cents a month
 
 David is a personal bot with one user, and a hobby tool should not grow a running
