@@ -28,7 +28,7 @@ line were not there.
 | `LETTI_ID` | The Books database ID (*letti* is Italian for "read" — the name stayed). |
 | `LITERATURE_ID` | The ID of the `Literature` **page** inside the Areas database. Every book is related to it. |
 | `LEARN_ID` | The Learn database ID — where `Learn video`, `article`, `podcast` and `pdf` save. |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key, used by `Learn` and `Implement`. |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key, used by `Learn` and `Implement`, and to read a plain sentence as a command. |
 
 ## Optional
 
@@ -45,7 +45,7 @@ line were not there.
 | `MONTHS_DB_ID` | discovered | The database the month pages live in. Unset, David finds it by following the Expenses `Account` relation, which is what you want. |
 | `MONTH_ID` | — | **Outage fallback only.** If Notion cannot be reached the first time David looks up this month's page, it uses this page ID rather than nothing. David finds the real page itself; you never need to update this. |
 | `ANTHROPIC_MAX_TOKENS` | `16000` | The longest answer one Claude call may return, counting the thinking Claude does before it answers. Raise it if a long source comes back as a truncated page — that error message names this variable. |
-| `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused until midnight, Europe/Rome. |
+| `ANTHROPIC_DAILY_BUDGET_USD` | `5` | Estimated Anthropic spend allowed per day. Once reached, `Learn` and `Implement` are refused, and a sentence is no longer read as a command (typed commands still work), until midnight, Europe/Rome. |
 | `ANTHROPIC_SPEND_FILE` | `.anthropic_spend.json` | Where the day's running spend is kept. On Railway the disk is wiped on every deploy, so a redeploy resets the day's count — a bounded over-spend, not a broken bot. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. An unrecognised value logs a warning and falls back to `INFO`. The HTTP libraries' own request lines stay off even at `DEBUG`: they would print the bot token. |
 | `KINDLE_TOKEN` | — | The secret the Kindle sends with every highlight ([Kindle quotes](features.md#kindle-quotes)). Unset, the endpoint does not start and nothing listens. Any long random string: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |

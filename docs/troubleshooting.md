@@ -158,7 +158,22 @@ different source on the same subject, or a shorter excerpt of this one.
 ## `Learn` or `Implement` is refused: daily budget reached
 
 David's estimate of today's Anthropic spend passed `ANTHROPIC_DAILY_BUDGET_USD`
-(default $5). Wait for midnight (Europe/Rome), or raise the variable.
+(default $5). Wait for midnight (Europe/Rome), or raise the variable. Sentences
+stop being read as commands too — the reply says "Reading it as a sentence
+failed too" and names the budget; typed commands and the menu still work.
+
+## A sentence gets "I didn't get that", or the wrong command
+
+- **"Reading it as a sentence failed too: …"** — the reason follows: the daily
+  budget (above), Anthropic unreachable, or no answer within 30 seconds. Type
+  the command, or use 📋 Menu.
+- **Plain "I didn't get that"** — David could not match the sentence to any
+  command. Say what you want more directly ("aggiungi spesa Carrefour 12
+  euro"), or type the command.
+- **The proposed command is wrong** — tap ❌ No; nothing is written. A question
+  (`B`, `Agenda`, `Get`) runs without asking, but it changes nothing.
+- **A long message is never read** — over 500 characters is taken for a paste,
+  not a request.
 
 ## `Implement`: an edit is "ignored", or a section is "unchanged"
 

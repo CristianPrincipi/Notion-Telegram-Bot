@@ -601,6 +601,37 @@ either. While a question is open the next message is its answer, whatever it
 says — an expense can be called "B" — and it lapses after the list's two minutes,
 because the last answer of `Cancel` is a delete.
 
+### A sentence is read last, and a write read from one waits for ✅ Yes
+
+A model reads "ho speso 12 euro da Carrefour" better than any pattern, and it is
+also the one part of David that can be wrong in a way nothing else catches: it
+can hear an amount that was not said. So it is fenced on every side.
+
+It comes LAST — after an open prompt, the registry and a late menu tap — so a typed
+command never costs a call or waits on one, and the router's behaviour for
+everything it already understood is unchanged. It only WRITES a command; the bot
+layer checks that the text fullmatches exactly one command (zero or two is "I
+didn't get that", never the nearest guess), and `run_composed` runs it like a
+typed message, so a `D e` read from a sentence still lists its matches.
+
+Whether it runs at once is `Command.read_only`. A wrong reading of `B` or
+`Agenda` costs one look and shows itself in the `▶️` line; a wrong reading of
+`Add e` is a wrong row. So a write waits for ✅ Yes, and the read-only set is
+named in a test, because adding a writing command to it would run that command
+unconfirmed. `read_only` defaults to False, so a new command is confirmed until
+someone decides otherwise.
+
+The confirmation is a yes-or-no. A new command typed instead of an answer is a
+new command: the proposal is dropped (said so) and the message read as itself,
+through `pending_choice.NOT_AN_ANSWER`. Swallowing it as a "no" would lose it;
+reading it as a "yes" would be a guess about a write.
+
+The daily guard prices every call at its own model's rates. Before this it priced
+every call at the main model's, which was right while there was one model; a
+Haiku call would have counted twenty times its cost and refused `Learn` on money
+never spent. A model with no rates is not called at all — a call the guard
+cannot count is one it cannot stop.
+
 ### Free, or a few cents a month
 
 David is a personal bot with one user, and a hobby tool should not grow a running

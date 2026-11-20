@@ -76,11 +76,10 @@ import anthropic
 from config import (
     ANTHROPIC_DAILY_BUDGET_USD,
     ANTHROPIC_EFFORT,
-    ANTHROPIC_INPUT_COST_PER_MTOK,
     ANTHROPIC_MAX_RETRIES,
     ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_MODEL,
-    ANTHROPIC_OUTPUT_COST_PER_MTOK,
+    ANTHROPIC_RATES,
     ANTHROPIC_READ_TIMEOUT,
     env_or,
 )
@@ -130,10 +129,12 @@ _lock = threading.Lock()
 _spend = {"day": "", "usd": 0.0, "calls": 0}
 
 
-def estimated_cost(input_tokens: int, output_tokens: int) -> float:
-    """USD for one call, at the configured per-million rates."""
-    return (input_tokens  * ANTHROPIC_INPUT_COST_PER_MTOK  / 1_000_000
-            + output_tokens * ANTHROPIC_OUTPUT_COST_PER_MTOK / 1_000_000)
+def estimated_cost(input_tokens: int, output_tokens: int,
+                   model: str = ANTHROPIC_MODEL) -> float:
+    """USD for one call, at that model's per-million rates."""
+    input_rate, output_rate = ANTHROPIC_RATES[model]
+    return (input_tokens  * input_rate  / 1_000_000
+            + output_tokens * output_rate / 1_000_000)
 
 
 def _today() -> str:
@@ -185,9 +186,9 @@ def spend_today() -> dict:
         return dict(_spend)
 
 
-def _record(input_tokens: int, output_tokens: int) -> float:
+def _record(input_tokens: int, output_tokens: int, model: str) -> float:
     """Add one call to the day's total. Returns that call's estimated cost."""
-    cost = estimated_cost(input_tokens, output_tokens)
+    cost = estimated_cost(input_tokens, output_tokens, model)
     with _lock:
         _refresh_spend()
         _spend["usd"] += cost
@@ -240,13 +241,18 @@ def complete_json(system: str, user: str, schema: dict,
     if not ANTHROPIC_KEY:
         return None, "ANTHROPIC_API_KEY is not set in environment."
 
+    model = model or ANTHROPIC_MODEL
+    if model not in ANTHROPIC_RATES:
+        return None, (f"No cost rates for {model} in config.ANTHROPIC_RATES, so the daily "
+                      f"budget could not count this call. Nothing was sent.")
+
     err = _budget_error()
     if err:
         return None, err
 
     try:
         response = _client().messages.create(
-            model=model or ANTHROPIC_MODEL,
+            model=model,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -266,7 +272,7 @@ def complete_json(system: str, user: str, schema: dict,
         return None, f"{type(e).__name__}: {e}"
 
     usage = response.usage
-    cost = _record(usage.input_tokens, usage.output_tokens)
+    cost = _record(usage.input_tokens, usage.output_tokens, model)
     logger.info("Anthropic %s: in=%d out=%d ≈$%.4f (day ≈$%.2f) stop=%s effort=%s",
                 response.model, usage.input_tokens, usage.output_tokens,
                 cost, spend_today()["usd"], response.stop_reason, effort)

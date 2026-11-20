@@ -41,6 +41,7 @@ import httpx2
 import pytest
 import pytz
 
+import config
 from clients import anthropic_client
 from clients.anthropic_client import complete_json
 from config import ANTHROPIC_EFFORT, ANTHROPIC_ROUTE_EFFORT
@@ -422,7 +423,7 @@ def test_spend_accumulates_across_calls(anthropic_api):
     complete_json("system", "user", SCHEMA)
     after_two = anthropic_client.spend_today()
 
-    assert after_one["usd"] == pytest.approx(anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK)
+    assert after_one["usd"] == pytest.approx(config.ANTHROPIC_INPUT_COST_PER_MTOK)
     assert after_two["usd"] == pytest.approx(after_one["usd"] * 2)
     assert after_two["calls"] == 2
 
@@ -443,15 +444,45 @@ def test_output_tokens_are_priced_higher_than_input():
 PUBLISHED_RATES = {
     "claude-sonnet-4-5": (3.00, 15.00),
     "claude-sonnet-5-5": (2.00, 10.00),
+    # Up to a 100K-token prompt; above that $0.50 / $2.50. The interpreter's
+    # prompt is a few thousand tokens at most.
+    "claude-haiku-5-5":  (0.10, 0.50),
 }
 
 
 def test_the_cost_rates_are_the_configured_models():
     assert anthropic_client.ANTHROPIC_MODEL in PUBLISHED_RATES, (
         f"no published rates recorded for {anthropic_client.ANTHROPIC_MODEL}")
-    assert (anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK,
-            anthropic_client.ANTHROPIC_OUTPUT_COST_PER_MTOK) == \
+    assert (config.ANTHROPIC_INPUT_COST_PER_MTOK,
+            config.ANTHROPIC_OUTPUT_COST_PER_MTOK) == \
         PUBLISHED_RATES[anthropic_client.ANTHROPIC_MODEL]
+
+
+def test_every_model_david_calls_has_its_published_rates():
+    """The interpreter runs on a second, cheaper model. Its rates are as much a
+    promise as the main model's."""
+    for model in (config.ANTHROPIC_MODEL, config.ANTHROPIC_INTERPRET_MODEL):
+        assert config.ANTHROPIC_RATES[model] == PUBLISHED_RATES[model], model
+
+
+def test_a_call_is_costed_at_its_own_models_rates(anthropic_api):
+    """complete_json takes a `model`, and the day's spend used to price every call
+    at the MAIN model's rates whatever it named — a Haiku call counted twenty
+    times its cost, and the daily guard refused Learn on money never spent."""
+    anthropic_api["queue"] = [(200, message(input_tokens=1_000_000, output_tokens=0))]
+
+    complete_json("system", "user", SCHEMA, model=config.ANTHROPIC_INTERPRET_MODEL)
+
+    assert anthropic_client.spend_today()["usd"] == pytest.approx(0.10)
+
+
+def test_a_model_with_no_rates_is_not_called(anthropic_api):
+    """A call the daily guard cannot count is a call it cannot stop."""
+    result, err = complete_json("system", "user", SCHEMA, model="claude-unpriced-1")
+
+    assert result is None
+    assert "ANTHROPIC_RATES" in err
+    assert anthropic_api["requests"] == []
 
 
 # ─── 5. THE DAILY SPEND GUARD ──────────────────────────────────────────────────
@@ -480,7 +511,7 @@ def test_the_refusal_says_what_was_spent_and_how_to_lift_it(anthropic_api, monke
 
     _, err = complete_json("system", "user", SCHEMA)
 
-    assert f"${anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK:.2f}" in err
+    assert f"${config.ANTHROPIC_INPUT_COST_PER_MTOK:.2f}" in err
     assert "$0.01" in err
     assert "ANTHROPIC_DAILY_BUDGET_USD" in err
     assert "Nothing was sent" in err
@@ -506,7 +537,7 @@ def test_spend_survives_a_restart(anthropic_api, monkeypatch):
     monkeypatch.setattr(anthropic_client, "_spend", {"day": "", "usd": 0.0, "calls": 0})
 
     assert anthropic_client.spend_today()["usd"] == pytest.approx(
-        anthropic_client.ANTHROPIC_INPUT_COST_PER_MTOK)
+        config.ANTHROPIC_INPUT_COST_PER_MTOK)
 
 
 def test_a_new_day_starts_from_zero(anthropic_api, monkeypatch):

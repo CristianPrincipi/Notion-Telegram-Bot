@@ -24,7 +24,8 @@ before changing what a rule protects. The overview and the full module map are i
 | Thing | Lives only in |
 | --- | --- |
 | HTTP to Notion | `clients/notion_client.py` |
-| Anthropic calls; the model name and effort levels | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` / `ANTHROPIC_ROUTE_EFFORT`. Each feature owns its prompt and schema (structured output's subset, scanned), not retry or token accounting |
+| Anthropic calls; the model names, effort levels and rates | `clients/anthropic_client.complete_json`; `config.ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT` / `ANTHROPIC_ROUTE_EFFORT`, the interpreter's `ANTHROPIC_INTERPRET_*`, and `ANTHROPIC_RATES` (one pair per model; an unpriced model is never called). Each feature owns its prompt and schema (structured output's subset, scanned), not retry or token accounting |
+| Reading a sentence as a command | `services/interpret.py` writes it; `bot/sentences.py` checks it is exactly one command and confirms a write |
 | Google Calendar | `clients/calendar_client.py` |
 | The clock | `calendar_client.now_local()`. Never a clock read without a timezone (scanned) |
 | Markdown to Telegram | `telegram_text` — `escape_md` at every interpolation site; `reply` / `send` are the only `parse_mode` senders |
@@ -115,6 +116,13 @@ before changing what a rule protects. The overview and the full module map are i
   it, a command word included; only ❌ Cancel, 📋 Menu or the 2-minute expiry close
   it. Reply-keyboard buttons, never inline ones: a callback query bypasses the
   OWNER_ID filter.
+- **A sentence is read last, and a write read from one waits for ✅ Yes.** Only a
+  message nothing else claimed reaches the interpreter (never a typed command, a
+  bare number, or over `INTERPRET_MAX_CHARS`). Its proposal runs only if it
+  fullmatches exactly one command; at once only if that command is `read_only`
+  (the set is named in a test). Anything but Yes / No drops the proposal and is read
+  as itself (`pending_choice.NOT_AN_ANSWER`). A model failure is reported, never a
+  write.
 - **Free, or a few cents a month.** A new outside service, model or app is free or
   costs a few cents a month at most; the PR body states its estimated monthly cost.
   A Claude call that does not need Sonnet uses the cheapest model that works, as a

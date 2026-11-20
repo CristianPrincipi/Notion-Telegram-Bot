@@ -4,6 +4,7 @@ import re
 import asyncio
 import pytz
 from collections.abc import Callable
+from functools import partial
 from dataclasses import dataclass
 from datetime import time
 from telegram import Update
@@ -27,6 +28,7 @@ from bot.implement import cmd_implement
 from bot.learn import cmd_learn
 from bot import menu
 from bot.menu import cmd_menu
+from bot import sentences
 from bot.month import cmd_month
 from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
@@ -34,7 +36,8 @@ from bot.reminder import cmd_remind
 from bot.undo import cmd_undo
 from bot.version import cmd_version
 from budget import budget
-from config import PROACTIVE_TIMEZONE, SUNDAY, category_help, genre_help
+from config import (AREA_BUTTONS, CATEGORY_MAP, GENRE_MAP, PROACTIVE_TIMEZONE, SUNDAY,
+                    category_help, genre_help)
 from observability import record_command, record_error, set_correlation_id, setup_logging
 from proactive.scheduler import register_all
 from services.learn import SUPPORTED_TYPES
@@ -329,6 +332,13 @@ class Command:
     # The flag used to GENERATE that sentence, scope included, which put "this
     # month only" under `Cancel`; each feature states its own scope now.
     destructive: bool = False
+    # READ-ONLY = changes nothing anywhere: no Notion row, no calendar event, no
+    # page. Only this decides whether a command READ OUT OF A SENTENCE runs at once
+    # or waits for ✅ Yes (bot/sentences.py) — a wrong reading of a read costs one
+    # look, a wrong reading of a write is a wrong row. Default False, so a new
+    # command is confirmed until someone decides otherwise, and
+    # tests/test_sentences.py names the read-only set exactly.
+    read_only: bool = False
 
 
 # The Learn types come from learn.SUPPORTED_TYPES, not from a list written out
@@ -361,6 +371,7 @@ HELP_GROUPS = {
 COMMANDS = [
     Command(
         name="Menu",
+        read_only=True,
         # First, so the help opens on the way in for anyone who does not know
         # the rest of it. The 📋 Menu button sends its label, which this
         # pattern takes too; while a menu question is open the button is read
@@ -420,6 +431,7 @@ COMMANDS = [
     ),
     Command(
         name="Agenda",
+        read_only=True,
         # The day token is OPTIONAL and is captured whole; what it MEANS is
         # calendar_client.parse_day's decision, so an unrecognised one reaches
         # the service and is explained rather than falling through to "I didn't
@@ -484,6 +496,7 @@ COMMANDS = [
     ),
     Command(
         name="B",
+        read_only=True,
         pattern=re.compile(r"b", re.I),
         handler=cmd_budget,
         help=Help("💰 *BUDGET*", usage=("B",), inline=True),
@@ -499,18 +512,21 @@ COMMANDS = [
     ),
     Command(
         name="Diag",
+        read_only=True,
         pattern=re.compile(r"diag", re.I),
         handler=cmd_diag,
         help=Help("", usage=("Diag",), group="notion_ids"),
     ),
     Command(
         name="Find",
+        read_only=True,
         pattern=re.compile(r"find\s+(?P<query>.+)", re.I),
         handler=cmd_find,
         help=Help("", usage=("Find [name]",), group="notion_ids"),
     ),
     Command(
         name="DBs",
+        read_only=True,
         pattern=re.compile(r"dbs", re.I),
         handler=cmd_dbs,
         help=Help("", usage=("DBs",), group="notion_ids"),
@@ -537,6 +553,7 @@ COMMANDS = [
     ),
     Command(
         name="Get",
+        read_only=True,
         # The separator is a SPACE-hyphen-SPACE, matching services.pkm's
         # GET_PATTERN, so a topic containing a hyphen ("Step-by-Step Breakdown")
         # is not split at it. Without the " - [Area]" it is not a command,
@@ -554,6 +571,7 @@ COMMANDS = [
     ),
     Command(
         name="v",
+        read_only=True,
         # Next to `h` because they are the two meta commands: one says what David
         # can do, the other which build is saying it. `h` is what found the bug
         # that made `v` necessary — a help message missing two commands is a
@@ -570,6 +588,7 @@ COMMANDS = [
     ),
     Command(
         name="h",
+        read_only=True,
         pattern=re.compile(r"h|help|aiuto", re.I),
         handler=cmd_help,
         help=Help("❓ *HELP*", usage=("h", "help", "aiuto"), inline=True),
@@ -640,8 +659,39 @@ SELECTION_HANDLERS = {
 # command word included. The handler returns the command it composed once the
 # last part is in (a menu.Composed), and run_composed runs it; until then it has
 # replied itself and returns None.
+# --- WHAT THE INTERPRETER IS TOLD --- #
+# Generated from COMMANDS, like the help, so the model is never told about a
+# command that does not exist and never left ignorant of one that does. Usage
+# lines only — the help's notes are written for a person — plus the closed lists
+# a sentence has to be mapped onto. `Menu` is left out: it opens buttons, which
+# is not something a sentence asks for.
+def build_catalogue() -> str:
+    lines = [f"- {usage}" for command in COMMANDS
+             if command.help and command.name != "Menu"
+             for usage in command.help.usage]
+    lines.append("Expense categories (shortcut=name): "
+                 + ", ".join(f"{k}={v}" for k, v in CATEGORY_MAP.items()))
+    lines.append("Book genres (shortcut=name): "
+                 + ", ".join(f"{k}={v}" for k, v in GENRE_MAP.items()))
+    lines.append("Areas: " + ", ".join(AREA_BUTTONS) + " (others may exist)")
+    return "\n".join(lines)
+
+
+CATALOGUE = build_catalogue()
+
+
+def matching_commands(text: str) -> list:
+    """Every command whose pattern fullmatches `text` — the registry's check on a
+    command another channel wrote. More than one is a registry bug the router
+    tests exist to prevent, and is refused rather than resolved by order."""
+    return [command for command in COMMANDS if command.pattern.fullmatch(text.strip())]
+
+
 QUESTION_HANDLERS = {
-    menu.KIND: menu.answer,
+    menu.KIND:          menu.answer,
+    sentences.CONFIRM:  sentences.answer_confirmation,
+    sentences.CLARIFY:  partial(sentences.answer_clarification,
+                                catalogue=CATALOGUE, matching=matching_commands),
 }
 
 
@@ -684,20 +734,24 @@ async def dispatch_text(text: str, update, context):
     if pending_choice.has_pending(context.user_data):
         kind = pending_choice.kind_of(context.user_data)
 
-        # A question takes ANY text as its answer, a command word included.
+        # A question takes ANY text as its answer, a command word included —
+        # unless it hands the message back (NOT_AN_ANSWER): it has closed, and
+        # the message is read as itself below.
         if kind in QUESTION_HANDLERS:
             composed = await QUESTION_HANDLERS[kind](update, context, text)
-            if composed is not None:
-                await run_composed(composed, update, context)
-            return
+            if composed is not pending_choice.NOT_AN_ANSWER:
+                if composed is not None:
+                    await run_composed(composed, update, context)
+                return
 
         # A list takes only a bare number. Guarded on there BEING a live list, so
         # a stray "2" with nothing pending stays an unrecognised message rather
         # than a command with no visible effect.
-        selection = pending_choice.parse_selection(text)
-        if selection is not None:
-            await SELECTION_HANDLERS[kind](update, context, selection)
-            return
+        else:
+            selection = pending_choice.parse_selection(text)
+            if selection is not None:
+                await SELECTION_HANDLERS[kind](update, context, selection)
+                return
 
     command, match = _first_match(text)
     if command is not None:
@@ -707,8 +761,18 @@ async def dispatch_text(text: str, update, context):
     if menu.is_stale_tap(text):
         await menu.reply_stale(update)
         return
+    if sentences.is_stale_tap(text):
+        await sentences.reply_stale(update)
+        return
 
-    await update.message.reply_text("❓ I didn't get that. Try: 'Add e Carrefour 2.20'")
+    # LAST: nothing claimed it, so read it as a sentence. Only here, so a typed
+    # command never costs a Claude call or waits on one. A read comes back to run
+    # now; a write has been put to ✅ Yes, and the reply to that comes back
+    # through the open prompt above.
+    composed = await sentences.understand(update, context, text, catalogue=CATALOGUE,
+                                          matching=matching_commands)
+    if composed is not None:
+        await run_composed(composed, update, context)
 
 
 def _first_match(text):

@@ -267,6 +267,7 @@ ANTHROPIC_READ_TIMEOUT = 300   # per request — a 2-hour transcript is slow to 
 ANTHROPIC_TIMEOUT      = 330   # outer cap; must stay above ANTHROPIC_READ_TIMEOUT
 SOURCE_FETCH_TIMEOUT   = 90    # YouTube transcript or article scrape
 PDF_PARSE_TIMEOUT      = 120   # pypdf text extraction: CPU-bound and unbounded by itself
+INTERPRET_TIMEOUT      = 30    # one sentence read as a command; the chat waits on it
 
 
 # ─── ANTHROPIC ─────────────────────────────────────────────────────────────────
@@ -296,6 +297,22 @@ ANTHROPIC_MODEL = "claude-sonnet-5-5"
 # these, never a literal (tests/test_claude_schemas.py).
 ANTHROPIC_EFFORT       = "medium"
 ANTHROPIC_ROUTE_EFFORT = "low"
+
+# THE INTERPRETER — a plain sentence ("ho speso 12 euro da Carrefour") turned into
+# one of David's commands (services/interpret.py). Its own model, because it is
+# the one Claude call that does not write anything: it picks a command and fills
+# in its parts, and the result is shown and — for a write — confirmed before it
+# runs. That is classification, and the cheapest model that does it keeps the
+# feature inside "free, or a few cents a month" (CLAUDE.md). The cap is small
+# because the answer is one line; thinking counts toward it.
+ANTHROPIC_INTERPRET_MODEL      = "claude-haiku-5-5"
+ANTHROPIC_INTERPRET_EFFORT     = "low"
+ANTHROPIC_INTERPRET_MAX_TOKENS = 2048
+
+# A message longer than this is not sent to the interpreter at all: a command is
+# a line, and a pasted article is not a request — reading it would cost a real
+# fraction of a cent to answer "I didn't get that".
+INTERPRET_MAX_CHARS = 500
 
 # OUTPUT cap: the default ceiling on one answer, and the ONE number describing
 # it. Overridable from the environment because it is the lever the truncation
@@ -400,12 +417,19 @@ ANTHROPIC_MAX_RETRIES = 3
 # error — every Anthropic call in David is user-initiated, so there is always
 # someone at the keyboard to read it.
 #
-# Rates are per MILLION tokens and MUST be updated alongside ANTHROPIC_MODEL —
-# they are the published rates of that one model, not a per-model lookup, and
-# tests/test_anthropic_client.py (PUBLISHED_RATES) goes red when the two drift.
-# Output tokens include the model's thinking, which is billed as output.
-ANTHROPIC_INPUT_COST_PER_MTOK  = 2.00
-ANTHROPIC_OUTPUT_COST_PER_MTOK = 10.00
+# Rates are per MILLION tokens (input, output), one pair per model David calls,
+# and MUST move with the model names above — tests/test_anthropic_client.py
+# (PUBLISHED_RATES) goes red when they drift. They were one pair, the main
+# model's, and every call was priced at it: a Haiku call would have counted
+# twenty times its cost. complete_json refuses a model with no rates here, since
+# a call the guard cannot count is one it cannot stop. Output tokens include the
+# model's thinking, which is billed as output. Haiku's pair holds up to a
+# 100K-token prompt; the interpreter's is a few thousand.
+ANTHROPIC_RATES = {
+    ANTHROPIC_MODEL:           (2.00, 10.00),
+    ANTHROPIC_INTERPRET_MODEL: (0.10, 0.50),
+}
+ANTHROPIC_INPUT_COST_PER_MTOK, ANTHROPIC_OUTPUT_COST_PER_MTOK = ANTHROPIC_RATES[ANTHROPIC_MODEL]
 
 ANTHROPIC_DAILY_BUDGET_USD = float(env_or("ANTHROPIC_DAILY_BUDGET_USD", "5"))
 
@@ -540,7 +564,8 @@ REQUIRED_ENV = {
     "LETTI_ID":          "Notion Books ('Letti') database ID.",
     "LITERATURE_ID":     "Notion page ID of the Literature area; books relate to it.",
     "LEARN_ID":          "Notion Learn database ID for videos, articles, podcasts and PDFs.",
-    "ANTHROPIC_API_KEY": "Anthropic API key used to summarise Learn and Implement content.",
+    "ANTHROPIC_API_KEY": ("Anthropic API key used to summarise Learn and Implement content, "
+                          "and to read a plain sentence as a command."),
 }
 
 OPTIONAL_ENV = {
@@ -568,8 +593,8 @@ OPTIONAL_ENV = {
                                    "included. Defaults to 16000. Raise it if a long source "
                                    "is summarised to a truncated page — that error names "
                                    "this variable."),
-    "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn and "
-                                   "Implement are refused. Defaults to 5."),
+    "ANTHROPIC_DAILY_BUDGET_USD": ("Estimated Anthropic spend allowed per day before Learn, "
+                                   "Implement and reading sentences are refused. Defaults to 5."),
     "ANTHROPIC_SPEND_FILE":       ("Where the running daily spend is recorded. "
                                    "Defaults to .anthropic_spend.json."),
     "LOG_LEVEL":                  ("Logging verbosity: DEBUG, INFO, WARNING, ERROR or "

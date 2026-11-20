@@ -158,7 +158,7 @@ def test_the_scan_finds_every_schema_david_sends():
     """The positive control: Learn's summary, Implement's route / merge / build,
     and the Diet route / merge. A scan that finds nothing passes for free."""
     found = SCHEMAS
-    assert len(found) >= 6, f"the scan found almost nothing, so it proves nothing: {found}"
+    assert len(found) >= 7, f"the scan found almost nothing, so it proves nothing: {found}"
 
 
 SCHEMAS = schemas()
@@ -230,7 +230,8 @@ def test_the_optional_count_sees_nested_properties():
 
 # ─── 3. EFFORT AT EACH CALL SITE ───────────────────────────────────────────────
 
-ALLOWED_EFFORTS = {"ANTHROPIC_EFFORT", "ANTHROPIC_ROUTE_EFFORT", "effort"}
+ALLOWED_EFFORTS = {"ANTHROPIC_EFFORT", "ANTHROPIC_ROUTE_EFFORT",
+                   "ANTHROPIC_INTERPRET_EFFORT", "effort"}
 
 
 def _effort_arguments(tree):

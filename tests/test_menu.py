@@ -21,7 +21,7 @@ import bot.menu
 import config
 import david
 import pending_choice
-from bot import menu
+from bot import menu, sentences
 from conftest import FakeContext, FakeUpdate, run
 from test_router import NO_HANDLER, _matching, router  # noqa: F401 — router is a fixture
 
@@ -305,7 +305,7 @@ def test_handle_message_and_dispatch_text_are_one_path(spies):
 
 
 def test_question_handlers_answer_any_text_and_selections_only_numbers():
-    assert set(david.QUESTION_HANDLERS) == {menu.KIND}
+    assert set(david.QUESTION_HANDLERS) == {menu.KIND, sentences.CONFIRM, sentences.CLARIFY}
     assert not set(david.QUESTION_HANDLERS) & set(david.SELECTION_HANDLERS)
 
 

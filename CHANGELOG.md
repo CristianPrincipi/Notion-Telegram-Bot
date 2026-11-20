@@ -16,6 +16,13 @@ Notable changes to David. The format follows
   (a book title containing ` - `, a reminder name containing a date) is asked
   again with the reason. A question lapses after 2 minutes, like a numbered list.
   See [the menu](docs/features.md#the-menu).
+- **Plain sentences.** A message that is not a command is read as one: "ho speso
+  12 euro da Carrefour" becomes `Add e Carrefour 12 f`. Anything that writes is
+  shown first and runs only on ✅ Yes; a question like "cosa ho domani?" runs at
+  once and shows the command it read. A missing part is asked for. It uses Claude
+  Haiku — a few hundredths of a cent a sentence, inside the daily Anthropic
+  budget — and typed commands never reach it. See
+  [plain sentences](docs/features.md#plain-sentences).
 
 ## [1.2.0] - 2026-11-20
 
