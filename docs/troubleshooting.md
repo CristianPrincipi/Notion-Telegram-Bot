@@ -175,6 +175,22 @@ failed too" and names the budget; typed commands and the menu still work.
 - **A long message is never read** — over 500 characters is taken for a paste,
   not a request.
 
+## A voice note gets no proposal
+
+- **"Voice notes are not set up"** — `GROQ_API_KEY` is not set on Railway. See
+  [Setup § Groq](setup.md#voice-notes-groq).
+- **"That voice note is N seconds"** — the limit is 30 seconds: one command per
+  note.
+- **"Groq's free-tier limit is reached"** — wait the seconds it names, or type
+  the command.
+- **"Groq refused the key (401)"** — the key was deleted or mistyped; create a new
+  one and replace `GROQ_API_KEY`.
+- **"Groq heard nothing"** — the note was silent or too quiet.
+- **"Heard" is right but the command is wrong** — tap ❌ No; nothing is written.
+  The rest is the same as a [typed sentence](#a-sentence-gets-i-didnt-get-that-or-the-wrong-command).
+- **A spoken number did nothing while a list was open** — on purpose: type the
+  number.
+
 ## `Implement`: an edit is "ignored", or a section is "unchanged"
 
 Claude asked to change a line David will not touch, and nothing was done for that

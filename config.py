@@ -268,6 +268,7 @@ ANTHROPIC_TIMEOUT      = 330   # outer cap; must stay above ANTHROPIC_READ_TIMEO
 SOURCE_FETCH_TIMEOUT   = 90    # YouTube transcript or article scrape
 PDF_PARSE_TIMEOUT      = 120   # pypdf text extraction: CPU-bound and unbounded by itself
 INTERPRET_TIMEOUT      = 30    # one sentence read as a command; the chat waits on it
+TRANSCRIBE_TIMEOUT     = 60    # one voice note, Groq's whole round trip
 
 
 # ─── ANTHROPIC ─────────────────────────────────────────────────────────────────
@@ -313,6 +314,18 @@ ANTHROPIC_INTERPRET_MAX_TOKENS = 2048
 # a line, and a pasted article is not a request — reading it would cost a real
 # fraction of a cent to answer "I didn't get that".
 INTERPRET_MAX_CHARS = 500
+
+# ─── VOICE NOTES ───────────────────────────────────────────────────────────────
+# Transcribed by Groq (clients/speech_client.py), on its free tier: CLAUDE.md's
+# "free, or a few cents a month". `turbo` is Groq's cheaper and faster Whisper;
+# Italian is named rather than detected, which Groq says improves both accuracy
+# and latency. A voice note longer than VOICE_MAX_SECONDS is refused before it is
+# downloaded: a command is a sentence, and a long note would spend the free
+# tier's audio allowance on something that cannot be one. 30 seconds of speech is
+# about the INTERPRET_MAX_CHARS the interpreter reads at most.
+TRANSCRIBE_MODEL    = "whisper-large-v3-turbo"
+TRANSCRIBE_LANGUAGE = "it"
+VOICE_MAX_SECONDS   = 30
 
 # OUTPUT cap: the default ceiling on one answer, and the ONE number describing
 # it. Overridable from the environment because it is the lever the truncation
@@ -599,6 +612,9 @@ OPTIONAL_ENV = {
                                    "Defaults to .anthropic_spend.json."),
     "LOG_LEVEL":                  ("Logging verbosity: DEBUG, INFO, WARNING, ERROR or "
                                    "CRITICAL. Defaults to INFO."),
+    "GROQ_API_KEY":               ("Groq API key (free tier) used to transcribe voice notes. "
+                                   "Without it a voice note is answered that transcription "
+                                   "is not configured."),
     "KINDLE_TOKEN":               ("Shared secret the Kindle sends with each highlight. Without "
                                    "it the Kindle quote endpoint does not start."),
     "PORT":                       ("Port the Kindle quote endpoint listens on. Railway sets it; "

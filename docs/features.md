@@ -60,6 +60,32 @@ works out which command you mean and writes it out.
   cent) and counts toward `ANTHROPIC_DAILY_BUDGET_USD`. Typed commands, menu
   taps, bare numbers and messages over 500 characters never reach Claude.
 
+### Voice notes
+
+Record a voice note in the chat with David — "ho speso dodici euro da Carrefour",
+"cosa ho domani?" — and it is transcribed, then read like a plain sentence:
+
+```
+you:    🎤
+David:  🎙️ Heard: «Ho speso dodici euro da Carrefour.»
+        Did you mean this?
+        Add e Carrefour 12 f            [✅ Yes] [❌ No]
+```
+
+- **What was heard comes first**, so a misheard word shows before anything runs.
+- **Everything waits for ✅ Yes — even a question.** A typed "cosa ho domani?"
+  runs at once; a spoken one asks first, because the words were heard, not typed.
+- **A voice note never answers a numbered list.** "Due" heard as `2` while `D e`
+  waits for a number does nothing; type the number.
+- It can answer David's own question ("How much?"): the answer is read with the
+  first message, then confirmed like everything else.
+- **One command, at most 30 seconds.** A longer note is refused before it is
+  downloaded.
+- Transcription is Groq's Whisper, on its free tier (`GROQ_API_KEY`, see
+  [Setup](setup.md#voice-notes-groq)); reading the transcript is the same small
+  Claude call as a sentence. Without the key a voice note is answered that voice
+  notes are not set up, and nothing else changes.
+
 ## The idea: Learn → Implement → Get
 
 Most of David is bookkeeping — expenses, books, reminders. The part that is not

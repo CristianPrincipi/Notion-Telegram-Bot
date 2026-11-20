@@ -640,6 +640,29 @@ Haiku call would have counted twenty times its cost and refused `Learn` on money
 never spent. A model with no rates is not called at all — a call the guard
 cannot count is one it cannot stop.
 
+### A voice note is a sentence that is always confirmed
+
+A voice note is transcribed (Groq's Whisper: Claude takes no audio) and then read
+exactly like a typed sentence — the same interpreter, the same exactly-one-command
+check, the same `run_composed`. Two things are stricter, because the words were
+HEARD and a typed sentence's were not.
+
+Even a read waits for ✅ Yes. A typed "cosa ho domani?" that becomes `Agenda tr`
+is safe to run at once: the only doubt is the model's, and the `▶️` line shows
+it. A spoken one has a second doubt underneath — "domani" heard as "lunedì" — and
+the "🎙️ Heard" line shown before anything runs is the only place to catch it.
+
+It never goes to the registry or a numbered list, even when the transcript is
+word for word a command. That would make Whisper's guess a typed command: "D e
+Carrefour 2" for "D e Carrefour", or "due" heard as `2` while `D e` is waiting
+for a number — the second row deleted on a mishearing. The one prompt it may
+answer is the interpreter's own question ("How much?"), because that answer is
+read by the model with the sentence and then confirmed.
+
+The 30-second limit and the key check run before the download: a command is a
+sentence, and neither a long note nor a missing key can end in one, so neither
+spends the free tier's audio allowance or a Telegram download.
+
 ### Free, or a few cents a month
 
 David is a personal bot with one user, and a hobby tool should not grow a running

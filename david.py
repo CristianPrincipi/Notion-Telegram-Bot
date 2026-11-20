@@ -28,7 +28,7 @@ from bot.implement import cmd_implement
 from bot.learn import cmd_learn
 from bot import menu
 from bot.menu import cmd_menu
-from bot import sentences
+from bot import sentences, voice
 from bot.month import cmd_month
 from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
@@ -212,6 +212,9 @@ def register_handlers(application, owner_id: int):
     application.add_handler(MessageHandler(
         filters.Document.ALL & owner_only & (~filters.UpdateType.EDITED_MESSAGE),
         handle_document))
+    application.add_handler(MessageHandler(
+        filters.VOICE & owner_only & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_voice))
 
     # Catch-all for everyone else. Registered LAST: within a handler group PTB
     # stops at the first match, so the owner's messages are taken by the handlers
@@ -707,6 +710,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Received: %s", user_text.strip())
 
     await dispatch_text(user_text, update, context)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A voice note: transcribed, read as a sentence, ALWAYS confirmed.
+
+    Not through dispatch_text: what was heard must never reach the registry or a
+    numbered list unconfirmed — see bot/voice.py.
+    """
+    set_correlation_id(getattr(update, "update_id", None))
+    record_command()
+    logger.info("Received a voice note (%ss)", getattr(update.message.voice, "duration", "?"))
+
+    composed = await voice.read_voice(update, context, catalogue=CATALOGUE,
+                                      matching=matching_commands)
+    if composed is not None:
+        await run_composed(composed, update, context)
 
 
 async def dispatch_text(text: str, update, context):
