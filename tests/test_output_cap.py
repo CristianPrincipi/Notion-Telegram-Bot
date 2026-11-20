@@ -53,7 +53,8 @@ SCANNED = ["bot", "clients", "services", "proactive"]
 # The constants a call site MAY name. Anything else passed to max_tokens is an
 # anonymous number describing a budget that already has one. `max_tokens` itself
 # is here because complete_json forwards its own parameter to the SDK.
-ALLOWED_CAPS = {"ANTHROPIC_MAX_TOKENS", "ANTHROPIC_ROUTE_MAX_TOKENS", "max_tokens"}
+ALLOWED_CAPS = {"ANTHROPIC_MAX_TOKENS", "ANTHROPIC_ROUTE_MAX_TOKENS",
+                "ANTHROPIC_INTERPRET_MAX_TOKENS", "max_tokens"}
 
 
 def python_files():

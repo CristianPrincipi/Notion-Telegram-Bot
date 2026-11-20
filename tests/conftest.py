@@ -13,6 +13,8 @@ tests, and the router tests replace every Notion/Telegram call with a spy.
 import asyncio
 import os
 
+import pytest
+
 # ─── FAKE ENVIRONMENT (must run before project imports) ────────────────────────
 
 FAKE_ENV = {
@@ -44,6 +46,23 @@ MONTH_ID    = FAKE_ENV["MONTH_ID"]
 LETTI_ID    = FAKE_ENV["LETTI_ID"]
 OWNER_ID    = int(FAKE_ENV["OWNER_ID"])
 NOTION_BASE = "https://api.notion.com/v1"
+
+
+# ─── NO SENTENCE REACHES CLAUDE ────────────────────────────────────────────────
+
+UNDERSTOOD_NOTHING = {"command": "", "question": ""}
+
+
+@pytest.fixture(autouse=True)
+def interpreter_understands_nothing(monkeypatch):
+    """A message no command claims is read as a sentence by Claude
+    (bot/sentences.py) — in a test, a real network call with a fake key. By
+    default the interpreter understands nothing, so such a message is answered
+    "I didn't get that" exactly as before it existed. tests/test_sentences.py
+    replaces this with the answers it needs, and records what was asked."""
+    from services import interpret
+    monkeypatch.setattr(interpret, "complete_json",
+                        lambda *args, **kwargs: (dict(UNDERSTOOD_NOTHING), None))
 
 
 # ─── ASYNC HELPER ──────────────────────────────────────────────────────────────

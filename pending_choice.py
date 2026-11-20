@@ -173,6 +173,13 @@ def peek(user_data, kind: str, now: float | None = None):
     return user_data[PENDING_KEY][1]
 
 
+# What a prompt answered by any text returns when the message is NOT its answer:
+# the prompt has closed itself, and the router reads the message as itself. A
+# confirmation does this with a new command typed instead of ✅ Yes — that is a
+# new command, not a "no" that swallows it.
+NOT_AN_ANSWER = object()
+
+
 def clear(user_data) -> None:
     user_data.pop(PENDING_KEY, None)
 

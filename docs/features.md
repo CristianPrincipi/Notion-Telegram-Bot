@@ -38,6 +38,28 @@ you: it runs exactly what you could have typed, with the same checks.
   caption. The diagnostics (`Diag`, `Find`, `DBs`), `Month`, `v` and `h` are not
   in it either.
 
+### Plain sentences
+
+A message that is not a command is read as a sentence: "ho speso 12 euro da
+Carrefour", "cosa ho domani?", "ricordami il dentista venerdì alle 15". David
+works out which command you mean and writes it out.
+
+- **Anything that writes waits for ✅ Yes.** David shows the command it read —
+  `Add e Carrefour 12 f` — and runs it only when you tap ✅ Yes (or type `sì`).
+  ❌ No drops it. Typing something else instead drops it too, and that message is
+  read on its own.
+- **A question runs at once**: `B`, `Agenda`, `Get` and the other commands that
+  change nothing. The reply starts with the command David read (`▶️ Agenda tr`),
+  so you can see when it misread you.
+- **A missing part is asked for.** "Ho fatto la spesa da Carrefour" gets "How
+  much?" — your answer is read together with the first message.
+- A command run this way passes every check a typed one does: `D e` with
+  several matches still lists them and waits for a number.
+- Like a numbered list, a ✅ Yes waits **2 minutes**.
+- Reading a sentence is a small Claude call (Claude Haiku, a few hundredths of a
+  cent) and counts toward `ANTHROPIC_DAILY_BUDGET_USD`. Typed commands, menu
+  taps, bare numbers and messages over 500 characters never reach Claude.
+
 ## The idea: Learn → Implement → Get
 
 Most of David is bookkeeping — expenses, books, reminders. The part that is not
