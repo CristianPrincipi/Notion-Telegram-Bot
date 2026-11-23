@@ -273,6 +273,25 @@ the first to finish.
 - The Sunday 20:30 **heartbeat** always sends. If even that is missing, David is
   not running.
 
+## The newspaper does not arrive, or a source is missing
+
+- **"Non sono riuscito a preparare il giornale: news_sources.yaml …"** — the file
+  has a mistake, and the message lists every one: a section name not among the
+  six, a `max` that is not a whole number, a `schedule` that is not `HH:MM`.
+  At startup a broken file only moves the morning job to 06:30.
+- **"Fonti non raggiunte: Il Post (HTTP 403)"** under the file — that feed refused
+  or did not answer; the rest of the paper is built anyway. Run
+  `python scripts/check_feeds.py news_sources.yaml` to see each feed's status,
+  latest item and categories. (Il Post answers 403 on `/feed/` and works on
+  `/feed`, without the slash.)
+- **A section says "Nessun articolo oggi"** — its feeds published nothing in the
+  last 24 hours (Carbon Brief often does not, and AGI or Il Sole on a weekend), or
+  every `auto` item was sorted elsewhere.
+- **An article shows only a few lines and "Articolo completo sul sito"** — the page
+  was behind a paywall or a consent wall, or gave under 300 characters of text.
+- **A changed `schedule` has no effect** — it is read at startup; it takes effect
+  on the next deploy.
+
 ## Expenses go to last month, or `B` shows the wrong month
 
 Send `Month`. It finds or creates this month's page and says which one it is

@@ -45,6 +45,7 @@ import bot.implement
 import bot.learn
 import bot.menu
 import bot.month
+import bot.newspaper
 import bot.notion_ids
 import bot.pkm
 import bot.reminder
@@ -99,7 +100,7 @@ ONE_EVENT = [{
 # commands are routed by NAME and the ID is whatever the lookup resolved it to.
 # `page_id` and `event_id` are both this: the destructive commands are routed by
 # NAME and the id is whatever the lookup resolved it to.
-UNINTERESTING_ARGS = {"_update", "page_id", "event_id"}
+UNINTERESTING_ARGS = {"_update", "_context", "page_id", "event_id"}
 
 
 # ─── SPY LAYER ─────────────────────────────────────────────────────────────────
@@ -124,6 +125,7 @@ SPY_TARGETS = [
     ("handle_get",       ("_update", "user_text"),                  None,                 True),
     ("handle_agenda",    ("_update", "day"),                        None,                 True),
     ("handle_version",   ("_update",),                              None,                 True),
+    ("handle_giornale",  ("_update", "_context"),                   None,                 True),
     ("show_menu",        ("_update",),                              None,                 True),
     ("add_New_Book",     ("name", "author", "genre"),               (BOOK_PAGE_ID, None), False),
     ("find_Book_Page",   ("book_name",),                            (BOOK_ROW, None),     False),
@@ -151,6 +153,7 @@ SPY_HOMES = {
     "handle_get":           bot.pkm,
     "handle_agenda":        bot.agenda,
     "handle_version":       bot.version,
+    "handle_giornale":      bot.newspaper,
     "show_menu":            bot.menu,
     "handle_remind":        bot.reminder,
     "find_event_matches":   cancel,
@@ -275,6 +278,17 @@ ROUTES = [
           "v takes no argument"),
     Route("versions", NO_HANDLER, reply("I didn't get that"),
           "fullmatch, so a longer word is not the command"),
+
+    # ── GIORNALE ───────────────────────────────────────────────────────────────
+    # Detached, like Learn: the row proves the trigger reaches the builder.
+    # `/giornale` arrives through its own MessageHandler (register_handlers) and
+    # is then dispatched like any text, so it is a row here too.
+    Route("Giornale",   "handle_giornale", {}, "today's newspaper"),
+    Route("giornale",   "handle_giornale", {}, "newspaper, lowercase"),
+    Route("/giornale",  "handle_giornale", {}, "the slash form"),
+    Route("/giornale@DavidBot", "handle_giornale", {}, "the slash form with the bot's name"),
+    Route("Giornale di ieri", NO_HANDLER, reply("I didn't get that"),
+          "Giornale takes no argument"),
 
     # ── BUDGET ─────────────────────────────────────────────────────────────────
     Route("B", "budget", {}, "budget"),

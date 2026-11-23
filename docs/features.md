@@ -144,6 +144,7 @@ line by line, with the same reply as a Manual (below).
 | `Agenda [Day]` | What is on the calendar. Today if no day is given |
 | `Cancel [Name]` | Delete a calendar event in the next 30 days. Several matches → numbered list with their times. `undo` re-creates it |
 | `Diag` / `Find [name]` / `DBs` | Notion diagnostics: check the Expenses setup, find any page's ID, list every database David can see |
+| `Giornale` | Today's news as an EPUB for the e-reader — see [the daily newspaper](newspaper.md). `/giornale` works too |
 | `v` | Which build is running: commit, branch, commit subject, deployment ID and uptime. `version` works too |
 | `h` | The in-chat command list. `help` and `aiuto` work too |
 
@@ -390,6 +391,7 @@ All times Europe/Rome. They go to `CHAT_ID`.
 
 | Time | Job | What it sends |
 | --- | --- | --- |
+| 06:30 daily | `newspaper` | Today's newspaper EPUB, as a file — see [the daily newspaper](newspaper.md). The time is `schedule` in `news_sources.yaml` |
 | 00:05 daily | `month_rollover` | The new month's expense page. Silent unless something changed |
 | 07:30 daily | `morning_briefing` | Today's calendar and a one-line budget pace |
 | 13:00 daily | `budget_pacing` | A warning, **only** when the month is on course to overspend by 5% or more (from the 5th onwards) |

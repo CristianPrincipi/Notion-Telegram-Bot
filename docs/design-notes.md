@@ -722,6 +722,31 @@ a Claude call that does not need Sonnet (turning a sentence into a command) uses
 the cheapest model that does the job. Every PR states its estimated monthly cost,
 so the rule is checked when the cost is decided, not when the bill arrives.
 
+### The newspaper is built without a model, and read without trusting the page
+
+Asked for on 2026-11-23 with one constraint: no LLM and no paid API. So the
+"three stories of the day" are not chosen by judgement but counted — how many
+distinct publishers ran a story, plus one if ANSA's top-news feed carries it —
+and every article is extracted by trafilatura, not summarised. Three things the
+first real build showed, each now in the code:
+
+- **ANSA's top-news feed republishes ANSA's own items.** Every ANSA article on it
+  scored 1 source + 1 bonus = 2, the same as a story two publishers ran, and on
+  recency alone the 08:00 market openings beat a story ANSA and Il Post both
+  covered at 06:44. A tie now goes to the group with more distinct sources first,
+  then the newest.
+- **The per-source `max` hid the overlap.** The seventh ANSA Mondo item was often
+  the one BBC ran too. Stories are grouped over every classified item of the day;
+  only one with an article IN the paper can lead, and it leads with that one.
+- **A consent wall is 300+ characters.** ANSA answered some fetches with its
+  "Consentless" subscription offer, which trafilatura extracted whole as the
+  article. `WALL_MARKERS` sends those to the feed summary, like a paywall.
+
+`/giornale` is the one slash command. The text handler drops every `/command`
+(`~filters.COMMAND`), so it has its own exactly-matching handler that dispatches
+like any text — the registry, the router tests and the owner filter apply as to
+`Giornale`.
+
 ### Shipping goes through the Documentation contract
 
 The docs drifted every time they were left to memory. The hand-written help
@@ -1105,7 +1130,7 @@ resolve to the same row. Locked down by `tests/test_expense_safety.py` and
 
 `concurrent_updates` is **off**. Do not enable it; `tests/test_async_io.py` fails if you do.
 Responsiveness is bought per-command instead: only the long commands (`Learn`, `Implement`,
-both PDF uploads) go through `bot.tasks.run_detached`. Everything else runs inline, strictly
+`Giornale`, both PDF uploads) go through `bot.tasks.run_detached`. Everything else runs inline, strictly
 ordered — which is what makes `Add e Carrefour 5` followed by `B` always report the new
 total. **Locks do not give that back**: they stop two cycles interleaving, they do not decide
 which runs first. That is why the decision is per-command and not a global switch.

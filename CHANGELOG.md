@@ -8,6 +8,14 @@ Notable changes to David. The format follows
 
 ### Added
 
+- **A daily newspaper.** Every morning at 06:30 David sends
+  `Giornale_AAAA-MM-GG.epub`, to read on an e-reader: a text cover, "Le 3 notizie
+  del giorno" (the stories the most sources ran), then Finanza, Politica
+  Italiana, Tecnologia, Geopolitica, Scienze and Ambiente, each article whole with
+  its source, time and a link to the original, and a table of contents. Built
+  from 13 RSS feeds with free libraries only — no model, no API, no cost. Send
+  `Giornale` or `/giornale` for one now. Sources, sections and the time are in
+  `news_sources.yaml`; see [the daily newspaper](docs/newspaper.md).
 - **A button menu.** Send `Menu` or `m`, or tap **📋 Menu** under the chat: every
   command is a button, and David asks for each part in turn — with buttons for
   categories, genres, today/tomorrow and areas — then runs the command and shows

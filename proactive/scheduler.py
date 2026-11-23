@@ -32,6 +32,10 @@ from proactive.heartbeat import build_heartbeat
 from proactive.learn_nudge import build_nudge
 from proactive.month_rollover import build_rollover_message
 from proactive.takeaway import build_takeaway
+from clients.calendar_client import now_local
+from config import NEWSPAPER_BUILD_TIMEOUT
+from services.newspaper import build_newspaper
+from services.newspaper_sources import schedule_time as newspaper_time
 from telegram_text import send
 
 logger = logging.getLogger(__name__)
@@ -141,6 +145,26 @@ async def _takeaway_job(context: ContextTypes.DEFAULT_TYPE):
     await _run_job(context, "takeaway", build_takeaway)
 
 
+async def _newspaper_job(context: ContextTypes.DEFAULT_TYPE):
+    """The daily newspaper EPUB. Not through _run_job: what it sends is a
+    document, not text. Same three outcomes — a build error is reported, never
+    sent as an empty paper. The file is bytes in memory; nothing is left on disk."""
+    try:
+        result, err = await asyncio.wait_for(asyncio.to_thread(build_newspaper, now_local()),
+                                             timeout=NEWSPAPER_BUILD_TIMEOUT)
+    except Exception as e:
+        await _report_error(context, "newspaper", e)
+        return
+    if err:
+        await _report_error(context, "newspaper", err)
+        return
+    try:
+        await context.bot.send_document(chat_id=context.job.chat_id, document=result.epub,
+                                        filename=result.filename, caption=result.caption)
+    except Exception as e:
+        await _report_error(context, "newspaper", e)
+
+
 def register_all(application, chat_id):
     """Register all proactive jobs. Call once, at startup."""
     jq = application.job_queue
@@ -210,5 +234,16 @@ def register_all(application, chat_id):
         name="takeaway",
     )
 
+    # Its time is news_sources.yaml's `schedule`, read once here: a broken file
+    # falls back to config's default, and the job reports the file when it runs.
+    hour, minute = newspaper_time()
+    jq.run_daily(
+        _newspaper_job,
+        time=time(hour=hour, minute=minute, tzinfo=_TZ),
+        chat_id=chat_id,
+        name="newspaper",
+    )
+
     logger.info("Proactive jobs registered: morning_briefing, evening_briefing, "
-                "budget_pacing, month_rollover, heartbeat, learn_nudge, takeaway.")
+                "budget_pacing, month_rollover, heartbeat, learn_nudge, takeaway, "
+                "newspaper (%02d:%02d).", hour, minute)

@@ -29,7 +29,7 @@ david.py     entry point: the command registry, its dispatch loop, the generated
              help, job + handler registration, the global error handler
 bot/         Telegram adapters — parse the update, call a service, send the reply
 services/    the work itself: expenses, books, learn, implement, implement_diet,
-             reminder, agenda, cancel, pkm, notion_ids, month
+             reminder, agenda, cancel, pkm, notion_ids, month, newspaper
 clients/     the wire: Notion, Google Calendar, Anthropic, Groq, Telegram file download
 proactive/   the scheduled messages: one builder per job, plus the scheduler
 config.py    constants, schedules, timeouts, the Notion schema and the
@@ -65,6 +65,7 @@ What each file owns — and, as important, what it must not.
 | `bot/kindle_http.py` | The Kindle quote endpoint's routes (`POST /kindle/quote`, `GET /kindle/ping`), the `KINDLE_TOKEN` check, request parsing, and the status code for each outcome (`retryable` → 503, refused → 422) | Starting the server — that is `bot/http_server.py` | Finding or writing the book — that is `services/kindle.py` |
 | `bot/learn.py`, `bot/implement.py` | The `update`-taking wrappers, and (for Learn) the PDF upload, which needs a `context.bot` | Extraction, merging, routing |
 | `bot/documents.py` | `handle_document` — the caption router for uploads | The work either caption triggers |
+| `bot/newspaper.py` | `Giornale` / `/giornale`: "Sto preparando il giornale…", the detached, capped build, the document reply | The build |
 | `bot/reminder.py`, `bot/pkm.py`, `bot/notion_ids.py`, `bot/month.py`, `bot/agenda.py`, `bot/cancel.py`, `bot/version.py` | The adapters: bind the notify pair, call the service, nothing else | Any of the work — and any second copy of the message splitter |
 | `bot/undo.py` | `undo` — which SERVICE reverses the kind of thing last destroyed (`REVERSERS`). Peeks the kind, never consumes the record | How to reverse anything; the take-and-put-back pair stays in the service that knows when a reversal did not happen |
 | `bot/budget.py` | `B`. The one handler that never needed a split: `budget.py` is telegram-free, so this does the offloading and picks the channel itself | Aggregation, recap wording |
@@ -94,6 +95,12 @@ What each file owns — and, as important, what it must not.
 | `services/reminder.py` | `Remind …` — the command pattern (which tokens a date and a time may be), conflict-check, create the calendar event | Calendar HTTP (that is `clients/calendar_client.py`), and what a token MEANS — `td` becoming a date, and `t` becoming a refusal, are the client's job |
 | `services/agenda.py` | `Agenda [day]` — read one day back out of the calendar, and `format_events_inline`, the ONE event renderer (`proactive/briefing.py` imports it) | What a day token means (`parse_day`, in the client); sending |
 | `services/cancel.py` | `Cancel [Name]` — the window-scoped `find_event_matches`, the `CALENDAR_ID` lock over lookup **and** delete, and the re-create undo | The window's SIZE (that is `config.CANCEL_SEARCH_DAYS`); the messages (that is `calendar_safety.py`) |
+| `services/newspaper.py` | `Giornale` and the morning job: one build, feeds → EPUB bytes + filename + caption (`build_newspaper`). The temporary file is gone before it returns | Sending — `bot/newspaper.py` and `proactive/scheduler.py` each send the document; any model or paid API (there is none) |
+| `services/newspaper_sources.py` | `news_sources.yaml`: loading it, checking it (every problem in one error), `SECTIONS` and their order, the job's time | What the sources say |
+| `services/newspaper_collect.py` | Fetching feeds (browser User-Agent), the 24-hour window, classification (fixed section → category map → keywords), the per-source cap, de-duplication (URL, then title ≥ 90 within a section) | Article pages' text |
+| `services/newspaper_fulltext.py` | Each article's body: trafilatura, the tag whitelist (`sanitize`), the consent/paywall markers, the summary fallback | Which articles exist |
+| `services/newspaper_topnews.py` | "Le 3 notizie del giorno": title normalisation, rapidfuzz clustering, the score and its tie-breaks | Laying them out |
+| `services/newspaper_epub.py` | The EPUB: chapters, TOC, e-ink CSS, Italian dates, and `check_epub`, which re-opens the file | Anything about where the articles came from |
 | `services/notion_ids.py` | `Diag` / `Find` / `DBs` — read-only ID + schema diagnostics | Any write |
 | `services/version.py` | `v` — which build the PROCESS is running: commit, branch, subject, deployment and uptime, read from the variables Railway injects. Plain text only: `run_version` has no `notify_md` to send Markdown down | The repo's idea of the version (no `VERSION` file, no git); the environment contract — the four `RAILWAY_*` names are outside `config` on purpose |
 | `proactive/` | Scheduled push messages. One builder module per feature; `scheduler.py` does all JobQueue wiring and sending. Never imports `david.py` | Sending from a builder — builders return `(text, error)` |
@@ -292,14 +299,14 @@ returns, so a five-minute `Learn` still held every other command behind it even
 with the loop idle.
 
 The fix is per-command, not a global switch. The long commands — `Learn`,
-`Implement`, and both PDF upload paths — are dispatched as background tasks
+`Implement`, `Giornale`, and both PDF upload paths — are dispatched as background tasks
 (`bot.tasks.run_detached`, built on `Application.create_task` so failures still
 reach the error handler and in-flight work is awaited on shutdown). Everything
 else runs inline.
 
 | | Runs | Ordering |
 | --- | --- | --- |
-| `Learn`, `Implement`, PDF uploads | detached, in the background | may finish in any order |
+| `Learn`, `Implement`, `Giornale`, PDF uploads | detached, in the background | may finish in any order |
 | everything else | inline, one at a time | strictly ordered |
 | an Android assistant run | inline, under the dispatch lock | strictly ordered with the chat |
 

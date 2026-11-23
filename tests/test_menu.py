@@ -113,7 +113,7 @@ def test_every_flow_has_a_walkthrough():
 
 def test_every_command_is_in_the_menu_or_left_out_on_purpose():
     """A new command has to be put in the menu, or named here, deliberately."""
-    left_out = {"Menu", "Month", "Diag", "Find", "DBs", "v", "h"}
+    left_out = {"Menu", "Month", "Diag", "Find", "DBs", "Giornale", "v", "h"}
     in_menu = {flow.command for flow in menu.FLOWS}
 
     assert {c.name for c in david.COMMANDS} - in_menu == left_out

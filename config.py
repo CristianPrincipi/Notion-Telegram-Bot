@@ -565,6 +565,37 @@ TAKEAWAY_MINUTE = 0
 TAKEAWAY_MAX_ATTEMPTS = 5
 
 
+# ─── DAILY NEWSPAPER ───────────────────────────────────────────────────────────
+# `Giornale` and the morning job: RSS feeds → one EPUB, sent as a document. No
+# model, no paid API — feedparser, trafilatura, rapidfuzz and ebooklib only.
+#
+# WHAT IS READ AND WHEN lives in news_sources.yaml, not here, because it is the
+# part meant to be edited without reading code: the sources, the category map,
+# the keywords, the clustering threshold and the time of the job. This block is
+# the plumbing around it.
+NEWSPAPER_SOURCES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "news_sources.yaml")
+# The job's time when news_sources.yaml cannot be read at startup. The job still
+# runs then, and reports the broken file in the chat — degraded out loud, never
+# by failing startup. The file's own `schedule` wins whenever it loads.
+NEWSPAPER_DEFAULT_HOUR   = 6
+NEWSPAPER_DEFAULT_MINUTE = 30
+NEWSPAPER_WINDOW_HOURS   = 24     # only items published in the last day
+NEWSPAPER_FETCH_TIMEOUT  = 15     # per request: one feed, or one article page
+NEWSPAPER_FETCH_WORKERS  = 6      # article pages fetched at once
+# Below this many characters an extracted article is treated as a paywall or a
+# teaser: the feed's summary is used instead, with a pointer to the site.
+NEWSPAPER_MIN_TEXT_CHARS = 300
+# Two titles in the SAME section at or above this rapidfuzz ratio are one story,
+# and only the longest article is kept. Stricter than the cross-section
+# clustering threshold in the YAML: this one deletes, that one only groups.
+NEWSPAPER_DEDUPE_THRESHOLD = 90
+# The outer cap on a whole build (Hard rule: long reads get an asyncio.wait_for).
+# ~13 feeds and ~70 articles at 6 at a time is well under a minute on a good day;
+# this is for the day a publisher trickles bytes.
+NEWSPAPER_BUILD_TIMEOUT  = 300
+
+
 # ─── ENVIRONMENT CONTRACT ──────────────────────────────────────────────────────
 # Every environment variable David reads, in one place. The descriptions here are
 # what the startup error and the not-set warnings print. docs/configuration.md

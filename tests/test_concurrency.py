@@ -32,6 +32,7 @@ from clients import calendar_client
 import bot.budget
 import bot.implement
 import bot.learn
+import bot.newspaper
 import david
 from services import agenda as agenda_service
 from services import books
@@ -300,6 +301,7 @@ def slow_command_stubs(monkeypatch):
 
     monkeypatch.setattr(bot.learn, "handle_learn", noop)
     monkeypatch.setattr(bot.implement, "handle_implement", noop)
+    monkeypatch.setattr(bot.newspaper, "handle_giornale", noop)
     monkeypatch.setattr(books, "find_Book_Page", lambda name: (books.Book("book-1", name), None))
     monkeypatch.setattr(books, "add_Quote", lambda *a: (written_ok(2), None))
     monkeypatch.setattr(bot.budget, "budget", lambda: ("TOTAL", None))
@@ -320,6 +322,7 @@ def slow_command_stubs(monkeypatch):
 DETACHED = [
     ("Learn video https://youtu.be/abc", "learn"),
     ("Implement Memory Techniques - Brain", "implement"),
+    ("Giornale", "giornale"),
 ]
 
 NOT_DETACHED = [

@@ -31,3 +31,6 @@ ignore = [
 # services/notion_ids.py has a __main__ block that exists precisely to print
 # the diagnostic report to stdout when run as a script instead of via Telegram.
 "services/notion_ids.py" = ["T201"]
+# scripts/ are command-line tools run by hand (check_feeds, build_newspaper):
+# their output IS the point, and nothing there runs inside the bot.
+"scripts/*" = ["T201"]
