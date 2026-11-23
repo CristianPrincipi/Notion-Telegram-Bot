@@ -99,7 +99,11 @@ def _blocks(soup) -> str:
         else:
             loose.append(str(node))
     flush()
-    return "\n".join(out)
+    # ONE BLOCK PER LINE: tidy() reads the body back line by line, and a <ul>
+    # whose <li>s trafilatura wrote on separate lines would otherwise come apart
+    # into fragments with unmatched tags (review of #80). No <pre> survives the
+    # whitelist, so a newline inside a block is only whitespace.
+    return "\n".join(re.sub(r"\s*\n\s*", " ", block) for block in out)
 
 
 def _inner(tag: Tag) -> str:

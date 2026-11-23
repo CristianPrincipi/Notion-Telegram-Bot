@@ -81,7 +81,10 @@ def parse_feed(raw: bytes, source_name: str) -> tuple[list[Article], int]:
         if when is None:
             undated += 1
             continue
-        if not link or not title:
+        # http(s) only: the link becomes a live href in the EPUB, and a feed is
+        # outside content — a `javascript:` or `data:` link is dropped with its
+        # item, as sanitize() drops one in an article body (review of #80).
+        if not title or not link.startswith(("http://", "https://")):
             continue
         articles.append(Article(
             title=title, url=link, source=source_name, published=when,

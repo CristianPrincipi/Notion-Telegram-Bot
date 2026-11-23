@@ -123,12 +123,16 @@ def top_stories(paper: list[Article], pool: list[Article], top_titles: list[str]
                 threshold: int, count: int = TOP_STORIES) -> list[Story]:
     """The `count` best groups that hold at least one article of the paper.
 
-    `pool` may hold the paper's own articles (the same objects); any article is
+    `pool` may hold the paper's own articles (the same objects); each URL is
     grouped once."""
+    # One URL is one report, whatever feed carried it: the same ANSA story under
+    # ANSA Politica and ANSA Economia must score 1, not 2 (review of #80). The
+    # paper's copy comes first, so it is the one kept.
     everything, seen = [], set()
     for article in [*paper, *pool]:
-        if id(article) not in seen:
-            seen.add(id(article))
+        key = normalise_url(article.url)
+        if key not in seen:
+            seen.add(key)
             everything.append(article)
     in_paper = {id(a) for a in paper}
 

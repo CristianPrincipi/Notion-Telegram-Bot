@@ -566,3 +566,42 @@ def test_no_other_slash_command_does(handlers):
 
 def test_a_stranger_sending_slash_giornale_reaches_only_the_logger(handlers):
     assert _reached(handlers, _slash_update(999999999, "/giornale")) == ["handle_unauthorized"]
+
+
+# ─── REVIEW OF #80 ─────────────────────────────────────────────────────────────
+
+def test_a_list_with_newlines_between_items_survives_tidy():
+    """tidy() cut the body on every newline, so a <ul> whose <li>s trafilatura
+    wrote on separate lines became fragments — and a dropped repeat left an
+    unmatched tag behind."""
+    body = newspaper_fulltext.sanitize("<p>Intro.</p><ul>\n<li>uno</li>\n<li>due</li>\n</ul>"
+                                       "<blockquote>\n<p>citato</p>\n</blockquote>")
+    tidied = newspaper_fulltext.tidy(body + "\n<p>Intro.</p>", "Titolo")
+    for block in tidied.split("\n"):
+        opened = re.findall(r"<([a-z0-9]+)>", block)
+        closed = re.findall(r"</([a-z0-9]+)>", block)
+        assert sorted(opened) == sorted(closed), f"unbalanced block: {block!r}"
+    assert "<li>uno</li>" in tidied and "<li>due</li>" in tidied and "citato" in tidied
+
+
+def test_one_url_under_two_feed_names_is_one_source():
+    """Two ANSA desks syndicating the same story are one report, not two."""
+    same = [with_body(article("Il governo approva la legge di bilancio", source="ANSA Politica",
+                              url="https://ansa.it/x/1")),
+            article("Il governo approva la legge di bilancio", source="ANSA Economia",
+                    url="https://ansa.it/x/1?ref=eco")]
+    two = [with_body(article("Accordo sul clima fallito alla COP31", source="BBC", hours=5,
+                             url="https://bbc/c")),
+           article("COP31, fallito l'accordo sul clima", source="Guardian", hours=6, url="https://g/c")]
+    stories = newspaper_topnews.top_stories([same[0], two[0]], [*same, *two], [], 75)
+    by_lead = {s.main.source: s for s in stories}
+    assert by_lead["ANSA Politica"].score == 1
+    assert by_lead["BBC"].score == 2
+    assert stories[0].main.source == "BBC"
+
+
+@pytest.mark.parametrize("link", ["javascript:alert(1)", "data:text/html,hi", "/relative/path"])
+def test_a_feed_link_that_is_not_http_never_reaches_the_paper(link):
+    raw = rss([("A trap", link, 1, [], ""), ("A real one", "https://ok.it/1", 1, [], "")])
+    articles, _ = newspaper_collect.parse_feed(raw, "Feed")
+    assert [a.url for a in articles] == ["https://ok.it/1"]
