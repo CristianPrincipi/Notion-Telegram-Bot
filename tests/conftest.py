@@ -178,9 +178,13 @@ class FakeMessage:
         self.caption  = caption
         self.document = document
         self.replies  = []          # [(text, kwargs), ...]
+        self.documents = []         # [kwargs, ...] — every reply_document
 
     async def reply_text(self, text, **kwargs):
         self.replies.append((text, kwargs))
+
+    async def reply_document(self, **kwargs):
+        self.documents.append(kwargs)
 
     @property
     def reply_texts(self):
@@ -213,6 +217,10 @@ class FakeBot:
         self.sent         = []      # [(chat_id, text), ...]
         self.sent_kwargs  = []      # [kwargs, ...] — parallel to `sent`
         self.get_file_ids = []
+        self.documents    = []      # [kwargs, ...] — every send_document
+
+    async def send_document(self, **kwargs):
+        self.documents.append(kwargs)
 
     async def get_file(self, file_id):
         self.get_file_ids.append(file_id)

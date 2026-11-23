@@ -23,6 +23,7 @@ ROLLOVER  = "month_rollover"
 HEARTBEAT = "heartbeat"
 NUDGE     = "learn_nudge"
 TAKEAWAY  = "takeaway"
+NEWSPAPER = "newspaper"
 
 CHAT_ID = "-1001234567"
 
@@ -50,7 +51,7 @@ def trigger_fields(job):
 def test_every_job_is_registered(scheduled):
     """The regression this fixes: three of these were previously never attached."""
     assert set(jobs_by_name(scheduled)) == {
-        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT, NUDGE, TAKEAWAY}
+        MORNING, EVENING, PACING, WEEKLY, ROLLOVER, HEARTBEAT, NUDGE, TAKEAWAY, NEWSPAPER}
 
 
 @pytest.mark.parametrize("name, hour, minute", [
@@ -62,6 +63,7 @@ def test_every_job_is_registered(scheduled):
     (HEARTBEAT, 20, 30),
     (NUDGE, 10, 0),
     (TAKEAWAY, 11, 0),
+    (NEWSPAPER, 6, 30),    # news_sources.yaml's `schedule`
 ])
 def test_each_job_fires_at_its_configured_time(scheduled, name, hour, minute):
     assert trigger_fields(jobs_by_name(scheduled)[name]) == (hour, minute)
@@ -92,7 +94,7 @@ def test_the_daily_jobs_run_every_day(scheduled):
     """month_rollover included: it only has work to do on the 1st, but it is
     scheduled daily so a missed or failed rollover retries the next night rather
     than a month later."""
-    for name in (MORNING, EVENING, PACING, ROLLOVER):
+    for name in (MORNING, EVENING, PACING, ROLLOVER, NEWSPAPER):
         days = str(jobs_by_name(scheduled)[name].job.trigger.fields[4])
         assert "mon" in days and "sun" in days, f"{name} does not run daily"
 

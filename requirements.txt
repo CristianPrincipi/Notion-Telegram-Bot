@@ -49,3 +49,15 @@ google-auth>=2.30
 # manylinux wheels for every one, so nothing compiles on Railway — verified with
 # the same --only-binary=:all: dry-run as trafilatura above (2026-11-18).
 aiohttp>=3.10
+# The daily newspaper (services/newspaper*.py) — free libraries only, no model.
+# feedparser reads the RSS feeds; rapidfuzz scores title similarity for the
+# de-duplication and the three stories of the day; ebooklib writes the EPUB;
+# pyyaml reads news_sources.yaml (it was already installed as a transitive
+# dependency, and is declared now that David imports it). feedparser's one
+# dependency is feedparser-sgmllib, which ships a wheel; rapidfuzz ships
+# manylinux wheels; ebooklib and pyyaml are pure Python or wheeled. Verified
+# with the same --only-binary=:all: dry-run as trafilatura above (2026-11-23).
+feedparser>=6.0
+rapidfuzz>=3.0
+ebooklib>=0.18
+pyyaml>=6.0

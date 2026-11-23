@@ -41,6 +41,7 @@ before changing what a rule protects. The overview and the full module map are i
 | Sending scheduled messages | `proactive/scheduler.py`; builders return `(text, error)` and never send |
 | The unverified-source marker | `config.UNVERIFIED_MARKER` + `is_unverified_source` |
 | Rendering calendar events | `services/agenda.format_events_inline` |
+| The daily newspaper (`Giornale`, the 06:30 job): feeds → EPUB, no model and no paid API | `services/newspaper.py` and its `newspaper_*` modules (flat, not a package: several scans walk `services/*.py` only); what it reads, the category map, the keywords and the time live in `news_sources.yaml` — [docs/newspaper.md](docs/newspaper.md) |
 | Edit operations on a section's numbered lines: numbering, checking, writing, the additions-only filter, the diff in the reply | `services/edit_ops.py`, for the Manual and the Diet page alike. Each caller keeps its prompt, schema, what line 0 means and the sections it refuses |
 
 ## Conventions
@@ -163,8 +164,8 @@ before changing what a rule protects. The overview and the full module map are i
    reporting success. The lookup runs inside the lock. `Cancel`'s undo RE-CREATES (say
    "re-created", never "restored") and matches the event title only, never the API's `q`.
 5. **Concurrency is deliberately narrow.** `concurrent_updates` stays off
-   (`tests/test_async_io.py`); only `Learn`, `Implement` and the PDF uploads go through
-   `bot.tasks.run_detached`. Locks key on a DATABASE id, never a page id. Before
+   (`tests/test_async_io.py`); only `Learn`, `Implement`, `Giornale` and the PDF uploads go
+   through `bot.tasks.run_detached`. Locks key on a DATABASE id, never a page id. Before
    widening, every find-then-mutate cycle needs a lock and a test driving two real
    handlers concurrently (`tests/test_concurrency.py`). `services/month.py` uses a
    `threading.RLock`, because its cycle runs on worker threads.

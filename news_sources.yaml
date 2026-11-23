@@ -1,0 +1,67 @@
+# The daily newspaper (`Giornale`, and the morning job) — what it reads.
+# Edit this file to change sources, sections or the time; see docs/newspaper.md.
+#
+# sections, in the order they appear in the EPUB:
+#   Finanza, Politica Italiana, Tecnologia, Geopolitica, Scienze, Ambiente
+#
+# section: a fixed section puts every item of that feed in it; `auto` sorts each
+#   item by `category_map` (the feed's <category> tags), then by `keywords`, and
+#   drops it when neither matches.
+# max: at most this many items from the feed, newest first, from the last 24 hours.
+
+title: "Il Giornale di Cristian"
+
+sources:
+  - {name: ANSA Economia, url: "https://www.ansa.it/sito/notizie/economia/economia_rss.xml", section: Finanza, max: 6}
+  - {name: Il Sole 24 Ore, url: "https://www.ilsole24ore.com/rss/finanza.xml", section: Finanza, max: 4}
+  - {name: ANSA Politica, url: "https://www.ansa.it/sito/notizie/politica/politica_rss.xml", section: Politica Italiana, max: 6}
+  - {name: AGI Politica, url: "https://www.agi.it/politica/rss", section: Politica Italiana, max: 5}
+  - {name: ANSA Tecnologia, url: "https://www.ansa.it/canale_tecnologia/notizie/tecnologia_rss.xml", section: Tecnologia, max: 5}
+  - {name: Ars Technica, url: "https://feeds.arstechnica.com/arstechnica/index", section: Tecnologia, max: 4}
+  - {name: ANSA Mondo, url: "https://www.ansa.it/sito/notizie/mondo/mondo_rss.xml", section: Geopolitica, max: 6}
+  - {name: BBC World, url: "https://feeds.bbci.co.uk/news/world/rss.xml", section: Geopolitica, max: 4}
+  - {name: Internazionale, url: "https://www.internazionale.it/sitemaps/rss.xml", section: auto, max: 6}
+  - {name: ANSA Scienza, url: "https://www.ansa.it/canale_scienza_tecnica/notizie/scienzaetecnica_rss.xml", section: Scienze, max: 5}
+  - {name: Carbon Brief, url: "https://www.carbonbrief.org/feed/", section: Ambiente, max: 3}
+  - {name: The Guardian Environment, url: "https://www.theguardian.com/environment/rss", section: Ambiente, max: 4}
+  # No trailing slash: https://www.ilpost.it/feed/ answers 403, /feed answers the feed.
+  - {name: Il Post, url: "https://www.ilpost.it/feed", section: auto, max: 10}
+
+# Not a source: its titles only give a story a +1 in "Le 3 notizie del giorno".
+top_news_feed: "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml"
+
+# Feed <category> → section, for `auto` sources. An item with several tags takes
+# the first one listed HERE. A tag not listed is ignored, and the item falls to
+# the keywords.
+#   Il Post "Italia" is left out on purpose: it is crime news as much as
+#   politics, so only the Politica Italiana keywords let an item through.
+#   Il Post "Bits" only marks a short item; its other tag decides.
+#   Internazionale has no <category> at all: keywords only.
+category_map:
+  Economia: Finanza
+  Tecnologia: Tecnologia
+  Scienza: Scienze
+  Mondo: Geopolitica
+  Guerra in Ucraina: Geopolitica
+
+# Fallback for `auto` items the category map did not place. Matched on whole
+# words in the title and the summary, ignoring case; the section with the most
+# matches wins (ties: the section order above). No match → the item is dropped.
+keywords:
+  Finanza: [borsa, spread, btp, bce, inflazione, tassi, pil, mercati, azioni, banca, banche, bilancio, manovra, fisco, tasse, euro, dollaro, quotazione, investitori]
+  Politica Italiana: [governo, meloni, parlamento, camera, senato, ministro, ministra, premier, schlein, conte, salvini, tajani, pd, fratelli d'italia, lega, forza italia, m5s, elezioni, referendum, quirinale, mattarella, decreto, legge, sindaci, regione, opposizione, maggioranza]
+  Tecnologia: [intelligenza artificiale, ai, software, app, smartphone, apple, google, meta, microsoft, anthropic, openai, chip, semiconduttori, hacker, cybersicurezza, attacco informatico, dati, internet, startup]
+  Geopolitica: [guerra, ucraina, russia, putin, zelensky, israele, gaza, cisgiordania, iran, cina, stati uniti, trump, nato, onu, ue, unione europea, diplomazia, sanzioni, esercito, droni, missili, colpo di stato]
+  Scienze: [scienza, ricerca, ricercatori, studio, nasa, esa, spazio, astronomia, fisica, biologia, medicina, genetica, matematica, scoperta, vaccino]
+  Ambiente: [clima, climatico, cop31, emissioni, co2, riscaldamento globale, siccità, alluvione, inquinamento, rinnovabili, fossili, carbone, biodiversità, deforestazione, el niño]
+
+# "Le 3 notizie del giorno": two titles at or above this rapidfuzz
+# token_set_ratio (0-100) are the same story.
+cluster_threshold: 75
+
+# When the morning job runs, Europe/Rome, HH:MM. Read at startup: a change takes
+# effect on the next deploy.
+schedule: "06:30"
+
+# Article images. Not implemented yet; must stay false.
+images: false

@@ -31,6 +31,7 @@ from bot import menu
 from bot.menu import cmd_menu
 from bot import sentences, voice
 from bot.month import cmd_month
+from bot.newspaper import cmd_giornale
 from bot.notion_ids import cmd_dbs, cmd_diag, cmd_find
 from bot.pkm import cmd_get
 from bot.reminder import cmd_remind
@@ -205,6 +206,15 @@ def register_handlers(application, owner_id: int):
     # a SECOND Notion entry.
     application.add_handler(MessageHandler(
         filters.TEXT & (~filters.COMMAND) & owner_only
+        & (~filters.UpdateType.EDITED_MESSAGE),
+        handle_message))
+
+    # `/giornale`, the one slash command: the handler above drops every
+    # /command, so this one is let through on its own, to the same dispatch.
+    # Matched exactly (an optional @botname for group-style taps), so no other
+    # /command is ever routed by accident.
+    application.add_handler(MessageHandler(
+        filters.Regex(re.compile(r"^/giornale(?:@\w+)?\s*$", re.I)) & owner_only
         & (~filters.UpdateType.EDITED_MESSAGE),
         handle_message))
 
@@ -574,6 +584,23 @@ COMMANDS = [
                   notes=("? in place of the topic lists every topic in that area",)),
     ),
     Command(
+        name="Giornale",
+        # Read-only: it builds a file and sends it here, and writes nothing to
+        # Notion or the calendar. Detached all the same (bot/newspaper.py) — a
+        # build fetches dozens of pages. `/giornale` is the same command: the
+        # slash form reaches handle_message through its own MessageHandler in
+        # register_handlers, since the text handler drops every /command.
+        read_only=True,
+        pattern=re.compile(r"/?giornale(?:@\w+)?", re.I),
+        handler=cmd_giornale,
+        help=Help("📰 *GIORNALE*", usage=("Giornale", "/giornale"), inline=True,
+                  notes=("Today's news as an EPUB, for the e-reader: the 3 stories of "
+                         "the day, then Finanza, Politica Italiana, Tecnologia, "
+                         "Geopolitica, Scienze, Ambiente",
+                         "It also arrives by itself every morning; sources and time "
+                         "are set in the sources file (docs/newspaper.md)")),
+    ),
+    Command(
         name="v",
         read_only=True,
         # Next to `h` because they are the two meta commands: one says what David
@@ -871,6 +898,7 @@ ASSISTANT_REFUSED = {
     "undo":      "undo works on what you did in Telegram, so do it there.",
     "Learn":     "Learn reports in Telegram minutes later, so start it there.",
     "Implement": "Implement reports in Telegram minutes later, so start it there.",
+    "Giornale":  "the newspaper is a file sent in Telegram, so ask for it there.",
 }
 
 ASSISTANT_ROUTER = assistant.Router(

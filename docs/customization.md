@@ -33,6 +33,8 @@ variables are listed in [Configuration](configuration.md).
     David is read on (`now_local()`).
   - `david.py` — `register_jobs`: the Sunday `budget_recap` time is written there
     (09:30), not in `config.py`.
+  - `news_sources.yaml` — `schedule`: the daily newspaper's time (see
+    [the daily newspaper](newspaper.md)).
 - **Change:** a different timezone means changing **both** timezone constants
   together; a different time is one constant.
 - **Tests:** `tests/test_agenda.py`, `tests/test_reminder_dates.py`,

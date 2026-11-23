@@ -23,6 +23,9 @@ nobody else.
   read any section back with `Get`.
 - **Calendar.** `Remind Dentist tr 10`, `Agenda`, `Cancel` — on your Google
   Calendar, with replies that name the full date so a misread is visible.
+- **A daily newspaper.** Every morning an EPUB of the day's news — Italian and
+  English feeds, the three stories most sources ran, six sections — for the
+  e-reader. No model, no cost. `Giornale` sends one on demand.
 - **It speaks first.** Morning and evening briefings, a budget warning when the
   month is running hot, a weekly recap, and a Sunday heartbeat that proves it is
   alive.
@@ -55,6 +58,7 @@ Every step in detail: **[Setup](docs/setup.md)** — about an hour from nothing.
 | [Configuration](docs/configuration.md) | Every environment variable |
 | [Notion schema](docs/notion-schema.md) | The databases and columns David expects |
 | [Features](docs/features.md) | Every command, with examples, and the scheduled messages |
+| [The daily newspaper](docs/newspaper.md) | Its sources, sections, schedule, and how to change them |
 | [Customization](docs/customization.md) | Categories, schedules, areas, prompts, new commands |
 | [Troubleshooting](docs/troubleshooting.md) | What to check when something does not work |
 | [Architecture](docs/architecture.md) | How it is built and why — for changing the code |

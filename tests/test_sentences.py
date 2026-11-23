@@ -172,7 +172,7 @@ def test_the_read_only_commands_are_exactly_these():
     """A command that writes and is marked read-only would run from a sentence
     unconfirmed. Adding to this set is a decision, not a diff nobody read."""
     assert {c.name for c in david.COMMANDS if c.read_only} == {
-        "Menu", "Agenda", "B", "Diag", "Find", "DBs", "Get", "v", "h"}
+        "Menu", "Agenda", "B", "Diag", "Find", "DBs", "Get", "Giornale", "v", "h"}
 
 
 # ─── WHAT IS REFUSED ───────────────────────────────────────────────────────────
